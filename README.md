@@ -1,17 +1,19 @@
-# reader
+# Reader
 
-A new Flutter project.
+An offline Flutter reader prototype for phones and tablets, with a warm editorial library and six original sample books.
 
-## Getting Started
+- Search by title or author; filter All / Reading / Finished; sort by recent activity or title.
+- Resume reading with shared chapter and text-offset progress.
+- Switch between vertically scrolling chapters and measured, horizontally paged text in reading settings.
+- Adjust typeface, font size, and paper/sepia/dark colors. Hide controls for focused reading.
+- Adapt to window width, orientation, split view, and accessibility text sizes.
 
-This project is a starting point for a Flutter application.
+Run with `flutter run`. Validate with `flutter analyze` and `flutter test`.
 
-A few resources to get you started if this is your first Flutter project:
+## Organization
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+`lib/main.dart` wires the app and shared theme. `books.dart` holds sample content, models, and the single `ChangeNotifier` controller. `library.dart` and `reader.dart` contain the two screens; `pagination.dart` measures page boundaries; `theme.dart` defines shared colors.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+No backend or state-management packages are required. Reading progress and preferences last for the current app session; file import, persistent storage, sync, and annotations are outside this prototype.
+
+Lora and DM Sans are bundled for offline typography under the SIL Open Font License. Their licenses are in `assets/fonts/`.
