@@ -182,6 +182,15 @@ void main() {
       expect(controller.position(books.first).offset, 0);
       await tester.tap(find.byTooltip('Choose chapter'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('The house at the edge').last);
+      await tester.pumpAndSettle();
+      expect(controller.position(books.first).offset, 0);
+      expect(
+        tester.widget<PageView>(find.byType(PageView)).controller!.page,
+        0,
+      );
+      await tester.tap(find.byTooltip('Choose chapter'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('What the water keeps'));
       await tester.pumpAndSettle();
       expect(controller.position(books.first).chapter, 2);
