@@ -44,11 +44,14 @@ the same reservation. `DELETE /v1/account` purges global jobs, temporary prose,
 scene metadata, temporal world revisions and references, reservations, user
 records, and the user's storage prefix.
 
-Before deployment:
+Terraform owns the deployed indexes, TTL policy, Security Rules, service
+identities, and Cloud Run services. Do not run `firebase deploy`; use the
+repository-root deployment entry point so these resources retain one source of
+truth:
 
 ```sh
-npm install
-npm run build
-npm test
-npm audit --omit=dev
+tool/deploy_backend dev
 ```
+
+See [`../infra/README.md`](../infra/README.md) for state bootstrapping,
+migration safeguards, secrets, drift review, and new-environment setup.

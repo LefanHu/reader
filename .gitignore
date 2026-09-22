@@ -34,6 +34,13 @@ migrate_working_dir/
 /coverage/
 /backend/node_modules/
 /backend/dist/
+/.dart-defines/
+**/.terraform/
+/infra/modules/*/.terraform.lock.hcl
+*.tfplan
+*.tfstate
+*.tfstate.*
+crash.log
 
 # Symbolication related
 app.*.symbols

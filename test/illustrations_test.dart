@@ -16,6 +16,27 @@ import 'package:reader/models.dart';
 import 'fakes.dart';
 
 void main() {
+  test('illustration profiles version temporal continuity jobs', () {
+    const current = IllustrationProfile(
+      enabled: true,
+      style: 'Ink',
+      density: 2,
+      styleVersion: 1,
+      cloudBookId: 'book',
+    );
+    expect(current.analysisVersion, 2);
+    expect(current.toJson()['analysisVersion'], 2);
+
+    final legacy = IllustrationProfile.fromJson({
+      'enabled': true,
+      'style': 'Ink',
+      'density': 2,
+      'styleVersion': 1,
+      'cloudBookId': 'book',
+    });
+    expect(legacy.analysisVersion, 2);
+  });
+
   group('EPUB illustration index', () {
     test(
       'indexes only spine XHTML and produces stable sanitized blocks',

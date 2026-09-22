@@ -254,6 +254,7 @@ class HttpIllustrationApi implements IllustrationApi {
         'style': profile.style,
         'density': profile.density,
         'styleVersion': profile.styleVersion,
+        'analysisVersion': profile.analysisVersion,
       },
     );
   }
@@ -272,6 +273,7 @@ class HttpIllustrationApi implements IllustrationApi {
         'title': chapter.title,
         'language': chapter.language,
         'styleVersion': profile.styleVersion,
+        'analysisVersion': profile.analysisVersion,
         'density': profile.density,
         'paragraphs': chapter.paragraphs
             .map(

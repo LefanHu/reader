@@ -44,6 +44,15 @@ Apple capability, Firebase Authentication provider, App Check/App Attest, and
 the services described in [`backend/README.md`](backend/README.md) before
 enabling the server-side rollout flag.
 
+Provision and deploy the complete Firebase/Google Cloud backend with
+`tool/deploy_backend dev`. Infrastructure is tracked in [`infra/`](infra/README.md);
+use `tool/plan_infra dev` to review drift without applying it. The deployment
+generates the ignored `.dart-defines/dev.json` file used by:
+
+```sh
+flutter run -d <ios-device-id> --dart-define-from-file=.dart-defines/dev.json
+```
+
 Check package updates with:
 
 ```sh

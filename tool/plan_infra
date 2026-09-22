@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+# shellcheck source=tool/infra_common.sh
+. "$(dirname -- "$0")/infra_common.sh"
+
+check_tools
+load_environment "$@"
+require_apple_credentials
+gcloud auth application-default print-access-token >/dev/null 2>&1 || \
+  die "Terraform needs Application Default Credentials; run gcloud auth application-default login"
+
+gcloud storage buckets describe "gs://$STATE_BUCKET" --project="$STATE_PROJECT" >/dev/null 2>&1 || \
+  die "remote state is not bootstrapped; run tool/deploy_backend $ENVIRONMENT once"
+
+terraform_init foundation "reader/$ENVIRONMENT/foundation"
+foundation_plan=$(mktemp "${TMPDIR:-/tmp}/reader-foundation.XXXXXX.tfplan")
+terraform -chdir="$INFRA_DIR/foundation" plan -var-file="$ENV_VARS" -out="$foundation_plan"
+assert_safe_foundation_plan "$foundation_plan"
+rm -f "$foundation_plan"
+
+terraform_init runtime "reader/$ENVIRONMENT/runtime"
+image=${IMAGE:-}
+if [ -z "$image" ]; then
+  image=$(terraform -chdir="$INFRA_DIR/runtime" output -raw image 2>/dev/null || true)
+fi
+[ -n "$image" ] || die "runtime has no deployed image; set IMAGE to an immutable Artifact Registry digest"
+terraform -chdir="$INFRA_DIR/runtime" plan -var-file="$ENV_VARS" -var="image=$image"

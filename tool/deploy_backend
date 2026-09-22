@@ -1,0 +1,88 @@
+#!/bin/sh
+set -eu
+
+# shellcheck source=tool/infra_common.sh
+. "$(dirname -- "$0")/infra_common.sh"
+
+check_tools
+load_environment "$@"
+
+gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q . || die "gcloud has no active account; run gcloud auth login"
+gcloud auth application-default print-access-token >/dev/null 2>&1 || \
+  die "Terraform needs Application Default Credentials; run gcloud auth application-default login"
+
+# Bootstrap is deliberately idempotent: the first run creates the remote-state
+# project and bucket, then Terraform adopts and protects both resources.
+if ! gcloud projects describe "$STATE_PROJECT" >/dev/null 2>&1; then
+  gcloud projects create "$STATE_PROJECT" --name='Reader Terraform State'
+fi
+gcloud billing projects link "$STATE_PROJECT" --billing-account="$BILLING_ACCOUNT" >/dev/null
+gcloud services enable serviceusage.googleapis.com storage.googleapis.com cloudresourcemanager.googleapis.com \
+  --project="$STATE_PROJECT"
+if ! gcloud storage buckets describe "gs://$STATE_BUCKET" --project="$STATE_PROJECT" >/dev/null 2>&1; then
+  gcloud storage buckets create "gs://$STATE_BUCKET" --project="$STATE_PROJECT" \
+    --location="$STATE_LOCATION" --uniform-bucket-level-access --public-access-prevention
+fi
+gcloud storage buckets update "gs://$STATE_BUCKET" --versioning --uniform-bucket-level-access \
+  --public-access-prevention --project="$STATE_PROJECT" >/dev/null
+
+terraform_init bootstrap reader/bootstrap
+bootstrap_state=$(terraform -chdir="$INFRA_DIR/bootstrap" state list 2>/dev/null || true)
+printf '%s\n' "$bootstrap_state" | grep -qx 'google_project.state' || \
+  terraform -chdir="$INFRA_DIR/bootstrap" import \
+    -var-file="$STATE_VARS" google_project.state "$STATE_PROJECT"
+printf '%s\n' "$bootstrap_state" | grep -qx 'google_storage_bucket.state' || \
+  terraform -chdir="$INFRA_DIR/bootstrap" import \
+    -var-file="$STATE_VARS" google_storage_bucket.state "$STATE_BUCKET"
+terraform -chdir="$INFRA_DIR/bootstrap" apply -var-file="$STATE_VARS"
+
+require_apple_credentials
+terraform_init foundation "reader/$ENVIRONMENT/foundation"
+foundation_plan=$(mktemp "${TMPDIR:-/tmp}/reader-foundation.XXXXXX.tfplan")
+terraform -chdir="$INFRA_DIR/foundation" plan -var-file="$ENV_VARS" -out="$foundation_plan"
+assert_safe_foundation_plan "$foundation_plan"
+terraform -chdir="$INFRA_DIR/foundation" apply "$foundation_plan"
+rm -f "$foundation_plan"
+
+ensure_openai_secret
+
+npm --prefix "$READER_ROOT/backend" ci
+npm --prefix "$READER_ROOT/backend" run build
+npm --prefix "$READER_ROOT/backend" test
+npm --prefix "$READER_ROOT/backend" audit --omit=dev
+
+commit=$(git -C "$READER_ROOT" rev-parse --short=12 HEAD)
+repository="$REGION-docker.pkg.dev/$PROJECT_ID/reader-backend/backend"
+tagged_image="$repository:$commit"
+builder=$(terraform -chdir="$INFRA_DIR/foundation" output -raw build_service_account)
+gcloud builds submit "$READER_ROOT/backend" \
+  --project="$PROJECT_ID" \
+  --region="$REGION" \
+  --config="$READER_ROOT/backend/cloudbuild.yaml" \
+  --service-account="projects/$PROJECT_ID/serviceAccounts/$builder" \
+  --substitutions="_IMAGE=$tagged_image"
+digest=$(gcloud artifacts docker images describe "$tagged_image" \
+  --project="$PROJECT_ID" --format='value(image_summary.digest)')
+[ -n "$digest" ] || die "Cloud Build completed but no image digest was found for $tagged_image"
+immutable_image="$repository@$digest"
+
+terraform_init runtime "reader/$ENVIRONMENT/runtime"
+runtime_plan=$(mktemp "${TMPDIR:-/tmp}/reader-runtime.XXXXXX.tfplan")
+terraform -chdir="$INFRA_DIR/runtime" plan -var-file="$ENV_VARS" \
+  -var="image=$immutable_image" -out="$runtime_plan"
+terraform -chdir="$INFRA_DIR/runtime" apply "$runtime_plan"
+rm -f "$runtime_plan"
+
+api_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw api_url)
+worker_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw worker_url)
+generate_dart_defines "$api_url"
+
+curl --fail --silent --show-error "$api_url/healthz" >/dev/null
+worker_status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$worker_url/healthz")
+[ "$worker_status" = "403" ] || die "expected anonymous worker request to return 403, got $worker_status"
+
+printf '%s\n' \
+  "Deployment complete." \
+  "Flutter config: .dart-defines/$ENVIRONMENT.json" \
+  "Run with: flutter run --dart-define-from-file=.dart-defines/$ENVIRONMENT.json" \
+  "Illustrations remain disabled. Set illustrations_enabled=true in $ENV_VARS and redeploy after an authenticated smoke test."
