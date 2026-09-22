@@ -1,8 +1,13 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flureadium/flureadium.dart';
 import 'package:reader/controller.dart';
 import 'package:reader/epub_service.dart';
+import 'package:reader/illustrations/api.dart';
+import 'package:reader/illustrations/indexer.dart';
+import 'package:reader/illustrations/models.dart';
+import 'package:reader/illustrations/store.dart';
 import 'package:reader/models.dart';
 import 'package:reader/storage.dart';
 
@@ -93,6 +98,148 @@ class FakePicker implements EpubPicker {
   Future<List<ImportCandidate>> pick() async => files;
 }
 
+/// Illustration sidecar store that keeps widget tests off the filesystem.
+class MemoryIllustrationStore implements IllustrationStore {
+  final Map<String, IllustrationManifest> manifests = {};
+  final Map<String, BookTextIndex> indexes = {};
+  final Map<String, Uint8List> images = {};
+
+  @override
+  Future<void> deleteSceneFiles(CatalogBook book, String sceneId) async {
+    images.remove('$sceneId:image');
+    images.remove('$sceneId:thumbnail');
+  }
+
+  @override
+  Future<BookTextIndex?> loadIndex(CatalogBook book) async =>
+      indexes[book.hash];
+
+  @override
+  Future<IllustrationManifest> loadManifest(CatalogBook book) async =>
+      manifests[book.hash] ?? IllustrationManifest(bookHash: book.hash);
+
+  @override
+  Future<void> saveIndex(CatalogBook book, BookTextIndex index) async {
+    indexes[book.hash] = index;
+  }
+
+  @override
+  Future<String> saveImage(
+    CatalogBook book,
+    String sceneId,
+    Uint8List bytes, {
+    bool thumbnail = false,
+  }) async {
+    final key = '$sceneId:${thumbnail ? 'thumbnail' : 'image'}';
+    images[key] = bytes;
+    return '/memory/$key.webp';
+  }
+
+  @override
+  Future<void> saveManifest(
+    CatalogBook book,
+    IllustrationManifest manifest,
+  ) async {
+    manifests[book.hash] = manifest;
+  }
+}
+
+/// Stable one-chapter index used unless a test supplies its own indexer.
+class FakeTextIndexer implements EpubTextIndexer {
+  FakeTextIndexer({this.chapters = _defaultChapters});
+
+  final List<ChapterTextIndex> chapters;
+
+  static const _defaultChapters = [
+    ChapterTextIndex(
+      href: 'chapter.xhtml',
+      spineOrdinal: 0,
+      title: null,
+      paragraphs: [
+        IndexedParagraph(
+          id: 'paragraph-1',
+          text: 'A test paragraph.',
+          cssSelector: 'body > p:nth-of-type(1)',
+          ordinal: 0,
+          progression: 1,
+        ),
+      ],
+    ),
+  ];
+
+  @override
+  Future<BookTextIndex> index({
+    required String epubPath,
+    required String bookHash,
+  }) async => BookTextIndex(bookHash: bookHash, chapters: chapters);
+}
+
+/// Offline illustration API used by tests that do not exercise cloud setup.
+class FakeIllustrationApi implements IllustrationApi {
+  FakeIllustrationApi({this.configured = false});
+
+  @override
+  final bool configured;
+  final List<int> createdChapterOrdinals = [];
+  final List<String> unlockedSceneIds = [];
+  final Map<String, IllustrationJobResult> jobResults = {};
+
+  @override
+  Future<void> confirmProfile(IllustrationProfile profile) async {}
+
+  @override
+  Future<String> createChapterJob({
+    required IllustrationProfile profile,
+    required ChapterTextIndex chapter,
+  }) async {
+    createdChapterOrdinals.add(chapter.spineOrdinal);
+    return 'job-${chapter.spineOrdinal}';
+  }
+
+  @override
+  Future<void> deleteBook(String cloudBookId) async {}
+
+  @override
+  Future<void> deleteAccount() async {}
+
+  @override
+  Future<void> deleteScene(String sceneId) async {}
+
+  @override
+  Future<IllustrationJobResult> getJob(String jobId) async =>
+      jobResults[jobId] ??
+      IllustrationJobResult(id: jobId, status: 'queued', scenes: const []);
+
+  @override
+  Future<IllustrationSetup> registerBook(
+    CatalogBook book, {
+    required int chapterCount,
+  }) async => const IllustrationSetup(
+    cloudBookId: 'cloud-book',
+    suggestedStyle: 'Cinematic storybook realism',
+    alternativeStyles: ['Expressive ink sketch'],
+    estimatedCredits: 3,
+  );
+
+  @override
+  Future<void> regenerateScene(String sceneId) async {}
+
+  @override
+  Future<void> signOut() async {}
+
+  @override
+  Future<UnlockedIllustration> unlockScene(String sceneId) async {
+    unlockedSceneIds.add(sceneId);
+    return UnlockedIllustration(
+      image: Uint8List.fromList(const [1, 2, 3]),
+      thumbnail: Uint8List.fromList(const [1, 2]),
+      altText: 'A generated test scene',
+      caption: 'A scene from the chapter',
+      generationVersion: 1,
+    );
+  }
+}
+
 /// Creates an initialized controller with replaceable in-memory dependencies.
 Future<ReaderController> testController({
   List<CatalogBook> books = const [],
@@ -109,6 +256,9 @@ Future<ReaderController> testController({
     importer: EpubImporter(root: directory, engine: engine),
     picker: FakePicker(files),
     engine: engine,
+    illustrationStore: MemoryIllustrationStore(),
+    textIndexer: FakeTextIndexer(),
+    illustrationApi: FakeIllustrationApi(),
   );
   await controller.initialize();
   return controller;

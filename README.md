@@ -7,6 +7,8 @@ An offline-first Flutter EPUB reader for iPhone and iPad. It imports reflowable,
 - Resume from a complete Readium locator and switch between Pages and Scroll without losing the passage.
 - Use nested tables of contents, internal links, images, SVG, RTL content, and publisher semantics handled by Readium.
 - Adjust serif/sans-serif text, size, and paper/sepia/dark colors. Hide controls for focused reading.
+- Opt in per book to spoiler-safe AI illustrations that unlock only after the
+  depicted passage and remain in a local unlocked-scenes gallery.
 - Persist the catalog under Application Support and global reading settings in SharedPreferences.
 
 Scripted, remote-resource, fixed-layout, and DRM-protected publications are rejected. Web links show their destination domain and require consent before opening outside the app.
@@ -20,6 +22,27 @@ flutter test
 flutter devices
 flutter run -d <ios-device-id>
 ```
+
+AI illustrations are inert unless the build supplies Firebase and API values:
+
+```sh
+flutter run -d <ios-device-id> \
+  --dart-define=FIREBASE_API_KEY=... \
+  --dart-define=FIREBASE_APP_ID=... \
+  --dart-define=FIREBASE_MESSAGING_SENDER_ID=... \
+  --dart-define=FIREBASE_PROJECT_ID=... \
+  --dart-define=FIREBASE_STORAGE_BUCKET=... \
+  --dart-define=ILLUSTRATION_API_BASE_URL=https://YOUR_API_HOST
+```
+
+For a registered Firebase App Check debug token on an iOS simulator, add
+`--dart-define=FIREBASE_APP_CHECK_DEBUG=true`. Never set it in release builds.
+
+The feature signs in with Apple only after the reader taps the illustration
+control. Importing and reading remain account-free and offline. Configure the
+Apple capability, Firebase Authentication provider, App Check/App Attest, and
+the services described in [`backend/README.md`](backend/README.md) before
+enabling the server-side rollout flag.
 
 Check package updates with:
 
@@ -52,6 +75,10 @@ The iOS deployment target is 15.0. App Transport Security permits local networki
 - `lib/storage.dart` contains atomic catalog and preferences persistence.
 - `lib/epub_service.dart` contains picker, validation, hashing, copying, and the Readium adapter.
 - `lib/controller.dart` is the single shared `ChangeNotifier`.
+- `lib/illustrations/` contains bounded EPUB indexing, spoiler gating,
+  authenticated REST, atomic sidecars, local assets, and deletion retries.
 - `lib/library.dart` and `lib/reader.dart` contain the adaptive library and reader shell.
+- `backend/` contains the Cloud Run API/worker, scene planning, image provider,
+  moderation, credit reservations, private delivery, and deletion endpoints.
 
 Lora and DM Sans are bundled under the SIL Open Font License. Flureadium and Readium notices are recorded in `THIRD_PARTY_NOTICES.md`. Distribution builds require an LGPL compliance review.

@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flureadium/flureadium.dart';
+import 'package:reader/controller.dart';
+import 'package:reader/epub_service.dart';
 import 'package:reader/library.dart';
+import 'package:reader/illustrations/models.dart';
 import 'package:reader/models.dart';
 import 'package:reader/reader.dart';
 import 'package:reader/theme.dart';
@@ -199,4 +204,136 @@ void main() {
       expect(find.byTooltip('Show reading controls'), findsOneWidget);
     },
   );
+
+  testWidgets('illustration consent precedes chapter scheduling', (
+    tester,
+  ) async {
+    final book = testBook();
+    final api = FakeIllustrationApi(configured: true);
+    final controller = ReaderController(
+      catalogStore: MemoryCatalogStore([book]),
+      settingsStore: MemorySettingsStore(),
+      importer: EpubImporter(
+        root: Directory.systemTemp,
+        engine: FakeEngine(testPublication()),
+      ),
+      picker: FakePicker(),
+      engine: FakeEngine(testPublication()),
+      illustrationStore: MemoryIllustrationStore(),
+      textIndexer: FakeTextIndexer(),
+      illustrationApi: api,
+    );
+    await controller.initialize();
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: readerTheme,
+        home: ReaderScreen(
+          book: book,
+          controller: controller,
+          readerBuilder: ({
+            required publication,
+            required initialLocator,
+            required onTap,
+            required onExternalLink,
+            required onLocatorChanged,
+            required onReady,
+          }) => const ColoredBox(color: Colors.white),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('AI illustrations'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Illustrate this book?'), findsOneWidget);
+    expect(find.textContaining('EPUB is never uploaded'), findsOneWidget);
+    expect(find.textContaining('Estimated maximum: 3 credits'), findsOneWidget);
+    expect(api.createdChapterOrdinals, isEmpty);
+
+    await tester.tap(find.text('Enable illustrations'));
+    await tester.pumpAndSettle();
+    expect(api.createdChapterOrdinals, [0]);
+    expect(controller.manifestFor(book).enabled, isTrue);
+  });
+
+  testWidgets('gallery exposes only unlocked scenes', (tester) async {
+    final book = testBook();
+    final store = MemoryIllustrationStore();
+    store.manifests[book.hash] = IllustrationManifest(
+      bookHash: book.hash,
+      profile: const IllustrationProfile(
+        enabled: true,
+        style: 'Cinematic ink',
+        density: 3,
+        styleVersion: 1,
+        cloudBookId: 'cloud-book',
+      ),
+      scenes: const [
+        IllustrationScene(
+          id: 'unlocked',
+          state: IllustrationSceneState.unlocked,
+          caption: 'The moonlit gate',
+          anchor: SceneAnchor(
+            href: 'chapter.xhtml',
+            spineOrdinal: 0,
+            paragraphId: 'p1',
+            cssSelector: 'p',
+            fallbackProgression: .5,
+          ),
+        ),
+        IllustrationScene(
+          id: 'locked',
+          state: IllustrationSceneState.readyLocked,
+          caption: 'Future spoiler',
+          anchor: SceneAnchor(
+            href: 'chapter.xhtml',
+            spineOrdinal: 0,
+            paragraphId: 'p2',
+            cssSelector: 'p + p',
+            fallbackProgression: 1,
+          ),
+        ),
+      ],
+    );
+    final controller = ReaderController(
+      catalogStore: MemoryCatalogStore([book]),
+      settingsStore: MemorySettingsStore(),
+      importer: EpubImporter(
+        root: Directory.systemTemp,
+        engine: FakeEngine(testPublication()),
+      ),
+      picker: FakePicker(),
+      engine: FakeEngine(testPublication()),
+      illustrationStore: store,
+      textIndexer: FakeTextIndexer(),
+      illustrationApi: FakeIllustrationApi(configured: true),
+    );
+    await controller.initialize();
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: readerTheme,
+        home: ReaderScreen(
+          book: book,
+          controller: controller,
+          readerBuilder: ({
+            required publication,
+            required initialLocator,
+            required onTap,
+            required onExternalLink,
+            required onLocatorChanged,
+            required onReady,
+          }) => const ColoredBox(color: Colors.white),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('AI illustrations'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Illustrated scenes'), findsOneWidget);
+    expect(find.text('The moonlit gate'), findsOneWidget);
+    expect(find.text('Future spoiler'), findsNothing);
+  });
 }

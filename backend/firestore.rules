@@ -1,0 +1,11 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Mobile clients use the authenticated Cloud Run API exclusively.
+    // The Admin SDK service accounts bypass these rules through IAM.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

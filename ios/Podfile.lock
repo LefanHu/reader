@@ -1,4 +1,10 @@
 PODS:
+  - AppCheckCore (11.3.2):
+    - GoogleUtilities/Environment (~> 8.0)
+    - GoogleUtilities/UserDefaults (~> 8.0)
+    - PromisesObjC (~> 2.4)
+    - PromisesSwift (~> 2.4)
+    - RecaptchaInterop (~> 101.0)
   - CryptoSwift (1.8.4)
   - DifferenceKit (1.3.0):
     - DifferenceKit/Core (= 1.3.0)
@@ -9,6 +15,48 @@ PODS:
   - file_picker_darwin (1.0.0):
     - Flutter
     - FlutterMacOS
+  - Firebase/Auth (12.19.0):
+    - Firebase/CoreOnly
+    - FirebaseAuth (~> 12.19.0)
+  - Firebase/CoreOnly (12.19.0):
+    - FirebaseCore (~> 12.19.0)
+  - firebase_app_check (0.4.8):
+    - Firebase/CoreOnly (~> 12.19.0)
+    - firebase_core
+    - FirebaseAppCheck (~> 12.19.0)
+    - Flutter
+  - firebase_auth (6.7.0):
+    - Firebase/Auth (= 12.19.0)
+    - firebase_core
+    - Flutter
+  - firebase_core (4.15.0):
+    - Firebase/CoreOnly (= 12.19.0)
+    - Flutter
+  - FirebaseAppCheck (12.19.0):
+    - AppCheckCore (~> 11.3)
+    - FirebaseAppCheckInterop (~> 12.19.0)
+    - FirebaseCore (~> 12.19.0)
+    - GoogleUtilities/Environment (~> 8.1)
+    - GoogleUtilities/UserDefaults (~> 8.1)
+  - FirebaseAppCheckInterop (12.19.0)
+  - FirebaseAuth (12.19.0):
+    - FirebaseAppCheckInterop (~> 12.19.0)
+    - FirebaseAuthInterop (~> 12.19.0)
+    - FirebaseCore (~> 12.19.0)
+    - FirebaseCoreExtension (~> 12.19.0)
+    - GoogleUtilities/AppDelegateSwizzler (~> 8.1)
+    - GoogleUtilities/Environment (~> 8.1)
+    - GTMSessionFetcher/Core (< 6.0, >= 3.4)
+    - RecaptchaInterop (~> 101.0)
+  - FirebaseAuthInterop (12.19.0)
+  - FirebaseCore (12.19.0):
+    - FirebaseCoreInternal (~> 12.19.0)
+    - GoogleUtilities/Environment (~> 8.1)
+    - GoogleUtilities/Logger (~> 8.1)
+  - FirebaseCoreExtension (12.19.0):
+    - FirebaseCore (~> 12.19.0)
+  - FirebaseCoreInternal (12.19.0):
+    - "GoogleUtilities/NSData+zlib (~> 8.1)"
   - flureadium (0.0.1):
     - Flutter
     - PromiseKit (~> 8.1)
@@ -18,6 +66,31 @@ PODS:
     - ReadiumShared (~> 3.5.0)
     - ReadiumStreamer (~> 3.5.0)
   - Flutter (1.0.0)
+  - GoogleUtilities/AppDelegateSwizzler (8.1.3):
+    - GoogleUtilities/Environment
+    - GoogleUtilities/Logger
+    - GoogleUtilities/Network
+    - GoogleUtilities/Privacy
+  - GoogleUtilities/Environment (8.1.3):
+    - GoogleUtilities/Privacy
+  - GoogleUtilities/Logger (8.1.3):
+    - GoogleUtilities/Environment
+    - GoogleUtilities/Privacy
+  - GoogleUtilities/Network (8.1.3):
+    - GoogleUtilities/Logger
+    - "GoogleUtilities/NSData+zlib"
+    - GoogleUtilities/Privacy
+    - GoogleUtilities/Reachability
+  - "GoogleUtilities/NSData+zlib (8.1.3)":
+    - GoogleUtilities/Privacy
+  - GoogleUtilities/Privacy (8.1.3)
+  - GoogleUtilities/Reachability (8.1.3):
+    - GoogleUtilities/Logger
+    - GoogleUtilities/Privacy
+  - GoogleUtilities/UserDefaults (8.1.3):
+    - GoogleUtilities/Logger
+    - GoogleUtilities/Privacy
+  - GTMSessionFetcher/Core (5.3.1)
   - Minizip (1.0.0)
   - package_info_plus (0.4.5):
     - Flutter
@@ -30,6 +103,9 @@ PODS:
     - PromiseKit/CorePromise
   - PromiseKit/UIKit (8.2.0):
     - PromiseKit/CorePromise
+  - PromisesObjC (2.4.1)
+  - PromisesSwift (2.4.1):
+    - PromisesObjC (= 2.4.1)
   - ReadiumAdapterGCDWebServer (3.5.0):
     - ReadiumGCDWebServer (~> 4.0.0)
     - ReadiumInternal (~> 3.5.0)
@@ -60,6 +136,7 @@ PODS:
     - ReadiumInternal (~> 3.5.0)
     - ReadiumShared (~> 3.5.0)
   - ReadiumZIPFoundation (3.0.1)
+  - RecaptchaInterop (101.0.0)
   - shared_preferences_foundation (0.0.1):
     - Flutter
     - FlutterMacOS
@@ -71,6 +148,9 @@ PODS:
 
 DEPENDENCIES:
   - file_picker_darwin (from `.symlinks/plugins/file_picker_darwin/darwin`)
+  - firebase_app_check (from `.symlinks/plugins/firebase_app_check/ios`)
+  - firebase_auth (from `.symlinks/plugins/firebase_auth/ios`)
+  - firebase_core (from `.symlinks/plugins/firebase_core/ios`)
   - flureadium (from `.symlinks/plugins/flureadium/ios`)
   - Flutter (from `Flutter`)
   - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
@@ -88,17 +168,37 @@ DEPENDENCIES:
 
 SPEC REPOS:
   trunk:
+    - AppCheckCore
     - CryptoSwift
     - DifferenceKit
+    - Firebase
+    - FirebaseAppCheck
+    - FirebaseAppCheckInterop
+    - FirebaseAuth
+    - FirebaseAuthInterop
+    - FirebaseCore
+    - FirebaseCoreExtension
+    - FirebaseCoreInternal
+    - GoogleUtilities
+    - GTMSessionFetcher
     - Minizip
     - PromiseKit
+    - PromisesObjC
+    - PromisesSwift
     - ReadiumFuzi
     - ReadiumGCDWebServer
+    - RecaptchaInterop
     - SwiftSoup
 
 EXTERNAL SOURCES:
   file_picker_darwin:
     :path: ".symlinks/plugins/file_picker_darwin/darwin"
+  firebase_app_check:
+    :path: ".symlinks/plugins/firebase_app_check/ios"
+  firebase_auth:
+    :path: ".symlinks/plugins/firebase_auth/ios"
+  firebase_core:
+    :path: ".symlinks/plugins/firebase_core/ios"
   flureadium:
     :path: ".symlinks/plugins/flureadium/ios"
   Flutter:
@@ -127,14 +227,30 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/wakelock_plus/ios"
 
 SPEC CHECKSUMS:
+  AppCheckCore: be8fce5469f68d7f6a29aa94b25f097409ff7fdc
   CryptoSwift: e64e11850ede528a02a0f3e768cec8e9d92ecb90
   DifferenceKit: ab185c4d7f9cef8af3fcf593e5b387fb81e999ca
   file_picker_darwin: 4c2b9a50ea44cb3b071381ea0cf48591bdd80251
+  Firebase: 7ca191e43724142f79fae653547b3382c45413cc
+  firebase_app_check: ecc734ce54d8918ebbdd3689335312ba189d47c8
+  firebase_auth: 09023e4cff3162bed3375fb2f4f350b07c422206
+  firebase_core: 55de508663ceda7d1dc369a32b327a5655019ae2
+  FirebaseAppCheck: d8e84486d3502e42f7807e05562605d800043e5b
+  FirebaseAppCheckInterop: bd4b791ffaed7ae719304af6369d243ddee5e4a0
+  FirebaseAuth: 8c38236f67e5e3dd6aacf3e0c46b3eed31e9c820
+  FirebaseAuthInterop: f1ad187a0052276ad49a990538accfdf36fc595d
+  FirebaseCore: c990214798d7c568ad436a15ba7da25c7a278c9a
+  FirebaseCoreExtension: 201c78d7491a273d61d8afbf491214276a951e6d
+  FirebaseCoreInternal: 656b1c2fd5a1c5976183dc54b73deda78fb26ee3
   flureadium: 39852cebeb8f170ed64ca0fccdb1d4b6a93f64e1
   Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  GoogleUtilities: 4e0c2ad9fa0d0d18b5c4df8bf57b461cba35b0bb
+  GTMSessionFetcher: a6d2b2aa203485893d4511ff64642dc811f7c09f
   Minizip: 188cb3e39a1195c283ae03bf673d182596fefd0b
   package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499
   PromiseKit: 74e6ab5894856b4762fef547055c809bca91d440
+  PromisesObjC: 752c3227f599e3467650e47ea36f433eeb10c273
+  PromisesSwift: 217dea0fd5d2ad65222a109c48698add13cc1c5b
   ReadiumAdapterGCDWebServer: 5e20e4fd489d61dbecec510a96cdbd58119cdeac
   ReadiumFuzi: 888d023b862f524e314f85925c94768a501f05c0
   ReadiumGCDWebServer: 6c905689d61c416a73e0b16e9218c10bb405817c
@@ -144,6 +260,7 @@ SPEC CHECKSUMS:
   ReadiumShared: 20be908d74b6f4de0811438eeca5ab0822ac7fb6
   ReadiumStreamer: b62701ca281e7017541c853b0738eb5b95130197
   ReadiumZIPFoundation: 2f3e19e361f1b7751ecf37a88c754287692c12c2
+  RecaptchaInterop: 11e0b637842dfb48308d242afc3f448062325aba
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
   SwiftSoup: 9ec2526c76ebc3fe5d3157c82b40b45a27eeb82d
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b

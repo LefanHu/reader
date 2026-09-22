@@ -1,0 +1,10 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Delivery is through server-issued, short-lived signed URLs only.
+    match /{object=**} {
+      allow read, write, list: if false;
+    }
+  }
+}

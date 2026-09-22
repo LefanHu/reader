@@ -1,8 +1,13 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flureadium/flureadium.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'controller.dart';
+import 'illustrations/api.dart';
+import 'illustrations/models.dart';
 import 'models.dart';
 import 'theme.dart';
 
@@ -46,13 +51,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
   ReaderSettings? appliedSettings;
   bool controls = true;
   bool closed = false;
+  bool revealingIllustration = false;
   String? chapterTitle;
+  Timer? revealTimer;
 
   @override
   void initState() {
     super.initState();
     publication = _open();
-    widget.controller.addListener(_settingsChanged);
+    widget.controller.addListener(_controllerChanged);
   }
 
   Future<Publication> _open() async {
@@ -65,12 +72,105 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return widget.controller.engine.open(widget.book.path);
   }
 
-  void _settingsChanged() {
+  void _controllerChanged() {
     final current = widget.controller.settings;
-    if (current == appliedSettings) return;
-    appliedSettings = current;
-    widget.controller.engine.setPreferences(_preferences(current));
-    if (mounted) setState(() {});
+    if (current != appliedSettings) {
+      appliedSettings = current;
+      widget.controller.engine.setPreferences(_preferences(current));
+      if (mounted) setState(() {});
+    }
+    _queueIllustrationReveal();
+  }
+
+  void _queueIllustrationReveal() {
+    if (!mounted ||
+        revealingIllustration ||
+        widget.controller.pendingRevealFor(widget.book) == null) {
+      return;
+    }
+    revealTimer?.cancel();
+    revealTimer = Timer(const Duration(seconds: 1), () {
+      if (!mounted) return;
+      final scene = widget.controller.pendingRevealFor(widget.book);
+      if (scene != null) _showIllustration(scene);
+    });
+  }
+
+  Future<void> _showIllustration(IllustrationScene scene) async {
+    final path = scene.localImagePath;
+    if (path == null || !File(path).existsSync() || revealingIllustration) {
+      return;
+    }
+    revealingIllustration = true;
+    await widget.controller.markIllustrationRevealed(widget.book, scene);
+    if (!mounted) return;
+    final action = await showDialog<_IllustrationAction>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Dialog(
+        clipBehavior: Clip.antiAlias,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Semantics(
+                image: true,
+                label: scene.altText ?? 'Generated scene illustration',
+                child: Image.file(File(path), fit: BoxFit.contain),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Text(
+                  scene.caption?.isNotEmpty == true
+                      ? scene.caption!
+                      : 'A scene you just read',
+                  style: const TextStyle(
+                    fontFamily: 'Lora',
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  children: [
+                    TextButton(
+                      onPressed: () =>
+                          Navigator.pop(context, _IllustrationAction.hide),
+                      child: const Text('Hide'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(
+                        context,
+                        _IllustrationAction.regenerate,
+                      ),
+                      child: const Text('Regenerate'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(
+                        context,
+                        _IllustrationAction.continueReading,
+                      ),
+                      child: const Text('Continue reading'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (action == _IllustrationAction.hide) {
+      await widget.controller.hideIllustration(widget.book, scene);
+    } else if (action == _IllustrationAction.regenerate) {
+      await widget.controller.regenerateIllustration(widget.book, scene);
+    }
+    revealingIllustration = false;
   }
 
   EPUBPreferences _preferences(ReaderSettings settings) {
@@ -219,6 +319,81 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  Future<void> _showIllustrations() async {
+    final manifest = widget.controller.manifestFor(widget.book);
+    if (!manifest.enabled) {
+      await _enableIllustrations();
+      return;
+    }
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _IllustrationGallery(
+        book: widget.book,
+        controller: widget.controller,
+      ),
+    );
+  }
+
+  Future<void> _enableIllustrations() async {
+    if (!widget.controller.illustrationsConfigured) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Illustrations are not configured'),
+          content: const Text(
+            'This build needs Firebase and the illustration API environment '
+            'values before Sign in with Apple and generation can be used.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    IllustrationSetup setup;
+    try {
+      setup = await widget.controller.beginIllustrationSetup(widget.book);
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.toString())));
+      return;
+    }
+    if (!mounted) return;
+    final style = await showDialog<String>(
+      context: context,
+      builder: (context) => _IllustrationConsentDialog(setup: setup),
+    );
+    if (style == null || !mounted) return;
+    try {
+      await widget.controller.confirmIllustrations(
+        widget.book,
+        setup: setup,
+        style: style,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Illustrations enabled. Scenes will appear only after you read them.',
+            ),
+          ),
+        );
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    }
+  }
+
   Future<void> _close() async {
     // System back, toolbar back, and disposal can race; close the singleton
     // native publication session exactly once.
@@ -231,7 +406,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
-    widget.controller.removeListener(_settingsChanged);
+    revealTimer?.cancel();
+    widget.controller.removeListener(_controllerChanged);
     widget.controller.flush();
     if (!closed) widget.controller.engine.close();
     super.dispose();
@@ -267,8 +443,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     _Toolbar(
                       title: chapterTitle ?? widget.book.title,
                       foreground: _foreground,
+                      illustrationCount: widget.controller
+                          .manifestFor(widget.book)
+                          .unlockedScenes
+                          .length,
                       onBack: _close,
                       onToc: () => _showToc(pub),
+                      onIllustrations: _showIllustrations,
                       onSettings: _showSettings,
                       onHide: () => setState(() => controls = false),
                     )
@@ -374,14 +555,17 @@ class _Toolbar extends StatelessWidget {
   const _Toolbar({
     required this.title,
     required this.foreground,
+    required this.illustrationCount,
     required this.onBack,
     required this.onToc,
+    required this.onIllustrations,
     required this.onSettings,
     required this.onHide,
   });
   final String title;
   final Color foreground;
-  final VoidCallback onBack, onToc, onSettings, onHide;
+  final int illustrationCount;
+  final VoidCallback onBack, onToc, onIllustrations, onSettings, onHide;
   @override
   Widget build(BuildContext context) => IconTheme(
     data: IconThemeData(color: foreground),
@@ -412,6 +596,15 @@ class _Toolbar extends StatelessWidget {
             onPressed: onToc,
             icon: const Icon(Icons.list_alt),
           ),
+          Badge(
+            isLabelVisible: illustrationCount > 0,
+            label: Text('$illustrationCount'),
+            child: IconButton(
+              tooltip: 'AI illustrations',
+              onPressed: onIllustrations,
+              icon: const Icon(Icons.auto_awesome_outlined),
+            ),
+          ),
           IconButton(
             tooltip: 'Reading settings',
             onPressed: onSettings,
@@ -426,6 +619,222 @@ class _Toolbar extends StatelessWidget {
       ),
     ),
   );
+}
+
+enum _IllustrationAction { continueReading, hide, regenerate }
+
+/// Consent and art-direction confirmation before any prose leaves the device.
+class _IllustrationConsentDialog extends StatefulWidget {
+  const _IllustrationConsentDialog({required this.setup});
+  final IllustrationSetup setup;
+
+  @override
+  State<_IllustrationConsentDialog> createState() =>
+      _IllustrationConsentDialogState();
+}
+
+class _IllustrationConsentDialogState
+    extends State<_IllustrationConsentDialog> {
+  late String style = widget.setup.suggestedStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final styles = <String>{
+      widget.setup.suggestedStyle,
+      ...widget.setup.alternativeStyles,
+    }.toList();
+    return AlertDialog(
+      title: const Text('Illustrate this book?'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Reader sends only the current and next chapter’s normalized '
+              'text to the private generation service. The EPUB is never '
+              'uploaded or changed, and art stays locked until you pass the '
+              'scene it depicts.',
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Estimated maximum: ${widget.setup.estimatedCredits} credits '
+              'for this book. Credits are charged only for completed images.',
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: style,
+              decoration: const InputDecoration(labelText: 'Art direction'),
+              items: styles
+                  .map(
+                    (item) => DropdownMenuItem(value: item, child: Text(item)),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value != null) setState(() => style = value);
+              },
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Sign in with Apple is used to protect generation credits. '
+              'Reading remains available offline and without an account.',
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Not now'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, style),
+          child: const Text('Enable illustrations'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Unlocked-only gallery; queued and locked scenes have no revealing UI.
+class _IllustrationGallery extends StatelessWidget {
+  const _IllustrationGallery({required this.book, required this.controller});
+
+  final CatalogBook book;
+  final ReaderController controller;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: SizedBox(
+      height: MediaQuery.sizeOf(context).height * .78,
+      child: ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) {
+          final scenes = controller.manifestFor(book).unlockedScenes;
+          return Column(
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 20, 20, 8),
+                child: Text(
+                  'Illustrated scenes',
+                  style: TextStyle(
+                    fontFamily: 'Lora',
+                    fontSize: 24,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: scenes.isEmpty
+                    ? const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(32),
+                          child: Text(
+                            'Scenes will appear here after you read past them.',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      )
+                    : GridView.builder(
+                        padding: const EdgeInsets.all(16),
+                        gridDelegate:
+                            const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 360,
+                              childAspectRatio: 1.15,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                            ),
+                        itemCount: scenes.length,
+                        itemBuilder: (context, index) {
+                          final scene = scenes[index];
+                          final path =
+                              scene.localThumbnailPath ?? scene.localImagePath;
+                          return Card(
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: path == null
+                                  ? null
+                                  : () => _showScene(context, scene),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Expanded(
+                                    child:
+                                        path != null && File(path).existsSync()
+                                        ? Semantics(
+                                            image: true,
+                                            label:
+                                                scene.altText ??
+                                                'Generated scene illustration',
+                                            child: Image.file(
+                                              File(path),
+                                              fit: BoxFit.cover,
+                                            ),
+                                          )
+                                        : const Center(
+                                            child: Icon(Icons.broken_image),
+                                          ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Text(
+                                      scene.caption?.isNotEmpty == true
+                                          ? scene.caption!
+                                          : 'Scene illustration',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          );
+        },
+      ),
+    ),
+  );
+
+  Future<void> _showScene(BuildContext context, IllustrationScene scene) async {
+    final path = scene.localImagePath;
+    if (path == null || !File(path).existsSync()) return;
+    final action = await showDialog<_IllustrationAction>(
+      context: context,
+      builder: (context) => AlertDialog(
+        contentPadding: EdgeInsets.zero,
+        content: Semantics(
+          image: true,
+          label: scene.altText ?? 'Generated scene illustration',
+          child: Image.file(File(path), fit: BoxFit.contain),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, _IllustrationAction.hide),
+            child: const Text('Delete'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, _IllustrationAction.regenerate),
+            child: const Text('Regenerate'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(context, _IllustrationAction.continueReading),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+    if (action == _IllustrationAction.hide) {
+      await controller.deleteIllustration(book, scene);
+    } else if (action == _IllustrationAction.regenerate) {
+      await controller.regenerateIllustration(book, scene);
+    }
+  }
 }
 
 /// Accessible page/chapter controls and publication-wide progress display.
