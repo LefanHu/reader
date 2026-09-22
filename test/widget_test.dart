@@ -1,239 +1,200 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/books.dart';
+import 'package:flureadium/flureadium.dart';
 import 'package:reader/library.dart';
+import 'package:reader/models.dart';
 import 'package:reader/reader.dart';
+import 'package:reader/theme.dart';
 
-Future<void> mount(
-  WidgetTester tester,
-  ReaderController controller,
-  Size size, {
-  double scale = 1,
-  bool reader = false,
-}) async {
-  tester.view.devicePixelRatio = 1;
-  tester.view.physicalSize = size;
-  await tester.pumpWidget(
-    MaterialApp(
-      builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context)
-            .copyWith(textScaler: TextScaler.linear(scale)),
-        child: child!,
-      ),
-      home: reader
-          ? ReaderScreen(book: books.first, controller: controller)
-          : LibraryScreen(controller: controller),
-    ),
-  );
-  await tester.pumpAndSettle();
-}
+import 'fakes.dart';
 
 void main() {
-  testWidgets('Library search, filters, sorting, and navigation work', (
-    tester,
-  ) async {
-    final controller = ReaderController();
+  testWidgets('empty library presents the EPUB import action', (tester) async {
+    final controller = await testController();
     addTearDown(controller.dispose);
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await mount(tester, controller, const Size(1024, 1100));
-    expect(find.text('Your library'), findsOneWidget);
-    await tester.enterText(find.byType(TextField), 'samuel');
-    await tester.pumpAndSettle();
-    expect(find.text('A Field Guide to Quiet'), findsOneWidget);
-    expect(find.text('An Atlas of Small Places'), findsNothing);
-    await tester.enterText(find.byType(TextField), 'no match');
-    await tester.pumpAndSettle();
-    expect(find.text('No books here yet'), findsOneWidget);
-    await tester.enterText(find.byType(TextField), '');
-    await tester.tap(find.text('Finished').first);
-    await tester.pumpAndSettle();
-    expect(find.text('No books here yet'), findsOneWidget);
-    final book = books[1];
-    controller.save(
-      book,
-      book.chapters.length - 1,
-      book.chapters.last.text.length,
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: readerTheme,
+        home: LibraryScreen(controller: controller),
+      ),
     );
-    await tester.pumpAndSettle();
-    expect(find.text('A Field Guide to Quiet'), findsOneWidget);
-    await tester.tap(find.text('All books'));
-    await tester.tap(find.byTooltip('Sort books'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Title A–Z').last);
-    await tester.pumpAndSettle();
-    final titles = tester
-        .widgetList<Text>(find.byType(Text))
-        .map((t) => t.data)
-        .toList();
-    expect(
-      titles.indexOf('A Field Guide to Quiet'),
-      lessThan(titles.indexOf('An Atlas of Small Places')),
-    );
-    await tester.tap(find.text('Start reading'));
-    await tester.pumpAndSettle();
-    expect(find.byType(ReaderScreen), findsOneWidget);
-    await tester.tap(find.byTooltip('Back to library'));
-    await tester.pumpAndSettle();
-    expect(find.text('Resume reading'), findsOneWidget);
+    expect(find.text('Your shelf is ready'), findsOneWidget);
+    expect(find.text('Import EPUBs'), findsWidgets);
   });
 
-  testWidgets('Modes, typography, resize, and resume retain the passage', (
+  testWidgets('library search, filters, sorting, and deletion work', (
     tester,
   ) async {
-    final controller = ReaderController()..open(books.first);
+    final reading = testBook(
+      locator: {
+        'href': 'chapter.xhtml',
+        'type': 'application/xhtml+xml',
+        'locations': {'totalProgression': .4},
+      },
+    );
+    final second = CatalogBook(
+      hash: 'def456',
+      fileName: 'z.epub',
+      path: '/tmp/z.epub',
+      title: 'Another Book',
+      authors: const ['Zed'],
+      progress: 1,
+      addedAt: DateTime.utc(2025),
+    );
+    final controller = await testController(books: [reading, second]);
     addTearDown(controller.dispose);
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await mount(tester, controller, const Size(390, 844));
-    await tester.tap(find.text('Resume reading'));
-    await tester.pumpAndSettle();
-    await tester.drag(
-      find.byKey(const ValueKey('chapter-scroll')),
-      const Offset(0, -350),
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: readerTheme,
+        home: LibraryScreen(controller: controller),
+      ),
     );
+    await tester.enterText(find.byType(TextField), 'zed');
+    await tester.pump();
+    expect(find.text('Another Book'), findsWidgets);
+    expect(find.text('Test Book'), findsNothing);
+    await tester.enterText(find.byType(TextField), '');
+    await tester.tap(find.text('All books'));
     await tester.pumpAndSettle();
-    final anchor = controller.position(books.first).offset;
-    expect(anchor, greaterThan(0));
-    await tester.tap(find.byTooltip('Reading settings'));
+    await tester.tap(find.text('Finished').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Pages'));
+    expect(find.text('Another Book'), findsWidgets);
+    expect(find.text('Test Book'), findsNothing);
+    await tester.ensureVisible(find.byTooltip('Book actions'));
     await tester.pumpAndSettle();
-    expect(controller.mode, ReadingMode.pages);
-    await tester.tap(find.text('Sans serif'));
+    await tester.tap(find.byTooltip('Book actions'));
     await tester.pumpAndSettle();
-    expect(controller.serif, isFalse);
-    await tester.tap(find.text('Dark'));
+    await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
-    expect(controller.theme, ReadingTheme.dark);
-    await tester.tap(find.byTooltip('Close settings'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
     await tester.pumpAndSettle();
-    expect(controller.position(books.first).offset, anchor);
-    expect(find.byKey(const ValueKey('chapter-pages')), findsOneWidget);
-    // Measure the effective rendered style, including inherited theme values.
-    // This catches extra lines caused by a mismatch with pagination metrics.
-    final pageText = find
-        .descendant(of: find.byType(PageView), matching: find.byType(Text))
-        .first;
-    final text = tester.widget<Text>(pageText);
-    final effectiveStyle = DefaultTextStyle.of(tester.element(pageText)).style
-        .merge(text.style);
-    final painter = TextPainter(
-      text: TextSpan(text: text.data, style: effectiveStyle),
-      textDirection: TextDirection.ltr,
-      textScaler: text.textScaler!,
-    )..layout(maxWidth: tester.getSize(pageText).width);
-    expect(
-      painter.height,
-      lessThanOrEqualTo(tester.getSize(find.byType(PageView)).height),
-    );
-    painter.dispose();
-
-    tester.view.physicalSize = const Size(844, 390);
-    await tester.pumpAndSettle();
-    expect(controller.position(books.first).offset, anchor);
-    expect(tester.takeException(), isNull);
-    controller.configure(fontSize: 26);
-    await tester.pumpAndSettle();
-    expect(controller.position(books.first).offset, anchor);
-    controller.configure(mode: ReadingMode.scroll);
-    await tester.pumpAndSettle();
-    expect(controller.position(books.first).offset, anchor);
-    await tester.tap(find.byTooltip('Hide reading controls'));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('Back to library'), findsNothing);
-    await tester.tap(find.byTooltip('Show reading controls'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Back to library'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Resume reading'));
-    await tester.pumpAndSettle();
-    expect(controller.position(books.first).offset, anchor);
-    expect(tester.takeException(), isNull);
+    expect(controller.books, hasLength(1));
   });
 
   testWidgets(
-    'Page swipes, chapter boundaries, and completion update the library',
+    'reader restores and saves locator, changes mode, and navigates nested TOC',
     (tester) async {
-      final controller = ReaderController()
-        ..open(books.first)
-        ..configure(mode: ReadingMode.pages);
+      final nested = const Link(
+        href: 'part.xhtml',
+        type: 'application/xhtml+xml',
+        title: 'Part one',
+        children: [
+          Link(
+            href: 'child.xhtml',
+            type: 'application/xhtml+xml',
+            title: 'Nested chapter',
+          ),
+        ],
+      );
+      final publication = testPublication(toc: [nested]);
+      final saved = const Locator(
+        href: 'chapter.xhtml',
+        type: 'application/xhtml+xml',
+        locations: Locations(totalProgression: .25),
+      );
+      final book = testBook(locator: saved.toJson());
+      final controller = await testController(
+        books: [book],
+        publication: publication,
+      );
+      final engine = controller.engine as FakeEngine;
       addTearDown(controller.dispose);
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await mount(tester, controller, const Size(390, 844));
-      await tester.tap(find.text('Resume reading'));
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<IconButton>(
-              find.byWidgetPredicate(
-                (w) => w is IconButton && w.tooltip == 'Previous chapter',
-              ),
-            )
-            .onPressed,
-        isNull,
+      Locator? restored;
+      ValueChanged<Locator>? reportLocator;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: readerTheme,
+          home: ReaderScreen(
+            book: book,
+            controller: controller,
+            readerBuilder:
+                ({
+                  required publication,
+                  required initialLocator,
+                  required onTap,
+                  required onExternalLink,
+                  required onLocatorChanged,
+                  required onReady,
+                }) {
+                  restored = initialLocator;
+                  reportLocator = onLocatorChanged;
+                  return const ColoredBox(
+                    color: Colors.white,
+                    child: Center(child: Text('Native reader')),
+                  );
+                },
+          ),
+        ),
       );
-      await tester.drag(find.byType(PageView), const Offset(-350, 0));
       await tester.pumpAndSettle();
-      expect(controller.position(books.first).offset, greaterThan(0));
-      await tester.tap(find.byTooltip('Previous page'));
+      expect(restored?.href, saved.href);
+      expect(restored?.locations?.totalProgression, .25);
+      reportLocator!(
+        const Locator(
+          href: 'child.xhtml',
+          type: 'application/xhtml+xml',
+          title: 'Nested chapter',
+          locations: Locations(totalProgression: .6),
+        ),
+      );
+      await tester.pump();
+      expect(controller.books.single.progress, .6);
+      await tester.tap(find.byTooltip('Reading settings'));
       await tester.pumpAndSettle();
-      expect(controller.position(books.first).offset, 0);
+      await tester.tap(find.text('Pages'));
+      await tester.pumpAndSettle();
+      expect(controller.settings.mode, ReadingMode.pages);
+      expect(engine.preferences?.verticalScroll, isFalse);
+      await tester.tap(find.byTooltip('Close settings'));
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Choose chapter'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('The house at the edge').last);
+      expect(find.text('Nested chapter'), findsWidgets);
+      await tester.tap(find.text('Nested chapter').last);
       await tester.pumpAndSettle();
-      expect(controller.position(books.first).offset, 0);
-      expect(
-        tester.widget<PageView>(find.byType(PageView)).controller!.page,
-        0,
-      );
-      await tester.tap(find.byTooltip('Choose chapter'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('What the water keeps'));
-      await tester.pumpAndSettle();
-      expect(controller.position(books.first).chapter, 2);
-      while (find.byTooltip('Next page').evaluate().isNotEmpty) {
-        await tester.tap(find.byTooltip('Next page'));
-        await tester.pumpAndSettle();
-      }
-      await tester.tap(find.byTooltip('Finish book'));
-      await tester.pumpAndSettle();
-      expect(find.byType(LibraryScreen), findsOneWidget);
-      expect(controller.progress(books.first), 1);
+      expect(engine.visitedLink?.href, 'child.xhtml');
     },
   );
 
-  for (final size in [
-    const Size(390, 844),
-    const Size(844, 390),
-    const Size(768, 1024),
-    const Size(1024, 768),
-    const Size(375, 720),
-  ]) {
-    for (final scale in [1.0, 2.0]) {
-      testWidgets('Library and reader fit $size at text scale $scale', (
-        tester,
-      ) async {
-        final controller = ReaderController()..open(books.first);
-        addTearDown(controller.dispose);
-        addTearDown(tester.view.resetPhysicalSize);
-        addTearDown(tester.view.resetDevicePixelRatio);
-        await mount(tester, controller, size, scale: scale);
-        expect(tester.takeException(), isNull);
-        await tester.drag(find.byType(CustomScrollView), const Offset(0, -600));
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        await mount(tester, controller, size, scale: scale, reader: true);
-        expect(tester.takeException(), isNull);
-        controller.configure(mode: ReadingMode.pages, fontSize: 30);
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        await tester.tap(find.byTooltip('Reading settings'));
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-      });
-    }
-  }
+  testWidgets(
+    'external links require domain confirmation and controls can hide',
+    (tester) async {
+      final book = testBook();
+      final controller = await testController(books: [book]);
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: readerTheme,
+          home: ReaderScreen(
+            book: book,
+            controller: controller,
+            readerBuilder:
+                ({
+                  required publication,
+                  required initialLocator,
+                  required onTap,
+                  required onExternalLink,
+                  required onLocatorChanged,
+                  required onReady,
+                }) => Center(
+                  child: TextButton(
+                    onPressed: () => onExternalLink('https://example.com/path'),
+                    child: const Text('External link'),
+                  ),
+                ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('External link'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('example.com'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Hide reading controls'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Back to library'), findsNothing);
+      expect(find.byTooltip('Show reading controls'), findsOneWidget);
+    },
+  );
 }

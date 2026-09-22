@@ -1,22 +1,47 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-import 'books.dart';
+import 'controller.dart';
 import 'library.dart';
 import 'theme.dart';
 
-void main() => runApp(const MyApp());
-
-class MyApp extends StatefulWidget {
-  const MyApp({super.key});
-  @override
-  State<MyApp> createState() => _MyAppState();
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    final notices = await rootBundle.loadString('THIRD_PARTY_NOTICES.md');
+    yield LicenseEntryWithLineBreaks(const ['Flureadium', 'Readium'], notices);
+  });
+  final controller = await ReaderController.create();
+  runApp(ReaderApp(controller: controller));
 }
 
-class _MyAppState extends State<MyApp> {
-  final controller = ReaderController();
+class ReaderApp extends StatefulWidget {
+  const ReaderApp({super.key, required this.controller});
+  final ReaderController controller;
+  @override
+  State<ReaderApp> createState() => _ReaderAppState();
+}
+
+class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      widget.controller.flush();
+    }
+  }
+
   @override
   void dispose() {
-    controller.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    widget.controller.dispose();
     super.dispose();
   }
 
@@ -24,29 +49,7 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) => MaterialApp(
     title: 'Reader',
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      fontFamily: 'DM Sans',
-      scaffoldBackgroundColor: paper,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: accent,
-        surface: paper,
-      ).copyWith(onSurface: ink),
-      dividerColor: const Color(0xFFE0DCD2),
-      iconButtonTheme: IconButtonThemeData(
-        style: IconButton.styleFrom(minimumSize: const Size(48, 48)),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          backgroundColor: ink,
-          foregroundColor: paper,
-          minimumSize: const Size(48, 48),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      ),
-    ),
-    home: LibraryScreen(controller: controller),
+    theme: readerTheme,
+    home: LibraryScreen(controller: widget.controller),
   );
 }
