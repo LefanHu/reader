@@ -23,6 +23,22 @@
         { "fieldPath": "uid", "order": "ASCENDING" },
         { "fieldPath": "bookId", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "worldRevisions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "bookId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "worldReferences",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "bookId", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [

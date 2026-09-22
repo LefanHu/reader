@@ -30,15 +30,19 @@ gate opens. Use Firestore CMEK if the deployment requires customer-managed
 encryption for temporary chapter jobs; Firestore encryption at rest is always
 required.
 
-The API never accepts an EPUB. It accepts one normalized chapter at a time,
-deletes that prose immediately after scene planning, and calls the OpenAI
-Responses API with response storage disabled.
+The API never accepts an EPUB. It accepts one normalized chapter at a time and
+analyzes it once into append-only, paragraph-anchored entity revisions plus
+scene candidates. The prose is deleted immediately after that analysis. Image
+generation receives only the selected scene range and the compact world state
+that was established before the scene, never the whole chapter or future
+revisions. OpenAI Responses API storage is disabled.
 
 The service runs text moderation before image generation and image moderation
 before committing an asset. Credits are transactionally reserved and charged
 only after a usable scene record and both private objects commit; retries reuse
 the same reservation. `DELETE /v1/account` purges global jobs, temporary prose,
-scene metadata, reservations, user records, and the user's storage prefix.
+scene metadata, temporal world revisions and references, reservations, user
+records, and the user's storage prefix.
 
 Before deployment:
 

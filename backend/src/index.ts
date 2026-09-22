@@ -8,13 +8,21 @@ import { getAuth } from "firebase-admin/auth";
 import { FieldValue, Timestamp, getFirestore } from "firebase-admin/firestore";
 import sharp from "sharp";
 import {
+  analyzeNarrative,
   composeImagePrompt,
   imageGenerationProvider,
   moderateImage,
   moderateText,
-  planScenes,
+  resolveWorldSnapshot,
 } from "./openai.js";
-import type { ChapterInput, Paragraph, VisualBibleEntry } from "./types.js";
+import type {
+  ChapterInput,
+  Paragraph,
+  SceneGenerationSpec,
+  WorldReference,
+  WorldRevision,
+  WorldSnapshot,
+} from "./types.js";
 
 if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
 const db = getFirestore();
@@ -97,7 +105,7 @@ function stylesFor(title: string): string[] {
   return ["Cinematic painterly book illustration", "Atmospheric graphic novel", "Textured monochrome ink"];
 }
 
-async function loadReferenceImages(entries: VisualBibleEntry[]): Promise<Buffer[]> {
+async function loadReferenceImages(entries: WorldSnapshot[]): Promise<Buffer[]> {
   const objects = [...new Set(
     entries.map((entry) => entry.referenceObject).filter((value): value is string => Boolean(value)),
   )].slice(-2);
@@ -112,6 +120,34 @@ async function loadReferenceImages(entries: VisualBibleEntry[]): Promise<Buffer[
     }
   }
   return images;
+}
+
+/** Loads the append-only world history and resolves only facts available at an anchor. */
+async function loadWorldSnapshot(
+  uid: string,
+  bookId: string,
+  chapterOrdinal: number,
+  paragraphOrdinal: number,
+): Promise<{ revisions: WorldRevision[]; snapshot: WorldSnapshot[] }> {
+  const [revisionDocuments, referenceDocuments] = await Promise.all([
+    db.collection("worldRevisions").where("uid", "==", uid).where("bookId", "==", bookId).get(),
+    db.collection("worldReferences").where("uid", "==", uid).where("bookId", "==", bookId).get(),
+  ]);
+  const revisions = revisionDocuments.docs.map((document) => document.data() as WorldRevision);
+  const snapshot = resolveWorldSnapshot(revisions, chapterOrdinal, paragraphOrdinal);
+  const references = referenceDocuments.docs
+    .map((document) => document.data() as WorldReference)
+    .filter((reference) => reference.chapterOrdinal < chapterOrdinal ||
+      (reference.chapterOrdinal === chapterOrdinal && reference.paragraphOrdinal <= paragraphOrdinal))
+    .sort((left, right) => left.chapterOrdinal - right.chapterOrdinal ||
+      left.paragraphOrdinal - right.paragraphOrdinal);
+  for (const reference of references) {
+    for (const entityId of reference.entityIds) {
+      const entity = snapshot.find((candidate) => candidate.entityId === entityId);
+      if (entity) entity.referenceObject = reference.referenceObject;
+    }
+  }
+  return { revisions, snapshot };
 }
 
 async function enqueue(path: string, payload: Record<string, unknown>, taskId: string) {
@@ -192,7 +228,12 @@ app.put("/v1/books/:bookId/profile", requireFeature, asyncRoute(async (req, res)
   const style = requireString(req.body.style, "style", 300);
   const density = Math.max(1, Math.min(3, Number(req.body.density) || 3));
   await reference.set({
-    profile: { style, density, styleVersion: Number(req.body.styleVersion) || 1 },
+    profile: {
+      style,
+      density,
+      styleVersion: Number(req.body.styleVersion) || 1,
+      analysisVersion: Math.max(1, Number(req.body.analysisVersion) || 2),
+    },
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   res.status(204).end();
@@ -240,11 +281,12 @@ app.post("/v1/books/:bookId/chapters/:ordinal/jobs", requireFeature, asyncRoute(
     title: typeof req.body.title === "string" ? req.body.title.slice(0, 500) : undefined,
     language: typeof req.body.language === "string" ? req.body.language.slice(0, 100) : undefined,
     styleVersion: Number(req.body.styleVersion) || 1,
+    analysisVersion: Math.max(1, Number(req.body.analysisVersion) || 2),
     density: Math.max(1, Math.min(3, Number(req.body.density) || 3)),
     paragraphs,
   };
   const idempotency = createHash("sha256")
-    .update(`${uid}:${bookId}:${ordinal}:${input.styleVersion}:prompt-v1`)
+    .update(`${uid}:${bookId}:${ordinal}:${input.styleVersion}:${input.analysisVersion}:prompt-v2`)
     .digest("hex");
   const jobId = idempotency.slice(0, 40);
   const jobRef = db.collection("illustrationJobs").doc(jobId);
@@ -352,7 +394,10 @@ app.delete("/v1/scenes/:sceneId", asyncRoute(async (req, res) => {
     bucket.file(scene.data()?.imageObject).delete({ ignoreNotFound: true }),
     bucket.file(scene.data()?.thumbnailObject).delete({ ignoreNotFound: true }),
   ]);
-  await reference.delete();
+  await Promise.all([
+    reference.delete(),
+    db.collection("worldReferences").doc(reference.id).delete(),
+  ]);
   res.status(204).end();
 }));
 
@@ -360,12 +405,16 @@ app.delete("/v1/books/:bookId", asyncRoute(async (req, res) => {
   const bookId = routeParam(req, "bookId");
   const reference = userBook(req.uid!, bookId);
   if (!(await reference.get()).exists) throw new HttpError(404, "Book not found.");
-  const [scenes, jobs, reservations] = await Promise.all([
+  const [scenes, jobs, reservations, revisions, references] = await Promise.all([
     db.collection("illustrationScenes")
       .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
     db.collection("illustrationJobs")
       .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
     db.collection("creditReservations")
+      .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
+    db.collection("worldRevisions")
+      .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
+    db.collection("worldReferences")
       .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
   ]);
   await storage.bucket(bucketName).deleteFiles({
@@ -379,6 +428,8 @@ app.delete("/v1/books/:bookId", asyncRoute(async (req, res) => {
     writer.delete(db.collection("illustrationJobInputs").doc(job.id));
   }
   for (const reservation of reservations.docs) writer.delete(reservation.ref);
+  for (const revision of revisions.docs) writer.delete(revision.ref);
+  for (const worldReference of references.docs) writer.delete(worldReference.ref);
   writer.delete(reference);
   await writer.close();
   res.status(204).end();
@@ -386,18 +437,20 @@ app.delete("/v1/books/:bookId", asyncRoute(async (req, res) => {
 
 app.delete("/v1/account", asyncRoute(async (req, res) => {
   const uid = req.uid!;
-  const [scenes, jobs, inputs, reservations] = await Promise.all([
+  const [scenes, jobs, inputs, reservations, revisions, references] = await Promise.all([
     db.collection("illustrationScenes").where("uid", "==", uid).get(),
     db.collection("illustrationJobs").where("uid", "==", uid).get(),
     db.collection("illustrationJobInputs").where("uid", "==", uid).get(),
     db.collection("creditReservations").where("uid", "==", uid).get(),
+    db.collection("worldRevisions").where("uid", "==", uid).get(),
+    db.collection("worldReferences").where("uid", "==", uid).get(),
   ]);
   await storage.bucket(bucketName).deleteFiles({
     prefix: `users/${uid}/`,
     force: true,
   });
   const writer = db.bulkWriter();
-  for (const snapshot of [scenes, jobs, inputs, reservations]) {
+  for (const snapshot of [scenes, jobs, inputs, reservations, revisions, references]) {
     for (const document of snapshot.docs) writer.delete(document.ref);
   }
   await writer.close();
@@ -541,13 +594,70 @@ app.post("/internal/jobs/:jobId", asyncRoute(async (req, res) => {
     const book = await bookRef.get();
     const profile = book.data()?.profile as { style?: string } | undefined;
     if (!profile?.style) throw new Error("Book profile is incomplete");
-    const bible = (book.data()?.visualBible ?? []) as VisualBibleEntry[];
-    const newBibleEntries: VisualBibleEntry[] = [];
-    const candidates = await planScenes(input);
+
+    // Prefer earlier submitted chapters so adjacent resources observe a stable
+    // world history even when Cloud Tasks invokes their workers concurrently.
+    const siblingJobs = await db.collection("illustrationJobs")
+      .where("uid", "==", uid).where("bookId", "==", bookId).get();
+    const unfinishedPredecessor = siblingJobs.docs.some((document) =>
+      Number(document.data().chapterOrdinal) < chapterOrdinal &&
+      !["complete", "failed", "insufficient_credits"].includes(document.data().status)
+    );
+    if (unfinishedPredecessor) {
+      await jobRef.set({
+        status: "queued",
+        leaseUntil: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      throw new HttpError(409, "An earlier chapter is still being analyzed.");
+    }
+
+    const priorWorld = await loadWorldSnapshot(uid, bookId, chapterOrdinal, -1);
+    const analysis = await analyzeNarrative(input, priorWorld.snapshot);
+    const entityIds = new Map(priorWorld.snapshot.map((entity) => [entity.entityId, entity.entityId]));
+    for (const delta of analysis.entityDeltas) {
+      if (!entityIds.has(delta.entityRef)) {
+        entityIds.set(delta.entityRef, createHash("sha256")
+          .update(`${bookId}:${jobId}:${delta.entityRef}`)
+          .digest("hex").slice(0, 40));
+      }
+    }
+    const newRevisions: WorldRevision[] = analysis.entityDeltas.map((delta) => {
+      const paragraph = input.paragraphs.find((item) => item.id === delta.anchorParagraphId)!;
+      return {
+        uid,
+        bookId,
+        entityId: entityIds.get(delta.entityRef)!,
+        kind: delta.kind,
+        chapterOrdinal,
+        paragraphOrdinal: paragraph.ordinal,
+        paragraphId: paragraph.id,
+        name: delta.name,
+        aliases: delta.aliases,
+        summary: delta.summary,
+        visualDescription: delta.visualDescription,
+        stateFacts: delta.stateFacts,
+        analysisVersion: input.analysisVersion,
+      };
+    });
+    const revisionWriter = db.bulkWriter();
+    for (const revision of newRevisions) {
+      const revisionId = createHash("sha256")
+        .update(`${jobId}:${revision.entityId}:${revision.paragraphId}`)
+        .digest("hex");
+      revisionWriter.set(db.collection("worldRevisions").doc(revisionId), {
+        ...revision,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+    await revisionWriter.close();
     await inputRef.delete();
+
+    const allRevisions = [...priorWorld.revisions, ...newRevisions];
+    const generatedReferences: WorldReference[] = [];
     let committed = 0;
     let finalStatus = "complete";
-    for (const candidate of candidates) {
+    for (const candidate of analysis.scenes) {
       if (committed >= input.density) break;
       const sceneId = createHash("sha256")
         .update(`${jobId}:${candidate.startParagraphId}:${candidate.endParagraphId}`)
@@ -564,15 +674,25 @@ app.post("/internal/jobs/:jobId", asyncRoute(async (req, res) => {
       const start = input.paragraphs.findIndex((p) => p.id === candidate.startParagraphId);
       const end = input.paragraphs.findIndex((p) => p.id === candidate.endParagraphId);
       const sceneText = input.paragraphs.slice(start, end + 1).map((p) => p.text).join("\n");
-      const continuitySnapshot = bible.filter((entry) =>
-        entry.chapterOrdinal < chapterOrdinal ||
-        (entry.chapterOrdinal === chapterOrdinal && entry.paragraphOrdinal <= start)
-      );
+      const referencedIds = new Set(candidate.entityRefs
+        .map((reference) => entityIds.get(reference))
+        .filter((value): value is string => Boolean(value)));
+      const worldAtScene = resolveWorldSnapshot(allRevisions, chapterOrdinal, start)
+        .filter((entity) => referencedIds.has(entity.entityId));
+      for (const entity of worldAtScene) {
+        entity.referenceObject = priorWorld.snapshot
+          .find((known) => known.entityId === entity.entityId)?.referenceObject;
+        const inChapterReference = generatedReferences
+          .filter((reference) => reference.paragraphOrdinal <= start &&
+            reference.entityIds.includes(entity.entityId))
+          .sort((left, right) => right.paragraphOrdinal - left.paragraphOrdinal)[0];
+        if (inChapterReference) entity.referenceObject = inChapterReference.referenceObject;
+      }
       const prompt = composeImagePrompt({
         style: profile.style,
         sceneText,
         facts: candidate.facts,
-        visualBible: continuitySnapshot,
+        world: worldAtScene,
       });
       if (await moderateText(prompt)) {
         console.info(JSON.stringify({ category: "safety", outcome: "text_blocked" }));
@@ -588,7 +708,7 @@ app.post("/internal/jobs/:jobId", asyncRoute(async (req, res) => {
       try {
         const image = await imageGenerationProvider.generate(
           prompt,
-          await loadReferenceImages(continuitySnapshot),
+          await loadReferenceImages(worldAtScene),
         );
         if (await moderateImage(image)) throw new SafetyError("image blocked");
         const thumbnail = await sharp(image).resize({ width: 640, withoutEnlargement: true }).webp({ quality: 78 }).toBuffer();
@@ -598,7 +718,8 @@ app.post("/internal/jobs/:jobId", asyncRoute(async (req, res) => {
           bucket.file(thumbnailObject).save(thumbnail, { contentType: "image/webp", resumable: false }),
         ]);
         const endParagraph = input.paragraphs[end]!;
-        await sceneRef.create({
+        const sceneBatch = db.batch();
+        sceneBatch.create(sceneRef, {
           uid, bookId, jobId, chapterOrdinal,
           status: "ready_locked",
           anchor: {
@@ -610,20 +731,34 @@ app.post("/internal/jobs/:jobId", asyncRoute(async (req, res) => {
           },
           altText: candidate.altText,
           caption: candidate.caption,
-          generationSpec: { style: profile.style, facts: candidate.facts, visualBible: continuitySnapshot },
+          generationSpec: {
+            style: profile.style,
+            facts: candidate.facts,
+            world: worldAtScene,
+          } satisfies SceneGenerationSpec,
+          entityIds: [...referencedIds],
           imageObject, thumbnailObject, generationVersion: 1,
           assetExpiresAt: Timestamp.fromMillis(Date.now() + assetRetentionMilliseconds),
           createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
         });
+        let generatedReference: (WorldReference & { uid: string; bookId: string }) | undefined;
+        if (referencedIds.size > 0) {
+          generatedReference = {
+            uid,
+            bookId,
+            entityIds: [...referencedIds],
+            chapterOrdinal,
+            paragraphOrdinal: end,
+            referenceObject: imageObject,
+          };
+          sceneBatch.set(db.collection("worldReferences").doc(sceneId), {
+            ...generatedReference,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
+        await sceneBatch.commit();
+        if (generatedReference) generatedReferences.push(generatedReference);
         await commitCredit(uid, sceneId);
-        const deltas = candidate.continuityDeltas.map((fact) => ({
-          chapterOrdinal,
-          paragraphOrdinal: end,
-          fact,
-          referenceObject: imageObject,
-        }));
-        bible.push(...deltas);
-        newBibleEntries.push(...deltas);
         committed++;
       } catch (error) {
         await refundCredit(uid, sceneId);
@@ -638,28 +773,11 @@ app.post("/internal/jobs/:jobId", asyncRoute(async (req, res) => {
         }));
       }
     }
-    await db.runTransaction(async (transaction) => {
-      const latest = await transaction.get(bookRef);
-      const combined = [
-        ...((latest.data()?.visualBible ?? []) as VisualBibleEntry[]),
-        ...newBibleEntries,
-      ];
-      const unique = new Map(
-        combined.map((entry) => [
-          `${entry.chapterOrdinal}:${entry.paragraphOrdinal}:${entry.fact}`,
-          entry,
-        ]),
-      );
-      const ordered = [...unique.values()].sort((left, right) =>
-        left.chapterOrdinal - right.chapterOrdinal ||
-        left.paragraphOrdinal - right.paragraphOrdinal
-      );
-      transaction.set(bookRef, {
-        visualBible: ordered.slice(-500),
-        visualBibleVersion: FieldValue.increment(committed),
-        updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
-    });
+    await bookRef.set({
+      worldVersion: FieldValue.increment(newRevisions.length),
+      visualBibleVersion: FieldValue.increment(newRevisions.length),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
     await jobRef.set({
       status: finalStatus,
       leaseUntil: FieldValue.delete(),
@@ -667,6 +785,7 @@ app.post("/internal/jobs/:jobId", asyncRoute(async (req, res) => {
     }, { merge: true });
     res.status(204).end();
   } catch (error) {
+    if (error instanceof HttpError && error.status === 409) throw error;
     await inputRef.delete().catch(() => undefined);
     await jobRef.set({
       status: "failed", failureCategory: "worker_failed",
@@ -698,7 +817,11 @@ app.post("/internal/scenes/:sceneId/regenerate", asyncRoute(async (req, res) => 
     res.status(204).end();
     return;
   }
-  const spec = data.generationSpec as { style: string; facts: string[]; visualBible: VisualBibleEntry[] };
+  const spec = data.generationSpec as Partial<SceneGenerationSpec> & {
+    style: string;
+    facts: string[];
+  };
+  const world = Array.isArray(spec.world) ? spec.world : [];
   const operationId = `${reference.id}:generation:${targetGeneration}`;
   const refresh = req.body.refresh === true;
   if (!refresh && !(await reserveCredit(data.uid, operationId, data.bookId))) {
@@ -718,14 +841,16 @@ app.post("/internal/scenes/:sceneId/regenerate", asyncRoute(async (req, res) => 
   try {
     const prompt = composeImagePrompt({
       style: spec.style,
+      // Raw prose is deleted after planning; regeneration uses the validated
+      // paraphrased facts and the original time-bounded world snapshot.
       sceneText: spec.facts.join("; "),
       facts: spec.facts,
-      visualBible: spec.visualBible,
+      world,
     });
     if (await moderateText(prompt)) throw new SafetyError("text blocked");
     const image = await imageGenerationProvider.generate(
       prompt,
-      await loadReferenceImages(spec.visualBible),
+      await loadReferenceImages(world),
     );
     if (await moderateImage(image)) throw new SafetyError("image blocked");
     const thumbnail = await sharp(image).resize({ width: 640, withoutEnlargement: true }).webp({ quality: 78 }).toBuffer();
@@ -745,6 +870,13 @@ app.post("/internal/scenes/:sceneId/regenerate", asyncRoute(async (req, res) => 
       failureCategory: FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
+    const worldReference = db.collection("worldReferences").doc(reference.id);
+    if ((await worldReference.get()).exists) {
+      await worldReference.update({
+        referenceObject: imageObject,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
     if (!refresh) await commitCredit(data.uid, operationId);
     await Promise.all([
       storage.bucket(bucketName).file(oldImageObject).delete({ ignoreNotFound: true }),
