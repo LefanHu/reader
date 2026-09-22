@@ -6,6 +6,7 @@ import 'package:reader/epub_service.dart';
 import 'package:reader/models.dart';
 import 'package:reader/storage.dart';
 
+/// Builds the smallest publication needed by importer and reader tests.
 Publication testPublication({
   String title = 'Test Book',
   List<Link> toc = const [],
@@ -24,6 +25,7 @@ Publication testPublication({
   tableOfContents: toc,
 );
 
+/// In-memory Readium adapter that records commands without native channels.
 class FakeEngine implements ReadiumEngine {
   FakeEngine(this.publication);
   final Publication publication;
@@ -59,6 +61,7 @@ class FakeEngine implements ReadiumEngine {
   Future<void> goRight() async {}
 }
 
+/// Catalog store used to verify controller behavior without filesystem I/O.
 class MemoryCatalogStore implements CatalogStore {
   MemoryCatalogStore([List<CatalogBook> initial = const []])
     : books = List.of(initial);
@@ -72,6 +75,7 @@ class MemoryCatalogStore implements CatalogStore {
   Future<void> deleteFiles(CatalogBook book) async => deleted.add(book);
 }
 
+/// Preference store that exposes the last persisted value to assertions.
 class MemorySettingsStore implements SettingsStore {
   MemorySettingsStore([this.settings = const ReaderSettings()]);
   ReaderSettings settings;
@@ -81,6 +85,7 @@ class MemorySettingsStore implements SettingsStore {
   Future<void> save(ReaderSettings value) async => settings = value;
 }
 
+/// Deterministic picker whose selected files are supplied by each test.
 class FakePicker implements EpubPicker {
   FakePicker([this.files = const []]);
   List<ImportCandidate> files;
@@ -88,6 +93,7 @@ class FakePicker implements EpubPicker {
   Future<List<ImportCandidate>> pick() async => files;
 }
 
+/// Creates an initialized controller with replaceable in-memory dependencies.
 Future<ReaderController> testController({
   List<CatalogBook> books = const [],
   List<ImportCandidate> files = const [],
@@ -108,6 +114,7 @@ Future<ReaderController> testController({
   return controller;
 }
 
+/// Builds a stable catalog fixture, optionally at a saved Readium locator.
 CatalogBook testBook({Map<String, dynamic>? locator}) => CatalogBook(
   hash: 'abc123',
   fileName: 'test.epub',

@@ -11,6 +11,8 @@ import 'package:reader/storage.dart';
 import 'fakes.dart';
 
 void main() {
+  // These tests exercise persistence and import policy without invoking native
+  // Readium code. Platform rendering behavior belongs in integration tests.
   test('catalog records preserve locator, metadata, and progress', () {
     final original = testBook(
       locator: {

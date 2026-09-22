@@ -6,6 +6,7 @@ import 'controller.dart';
 import 'library.dart';
 import 'theme.dart';
 
+/// Initializes persistent state and starts the application.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   LicenseRegistry.addLicense(() async* {
@@ -16,8 +17,12 @@ Future<void> main() async {
   runApp(ReaderApp(controller: controller));
 }
 
+/// Root widget responsible for app-wide theme and lifecycle persistence.
 class ReaderApp extends StatefulWidget {
+  /// Creates the application around an initialized shared [controller].
   const ReaderApp({super.key, required this.controller});
+
+  /// Session controller retained for the lifetime of the application.
   final ReaderController controller;
   @override
   State<ReaderApp> createState() => _ReaderAppState();
@@ -32,6 +37,7 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Persist the latest debounced locator before the process is suspended.
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       widget.controller.flush();

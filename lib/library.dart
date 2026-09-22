@@ -8,8 +8,12 @@ import 'models.dart';
 import 'reader.dart';
 import 'theme.dart';
 
+/// Adaptive catalog for importing, finding, opening, and deleting EPUBs.
 class LibraryScreen extends StatefulWidget {
+  /// Creates the catalog bound to the shared [controller].
   const LibraryScreen({super.key, required this.controller});
+
+  /// Source of catalog data, import progress, and mutations.
   final ReaderController controller;
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -21,6 +25,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String query = '';
 
   Future<void> _import() async {
+    // Flureadium declares macOS support but its current macOS plugin is only a
+    // template stub. Guard the call so users see an explanation instead of a
+    // MissingPluginException from loadPublication.
     if (Platform.isMacOS) {
       await showDialog<void>(
         context: context,
@@ -153,6 +160,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     listenable: widget.controller,
     builder: (context, _) => LayoutBuilder(
       builder: (context, constraints) {
+        // Use actual window width so iPad split view gets the compact layout.
         final wide = constraints.maxWidth >= 700;
         return Scaffold(
           body: SafeArea(
@@ -169,6 +177,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   ],
                 ),
                 if (widget.controller.importing)
+                  // Block overlapping picker/import actions while Readium owns
+                  // the single native publication session.
                   ColoredBox(
                     color: Colors.black38,
                     child: Center(
@@ -351,6 +361,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             padding: EdgeInsets.fromLTRB(horizontal, 12, horizontal, 40),
             sliver: SliverGrid(
               gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                // Large accessibility text gets a single wide card on phones.
                 maxCrossAxisExtent: scale >= 1.5 ? 600 : 260,
                 mainAxisExtent: 390,
                 crossAxisSpacing: 22,
@@ -377,6 +388,7 @@ String _filterName(LibraryFilter value) => switch (value) {
   LibraryFilter.finished => 'Finished',
 };
 
+/// Fixed-width navigation shown when the library has tablet-class width.
 class _Sidebar extends StatelessWidget {
   const _Sidebar({required this.filter, required this.onFilter});
   final LibraryFilter filter;
@@ -416,6 +428,7 @@ class _Sidebar extends StatelessWidget {
   );
 }
 
+/// Import prompt shown before the first book has been added.
 class _EmptyLibrary extends StatelessWidget {
   const _EmptyLibrary({required this.onImport});
   final VoidCallback onImport;
@@ -450,6 +463,7 @@ class _EmptyLibrary extends StatelessWidget {
   );
 }
 
+/// Catalog tile combining cover art, metadata, progress, and book actions.
 class _BookCard extends StatelessWidget {
   const _BookCard({
     required this.book,
@@ -518,6 +532,7 @@ class _BookCard extends StatelessWidget {
   );
 }
 
+/// Displays a cached publication cover or a deterministic typographic cover.
 class _Cover extends StatelessWidget {
   const _Cover({required this.book});
   final CatalogBook book;

@@ -7,21 +7,46 @@ import 'package:flureadium/flureadium.dart';
 
 import 'models.dart';
 
+/// Maximum accepted source size, checked before and after reading the file.
 const maxEpubBytes = 100 * 1024 * 1024;
 
+/// Narrow adapter around the native Readium session used by application code.
+///
+/// Keeping the plugin behind this interface makes import and reader behavior
+/// testable without loading a platform view or invoking method channels.
 abstract interface class ReadiumEngine {
+  /// Parses a publication for validation and metadata extraction.
   Future<Publication> load(String path);
+
+  /// Opens a parsed publication as the active reading session.
   Future<Publication> open(String path);
+
+  /// Releases the active native publication and its local content server.
   Future<void> close();
+
+  /// Sets preferences that must be present before a navigator is created.
   void setDefaults(EPUBPreferences preferences);
+
+  /// Applies preferences to an existing navigator.
   Future<void> setPreferences(EPUBPreferences preferences);
+
+  /// Moves one visual page or screen toward the publication's left edge.
   Future<void> goLeft();
+
+  /// Moves one visual page or screen toward the publication's right edge.
   Future<void> goRight();
+
+  /// Navigates to the previous reading-order resource.
   Future<void> previousChapter();
+
+  /// Navigates to the next reading-order resource.
   Future<void> nextChapter();
+
+  /// Navigates to an original publication link, including its fragment.
   Future<bool> goByLink(Link link, Publication publication);
 }
 
+/// Production [ReadiumEngine] backed by Flureadium's singleton session.
 class FlureadiumEngine implements ReadiumEngine {
   final Flureadium _readium = Flureadium();
 
@@ -50,21 +75,35 @@ class FlureadiumEngine implements ReadiumEngine {
       _readium.goByLink(link, publication);
 }
 
+/// Lazy representation of a selected source file.
+///
+/// Bytes are deferred until the importer is ready to process this candidate,
+/// which keeps multi-file selection from loading every EPUB into memory at once.
 class ImportCandidate {
+  /// Creates a lazy candidate from picker metadata and a byte reader.
   const ImportCandidate({
     required this.name,
     required this.size,
     required this.readBytes,
   });
+
+  /// Display name supplied by the document picker.
   final String name;
+
+  /// Picker-reported byte length, or `-1` when unavailable.
   final int size;
+
+  /// Reads the complete source only when this candidate is processed.
   final Future<Uint8List> Function() readBytes;
 }
 
+/// Boundary around the native document picker.
 abstract interface class EpubPicker {
+  /// Opens the picker and returns selected files in platform order.
   Future<List<ImportCandidate>> pick();
 }
 
+/// Selects one or more EPUB files through the platform document picker.
 class NativeEpubPicker implements EpubPicker {
   @override
   Future<List<ImportCandidate>> pick() async {
@@ -87,11 +126,24 @@ class NativeEpubPicker implements EpubPicker {
   }
 }
 
+/// Validates and commits selected EPUBs into content-addressed app storage.
+///
+/// Each import is staged under a temporary directory. No catalog-ready path is
+/// returned until Readium has parsed the book and all policy checks pass.
 class EpubImporter {
+  /// Creates an importer rooted in private app storage.
   EpubImporter({required this.root, required this.engine});
+
+  /// Application-support directory containing the catalog and books folder.
   final Directory root;
+
+  /// Readium adapter used to parse and inspect staged books.
   final ReadiumEngine engine;
 
+  /// Imports [candidate], or reports a per-file failure without partial files.
+  ///
+  /// [existingHashes] identifies exact byte-for-byte duplicates; books with
+  /// identical human-readable metadata remain valid independent entries.
   Future<({CatalogBook? book, ImportResult result})> import(
     ImportCandidate candidate,
     Set<String> existingHashes,
@@ -116,6 +168,8 @@ class EpubImporter {
         );
       }
 
+      // Readium must inspect only our private staged copy. The picker URL may
+      // be security-scoped or disappear after the selection session ends.
       final booksRoot = Directory('${root.path}/books');
       await booksRoot.create(recursive: true);
       staging = Directory('${booksRoot.path}/$hash.importing');
@@ -127,6 +181,8 @@ class EpubImporter {
       final publication = await engine.load(stagedBook.path);
       _validate(publication);
       final coverPath = await _cacheCover(publication, staging);
+      // Renaming within Application Support commits the complete directory in
+      // one filesystem operation before the controller writes its catalog row.
       final finalDirectory = Directory('${booksRoot.path}/$hash');
       if (await finalDirectory.exists()) {
         await finalDirectory.delete(recursive: true);
@@ -160,6 +216,8 @@ class EpubImporter {
         result: ImportResult(candidate.name, ImportStatus.imported),
       );
     } on Object catch (error) {
+      // Import failures are isolated to one selection and never leave a staged
+      // directory that could be mistaken for a committed publication.
       if (staging != null && await staging.exists()) {
         await staging.delete(recursive: true);
       }
@@ -178,6 +236,8 @@ class EpubImporter {
   }
 
   void _validate(Publication publication) {
+    // Imported publications are untrusted. Restrict the accepted subset to
+    // reflowable, local, non-scripted, non-DRM content before rendering it.
     if (publication.readingOrder.isEmpty) {
       throw const FormatException('This EPUB has no readable content.');
     }
@@ -217,6 +277,8 @@ class EpubImporter {
   }
 
   Iterable<Link> _allLinks(Publication publication) sync* {
+    // Security-sensitive resources can appear in alternates or nested TOCs,
+    // not only in the top-level reading order.
     Iterable<Link> descend(Iterable<Link> links) sync* {
       for (final link in links) {
         yield link;
@@ -236,6 +298,8 @@ class EpubImporter {
     if (uri == null) return null;
     try {
       Uint8List bytes;
+      // Readium exposes archive resources through a loopback content server.
+      // Never fetch arbitrary network URLs while importing an untrusted book.
       if (uri.scheme == 'http' &&
           {'localhost', '127.0.0.1', '::1'}.contains(uri.host)) {
         final client = HttpClient();
@@ -260,6 +324,7 @@ class EpubImporter {
       await file.writeAsBytes(bytes, flush: true);
       return file.path;
     } on Object {
+      // A missing or unreadable cover is non-fatal; the UI generates one.
       return null;
     }
   }

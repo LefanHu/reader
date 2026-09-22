@@ -6,6 +6,7 @@ import 'controller.dart';
 import 'models.dart';
 import 'theme.dart';
 
+/// Injection point for replacing the native platform view in widget tests.
 typedef ReaderViewBuilder = Widget Function({
   required Publication publication,
   required Locator? initialLocator,
@@ -15,15 +16,26 @@ typedef ReaderViewBuilder = Widget Function({
   required VoidCallback onReady,
 });
 
+/// Flutter shell around the native Readium publication navigator.
+///
+/// Flutter owns controls, consent dialogs, and settings. Readium owns EPUB
+/// layout, internal navigation, and the durable locator emitted by the content.
 class ReaderScreen extends StatefulWidget {
+  /// Creates a reader for [book] using the shared [controller].
   const ReaderScreen({
     super.key,
     required this.book,
     required this.controller,
     this.readerBuilder,
   });
+
+  /// Catalog record containing the EPUB path and saved locator.
   final CatalogBook book;
+
+  /// Owner of Readium, settings, and progress persistence.
   final ReaderController controller;
+
+  /// Optional native-view replacement used by widget tests.
   final ReaderViewBuilder? readerBuilder;
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -44,6 +56,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<Publication> _open() async {
+    // Defaults must be installed before Readium creates its navigator or the
+    // first frame can briefly use publisher/default presentation settings.
     widget.controller.engine.setDefaults(
       _preferences(widget.controller.settings),
     );
@@ -91,6 +105,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (uri == null || !{'http', 'https'}.contains(uri.scheme) || !mounted) {
       return;
     }
+    // EPUBs are untrusted documents. Keep internal navigation in Readium, but
+    // require explicit consent before handing HTTP(S) destinations to the OS.
     final approved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -115,6 +131,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Future<void> _showToc(Publication pub) async {
     final items = <({Link link, int depth})>[];
+    // Flatten only for presentation; retain each original Link so goByLink can
+    // preserve fragments and other Readium navigation metadata.
     void add(List<Link> links, int depth) {
       for (final link in links) {
         items.add((link: link, depth: depth));
@@ -174,6 +192,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Future<void> _showSettings() async {
     final panel = _SettingsPanel(controller: widget.controller);
+    // Match the library breakpoint: phones use a reachable bottom sheet while
+    // wider tablet windows keep the current passage visible beside a panel.
     if (MediaQuery.sizeOf(context).width < 700) {
       await showModalBottomSheet<void>(
         context: context,
@@ -200,6 +220,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _close() async {
+    // System back, toolbar back, and disposal can race; close the singleton
+    // native publication session exactly once.
     if (closed) return;
     closed = true;
     await widget.controller.flush();
@@ -263,6 +285,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   Expanded(
                     child: Center(
                       child: ConstrainedBox(
+                        // Long lines reduce readability, especially on iPad.
                         constraints: const BoxConstraints(maxWidth: 680),
                         child: _readerView(pub),
                       ),
@@ -280,6 +303,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       pages:
                           widget.controller.settings.mode == ReadingMode.pages,
                       onPrevious:
+                          // Visual left/right controls follow publication
+                          // direction while retaining their spatial meaning.
                           pub.metadata.effectiveReadingProgression ==
                               ReadingProgression.rtl
                           ? widget.controller.engine.goRight
@@ -303,6 +328,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   );
 
   Widget _readerView(Publication pub) {
+    // A full locator survives mode and viewport changes more reliably than a
+    // page index, which is derived from the current typography and dimensions.
     final initial = Locator.fromJson(
       widget.book.lastLocator == null
           ? null
@@ -318,6 +345,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     void ready() => widget.controller.engine.setPreferences(
       _preferences(widget.controller.settings),
     );
+    // Tests supply a pure Flutter view; production embeds Readium's platform
+    // view with the identical callback contract.
     final custom = widget.readerBuilder;
     if (custom != null) {
       return custom(
@@ -340,6 +369,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 }
 
+/// Top reader controls for leaving, navigating, configuring, and hiding chrome.
 class _Toolbar extends StatelessWidget {
   const _Toolbar({
     required this.title,
@@ -398,6 +428,7 @@ class _Toolbar extends StatelessWidget {
   );
 }
 
+/// Accessible page/chapter controls and publication-wide progress display.
 class _NavigationBar extends StatelessWidget {
   const _NavigationBar({
     required this.progress,
@@ -467,6 +498,7 @@ class _NavigationBar extends StatelessWidget {
   );
 }
 
+/// Shared settings content hosted in a phone sheet or tablet panel.
 class _SettingsPanel extends StatelessWidget {
   const _SettingsPanel({required this.controller});
   final ReaderController controller;
@@ -547,6 +579,7 @@ class _SettingsPanel extends StatelessWidget {
   );
 }
 
+/// Recoverable reader failure state that always offers a path to the library.
 class _ReaderError extends StatelessWidget {
   const _ReaderError({required this.message, required this.onBack});
   final String message;

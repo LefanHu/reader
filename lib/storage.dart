@@ -6,20 +6,34 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models.dart';
 
+/// Persistence boundary for imported book records and their private files.
 abstract interface class CatalogStore {
+  /// Restores valid catalog records, applying any recovery policy.
   Future<List<CatalogBook>> load();
+
+  /// Atomically persists the complete catalog snapshot.
   Future<void> save(List<CatalogBook> books);
+
+  /// Deletes the private content directory owned by [book].
   Future<void> deleteFiles(CatalogBook book);
 }
 
+/// Stores a versioned catalog beside content-addressed EPUB directories.
+///
+/// Writes use temporary and backup files so startup can recover after an
+/// interruption between replacing the old catalog and committing the new one.
 class FileCatalogStore implements CatalogStore {
+  /// Creates a filesystem store at an explicit root, primarily for tests.
   FileCatalogStore(this.root);
+
+  /// Directory containing catalog generations and imported book directories.
   final Directory root;
 
   File get _catalog => File('${root.path}/catalog.json');
   File get _temporary => File('${root.path}/catalog.json.tmp');
   File get _backup => File('${root.path}/catalog.json.bak');
 
+  /// Creates the store under the platform's private Application Support area.
   static Future<FileCatalogStore> create() async {
     final support = await getApplicationSupportDirectory();
     return FileCatalogStore(Directory('${support.path}/Reader'));
@@ -28,6 +42,7 @@ class FileCatalogStore implements CatalogStore {
   @override
   Future<List<CatalogBook>> load() async {
     await root.create(recursive: true);
+    // Prefer the committed file, then recover an interrupted write or backup.
     for (final candidate in [_catalog, _temporary, _backup]) {
       if (!await candidate.exists()) continue;
       try {
@@ -35,6 +50,7 @@ class FileCatalogStore implements CatalogStore {
         if (json is! Map || json['version'] != 1 || json['books'] is! List) {
           continue;
         }
+        // Catalog entries whose EPUB disappeared are not shown as broken books.
         final books = (json['books'] as List)
             .whereType<Map>()
             .map((item) => CatalogBook.fromJson(item.cast<String, dynamic>()))
@@ -56,6 +72,7 @@ class FileCatalogStore implements CatalogStore {
       'version': 1,
       'books': books.map((book) => book.toJson()).toList(),
     });
+    // Keep one recoverable generation until the replacement is committed.
     await _temporary.writeAsString(body, flush: true);
     if (await _backup.exists()) await _backup.delete();
     if (await _catalog.exists()) await _catalog.rename(_backup.path);
@@ -70,11 +87,16 @@ class FileCatalogStore implements CatalogStore {
   }
 }
 
+/// Persistence boundary for preferences that apply across publications.
 abstract interface class SettingsStore {
+  /// Restores global settings or their defaults.
   Future<ReaderSettings> load();
+
+  /// Persists the complete global settings value.
   Future<void> save(ReaderSettings settings);
 }
 
+/// Stores global reader settings as one JSON value in SharedPreferences.
 class PreferenceSettingsStore implements SettingsStore {
   static const _key = 'reader.settings.v1';
   final SharedPreferencesAsync _preferences = SharedPreferencesAsync();
@@ -88,6 +110,7 @@ class PreferenceSettingsStore implements SettingsStore {
         (jsonDecode(value) as Map).cast<String, dynamic>(),
       );
     } on Object {
+      // A corrupt or older value must not prevent the library from opening.
       return const ReaderSettings();
     }
   }

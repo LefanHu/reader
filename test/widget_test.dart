@@ -9,6 +9,8 @@ import 'package:reader/theme.dart';
 import 'fakes.dart';
 
 void main() {
+  // Reader tests inject a Flutter-only view because platform views and method
+  // channels are unavailable in the widget-test process.
   testWidgets('empty library presents the EPUB import action', (tester) async {
     final controller = await testController();
     addTearDown(controller.dispose);
