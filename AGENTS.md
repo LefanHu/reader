@@ -8,6 +8,7 @@
 - Preserve documentation around EPUB trust boundaries, atomic catalog writes, complete text-position persistence, and platform support. These are product guarantees rather than incidental implementation details.
 - Add short comments inside complex private flows where cleanup, ordering, recovery, accessibility, or responsive breakpoints would otherwise be easy to break.
 - Test names should state behavior. Add comments inside tests only when the fixture or assertion protects a non-obvious regression.
+- Important notes should go here in AGENTS.md
 
 ## Reader and interface invariants
 
