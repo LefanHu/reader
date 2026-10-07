@@ -3,7 +3,8 @@
 An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and TXT imports are normalized by our Dart parser and displayed by a custom viewport using Flutter's text shaping and layout engine.
 
 - Import several EPUB or TXT files from the native document picker, up to 100 MB each.
-- Search by title or author; filter All / Reading / Finished; sort by recent activity or title.
+- Search by title or author; filter All / Reading / Finished; sort by recent activity or title. The adaptive library uses flat cover tiles and a compact resume card.
+- Choose Paper, Sepia, or Dark from the library Appearance menu or reading settings. One saved palette applies immediately to the whole app, including menus and dialogs; typography controls affect book text only.
 - Switch Page flip / Pages / Scroll, typography, themes, and window sizes while retaining a grapheme-safe text position.
 - Preserve EPUB chapter structure, nested tables of contents, headings, paragraphs, and explicit line breaks. Publisher CSS, inline images, interactive links, and rich styling are omitted; local covers remain in the library.
 - Read horizontal Unicode text, including RTL and mixed-direction passages, CJK, Indic scripts, Thai, combining marks, and emoji. Font coverage uses platform fallback. Vertical writing is not supported.
@@ -24,6 +25,8 @@ flutter test
 flutter devices
 flutter run -d <ios-device-id>
 ```
+
+Library themes have desktop and compact visual baselines in `test/goldens/`. After intentional design changes, regenerate them with `flutter test test/library_theme_test.dart --update-goldens` and inspect all six images before committing.
 
 AI illustrations are inert unless the build supplies Firebase and API values:
 
@@ -90,7 +93,7 @@ java -jar /path/to/epubcheck.jar path/to/book.epub
 - `lib/controller.dart` is the single shared `ChangeNotifier`.
 - `lib/illustrations/` contains normalized text indexing, spoiler gating,
   authenticated REST, atomic sidecars, local assets, and deletion retries.
-- `lib/library.dart` and `lib/reader.dart` contain the adaptive library and reader shell.
+- `lib/theme.dart` defines the shared app-wide palettes; `lib/library.dart` and `lib/reader.dart` contain the adaptive library and reader shell.
 - `backend/` contains the Cloud Run API/worker, scene planning, image provider,
   moderation, credit reservations, private delivery, and deletion endpoints.
 

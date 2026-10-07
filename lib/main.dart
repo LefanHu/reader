@@ -55,10 +55,16 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
   }
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Reader',
-    debugShowCheckedModeBanner: false,
-    theme: readerTheme,
-    home: LibraryScreen(controller: widget.controller),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.controller,
+    builder: (context, _) => MaterialApp(
+      title: 'Reader',
+      debugShowCheckedModeBanner: false,
+      // Switch all routes and overlays together; interpolated ink would trigger
+      // repeated text reflows while the application's surfaces catch up.
+      themeAnimationDuration: Duration.zero,
+      theme: buildReaderTheme(widget.controller.settings.theme),
+      home: LibraryScreen(controller: widget.controller),
+    ),
   );
 }

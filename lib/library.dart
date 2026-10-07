@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,7 +7,6 @@ import 'package:flutter/services.dart';
 import 'controller.dart';
 import 'models.dart';
 import 'reader.dart';
-import 'theme.dart';
 
 /// Adaptive catalog for importing, finding, opening, and deleting books.
 class LibraryScreen extends StatefulWidget {
@@ -152,7 +152,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         filter: filter,
                         onFilter: (value) => setState(() => filter = value),
                       ),
-                    Expanded(child: _content(wide)),
+                    Expanded(child: _content(wide, constraints.maxWidth)),
                   ],
                 ),
                 if (widget.controller.importing)
@@ -190,15 +190,65 @@ class _LibraryScreenState extends State<LibraryScreen> {
     ),
   );
 
-  Widget _content(bool wide) {
+  Widget _content(bool wide, double windowWidth) {
     final visible = _visible();
     final current = widget.controller.currentBook;
-    final scale = MediaQuery.textScalerOf(context).scale(1);
-    final horizontal = wide ? 42.0 : 20.0;
+    final scaler = MediaQuery.textScalerOf(context);
+    final horizontal = wide ? 32.0 : 20.0;
+    final contentWidth = windowWidth - (wide ? 200 : 0) - horizontal * 2;
+    final search = TextField(
+      onChanged: (value) => setState(() => query = value),
+      decoration: const InputDecoration(
+        prefixIcon: Icon(Icons.search),
+        hintText: 'Search title or author',
+      ),
+    );
+    final sortControl = PopupMenuButton<LibrarySort>(
+      tooltip: 'Sort books',
+      initialValue: sort,
+      onSelected: (value) => setState(() => sort = value),
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: LibrarySort.recent,
+          child: Text('Recent activity'),
+        ),
+        PopupMenuItem(value: LibrarySort.title, child: Text('Title A–Z')),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 48),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.sort, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                sort == LibrarySort.recent ? 'Recent activity' : 'Title A–Z',
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.expand_more, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+    final filterControl = DropdownButtonFormField<LibraryFilter>(
+      initialValue: filter,
+      isExpanded: true,
+      decoration: const InputDecoration(labelText: 'Filter'),
+      items: LibraryFilter.values
+          .map(
+            (value) =>
+                DropdownMenuItem(value: value, child: Text(_filterName(value))),
+          )
+          .toList(),
+      onChanged: (value) => setState(() => filter = value!),
+    );
     return CustomScrollView(
       slivers: [
         SliverPadding(
-          padding: EdgeInsets.fromLTRB(horizontal, 24, horizontal, 12),
+          padding: EdgeInsets.fromLTRB(horizontal, 24, horizontal, 24),
           sliver: SliverToBoxAdapter(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -208,23 +258,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     Expanded(
                       child: Text(
                         'Your library',
-                        style: Theme.of(context).textTheme.headlineLarge
+                        style: Theme.of(context).textTheme.headlineMedium
                             ?.copyWith(
                               fontFamily: 'Lora',
                               fontWeight: FontWeight.w600,
                             ),
                       ),
                     ),
-                    IconButton(
-                      tooltip: 'Open source licenses',
-                      onPressed: () => showLicensePage(
-                        context: context,
-                        applicationName: 'Reader',
-                        applicationLegalese: 'Text layout uses Flutter with Unicode-aware passage positions.',
-                      ),
-                      icon: const Icon(Icons.info_outline),
-                    ),
-                    if (wide)
+                    if (wide && scaler.scale(1) < 1.5)
                       FilledButton.icon(
                         onPressed: _import,
                         icon: const Icon(Icons.add),
@@ -233,90 +274,59 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     else
                       IconButton.filled(
                         tooltip: 'Import books',
+                        color: Theme.of(context).colorScheme.onPrimary,
                         onPressed: _import,
                         icon: const Icon(Icons.add),
                       ),
+                    const SizedBox(width: 8),
+                    _AppearanceMenu(controller: widget.controller),
                   ],
                 ),
                 const SizedBox(height: 20),
-                TextField(
-                  onChanged: (value) => setState(() => query = value),
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.search),
-                    hintText: 'Search title or author',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    if (!wide)
-                      Expanded(
-                        child: DropdownButtonFormField<LibraryFilter>(
-                          initialValue: filter,
-                          decoration: const InputDecoration(
-                            labelText: 'Filter',
-                            border: OutlineInputBorder(),
-                          ),
-                          items: LibraryFilter.values
-                              .map(
-                                (value) => DropdownMenuItem(
-                                  value: value,
-                                  child: Text(_filterName(value)),
-                                ),
-                              )
-                              .toList(),
-                          onChanged: (value) => setState(() => filter = value!),
-                        ),
-                      ),
-                    if (!wide) const SizedBox(width: 12),
-                    PopupMenuButton<LibrarySort>(
-                      tooltip: 'Sort books',
-                      initialValue: sort,
-                      onSelected: (value) => setState(() => sort = value),
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(
-                          value: LibrarySort.recent,
-                          child: Text('Recent activity'),
-                        ),
-                        PopupMenuItem(
-                          value: LibrarySort.title,
-                          child: Text('Title A–Z'),
-                        ),
+                // Wrapping is intentional: narrow windows and large type must
+                // keep search and filter usable without squeezing their labels.
+                if (wide && scaler.scale(1) < 1.5)
+                  Row(
+                    children: [
+                      Expanded(child: search),
+                      const SizedBox(width: 16),
+                      sortControl,
+                    ],
+                  )
+                else ...[
+                  search,
+                  const SizedBox(height: 12),
+                  if (!wide && scaler.scale(1) < 1.5 && contentWidth >= 340)
+                    Row(
+                      children: [
+                        Expanded(child: filterControl),
+                        const SizedBox(width: 8),
+                        sortControl,
                       ],
-                      child: const SizedBox(
-                        height: 48,
-                        child: Row(
-                          children: [
-                            Icon(Icons.sort),
-                            SizedBox(width: 8),
-                            Text('Sort'),
-                          ],
-                        ),
-                      ),
+                    )
+                  else
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        if (!wide)
+                          SizedBox(
+                            width: math.min(220, contentWidth),
+                            child: filterControl,
+                          ),
+                        sortControl,
+                      ],
                     ),
-                  ],
-                ),
+                ],
                 if (current != null &&
                     filter == LibraryFilter.all &&
                     query.trim().isEmpty) ...[
-                  const SizedBox(height: 16),
-                  Card(
-                    margin: EdgeInsets.zero,
-                    child: ListTile(
-                      minTileHeight: 72,
-                      leading: const Icon(
-                        Icons.play_circle_outline,
-                        color: accent,
-                      ),
-                      title: const Text('Continue reading'),
-                      subtitle: Text(
-                        '${current.title} · ${(current.progress * 100).round()}%',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => _open(current),
+                  const SizedBox(height: 20),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: _ResumeCard(
+                      book: current,
+                      onOpen: () => _open(current),
                     ),
                   ),
                 ],
@@ -336,28 +346,162 @@ class _LibraryScreenState extends State<LibraryScreen> {
           )
         else
           SliverPadding(
-            padding: EdgeInsets.fromLTRB(horizontal, 12, horizontal, 40),
-            sliver: SliverGrid(
-              gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                // Large accessibility text gets a single wide card on phones.
-                maxCrossAxisExtent: scale >= 1.5 ? 600 : 260,
-                mainAxisExtent: 390,
-                crossAxisSpacing: 22,
-                mainAxisSpacing: 24,
-              ),
-              delegate: SliverChildBuilderDelegate(
-                (_, index) => _BookCard(
-                  book: visible[index],
-                  onOpen: () => _open(visible[index]),
-                  onDelete: () => _delete(visible[index]),
-                ),
-                childCount: visible.length,
-              ),
+            padding: EdgeInsets.fromLTRB(horizontal, 0, horizontal, 40),
+            sliver: SliverLayoutBuilder(
+              builder: (context, constraints) {
+                final gap = wide ? 24.0 : 16.0;
+                final columns = !wide && scaler.scale(1) >= 1.5
+                    ? 1
+                    : math.max(
+                        1,
+                        ((constraints.crossAxisExtent + gap) / (200 + gap))
+                            .ceil(),
+                      );
+                final width =
+                    (constraints.crossAxisExtent - gap * (columns - 1)) /
+                    columns;
+                // Reserve measured text heights instead of a fixed card height.
+                // Nonlinear accessibility scaling can grow metadata independently.
+                final metadataHeight = math.max(
+                  48.0,
+                  (scaler.scale(18) * 1.3).ceilToDouble() * 2 +
+                      4 +
+                      (scaler.scale(14) * 1.4).ceilToDouble(),
+                );
+                return SliverGrid(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
+                    mainAxisExtent: width * 1.5 + metadataHeight + 27,
+                    crossAxisSpacing: gap,
+                    mainAxisSpacing: 24,
+                  ),
+                  delegate: SliverChildBuilderDelegate(
+                    (_, index) => _BookCard(
+                      book: visible[index],
+                      metadataHeight: metadataHeight,
+                      onOpen: () => _open(visible[index]),
+                      onDelete: () => _delete(visible[index]),
+                    ),
+                    childCount: visible.length,
+                  ),
+                );
+              },
             ),
           ),
       ],
     );
   }
+}
+
+/// Library entry point to the persisted app-wide palette and dependency notices.
+/// Menu radios retain their selected semantics and close after a choice.
+class _AppearanceMenu extends StatefulWidget {
+  const _AppearanceMenu({required this.controller});
+  final ReaderController controller;
+  @override
+  State<_AppearanceMenu> createState() => _AppearanceMenuState();
+}
+
+class _AppearanceMenuState extends State<_AppearanceMenu> {
+  final menu = MenuController();
+  @override
+  Widget build(BuildContext context) => MenuAnchor(
+    controller: menu,
+    builder: (context, controller, _) => IconButton(
+      tooltip: 'Appearance',
+      icon: const Icon(Icons.palette_outlined),
+      onPressed: () =>
+          controller.isOpen ? controller.close() : controller.open(),
+    ),
+    menuChildren: [
+      for (final preset in ReadingTheme.values)
+        RadioMenuButton<ReadingTheme>(
+          value: preset,
+          groupValue: widget.controller.settings.theme,
+          onChanged: (value) {
+            if (value != null) widget.controller.configure(theme: value);
+          },
+          child: Text(switch (preset) {
+            ReadingTheme.paper => 'Paper',
+            ReadingTheme.sepia => 'Sepia',
+            ReadingTheme.dark => 'Dark',
+          }),
+        ),
+      const Divider(),
+      MenuItemButton(
+        onPressed: () {
+          menu.close();
+          showLicensePage(
+            context: context,
+            applicationName: 'Reader',
+            applicationLegalese: 'Text layout uses Flutter with Unicode-aware passage positions.',
+          );
+        },
+        leadingIcon: const Icon(Icons.info_outline),
+        child: const Text('Open source licenses'),
+      ),
+    ],
+  );
+}
+
+/// A restrained resume action; its width does not stretch across desktop shelves.
+class _ResumeCard extends StatelessWidget {
+  const _ResumeCard({required this.book, required this.onOpen});
+  final CatalogBook book;
+  final VoidCallback onOpen;
+  @override
+  Widget build(BuildContext context) => Card(
+    margin: EdgeInsets.zero,
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: onOpen,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            ExcludeSemantics(
+              child: SizedBox(
+                width: 40,
+                height: 60,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(3),
+                  child: _Cover(book: book, thumbnail: true),
+                ),
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Continue reading',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    book.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    '${(book.progress * 100).round()}% read',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 String _filterName(LibraryFilter value) => switch (value) {
@@ -373,20 +517,21 @@ class _Sidebar extends StatelessWidget {
   final ValueChanged<LibraryFilter> onFilter;
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: 220,
+    width: 200,
     child: Material(
-      color: const Color(0xFFF0EDE5),
+      color: Theme.of(context).colorScheme.surfaceContainer,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(18, 30, 18, 24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'READER',
+            Text(
+              'Reader',
               style: TextStyle(
-                letterSpacing: 2,
-                fontWeight: FontWeight.bold,
-                color: accent,
+                fontFamily: 'Lora',
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
             const SizedBox(height: 34),
@@ -417,7 +562,11 @@ class _EmptyLibrary extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.menu_book_outlined, size: 58, color: accent),
+          Icon(
+            Icons.menu_book_outlined,
+            size: 48,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
           const SizedBox(height: 18),
           Text(
             'Your shelf is ready',
@@ -441,27 +590,36 @@ class _EmptyLibrary extends StatelessWidget {
   );
 }
 
-/// Catalog tile combining cover art, metadata, progress, and book actions.
+/// Flat cover tile with scaled metadata and a separate accessible action target.
 class _BookCard extends StatelessWidget {
   const _BookCard({
     required this.book,
+    required this.metadataHeight,
     required this.onOpen,
     required this.onDelete,
   });
   final CatalogBook book;
-  final VoidCallback onOpen;
-  final VoidCallback onDelete;
+  final double metadataHeight;
+  final VoidCallback onOpen, onDelete;
   @override
-  Widget build(BuildContext context) => Card(
-    clipBehavior: Clip.antiAlias,
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
     child: InkWell(
+      borderRadius: BorderRadius.circular(6),
       onTap: onOpen,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(child: _Cover(book: book)),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 8, 10),
+          AspectRatio(
+            aspectRatio: 2 / 3,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: _Cover(book: book),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: metadataHeight,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -476,14 +634,20 @@ class _BookCard extends StatelessWidget {
                         style: const TextStyle(
                           fontFamily: 'Lora',
                           fontSize: 18,
+                          height: 1.3,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                      const SizedBox(height: 3),
+                      const SizedBox(height: 4),
                       Text(
                         book.authorLine,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 14,
+                          height: 1.4,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -498,11 +662,12 @@ class _BookCard extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(height: 12),
           LinearProgressIndicator(
             value: book.progress,
-            minHeight: 4,
-            backgroundColor: const Color(0xFFE4DED1),
-            color: accent,
+            minHeight: 3,
+            backgroundColor: Theme.of(context).colorScheme.outlineVariant,
+            color: Theme.of(context).colorScheme.primary,
           ),
         ],
       ),
@@ -512,16 +677,21 @@ class _BookCard extends StatelessWidget {
 
 /// Displays a cached publication cover or a deterministic typographic cover.
 class _Cover extends StatelessWidget {
-  const _Cover({required this.book});
+  const _Cover({required this.book, this.thumbnail = false});
   final CatalogBook book;
+  // Resume thumbnails use an icon instead of unreadably compressed titles.
+  final bool thumbnail;
   @override
   Widget build(BuildContext context) {
     final path = book.coverPath;
     if (path != null && File(path).existsSync()) {
-      return Image.file(
-        File(path),
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => _fallback(),
+      return ColoredBox(
+        color: Theme.of(context).colorScheme.surfaceContainer,
+        child: Image.file(
+          File(path),
+          fit: BoxFit.contain,
+          errorBuilder: (_, _, _) => _fallback(),
+        ),
       );
     }
     return _fallback();
@@ -531,7 +701,7 @@ class _Cover extends StatelessWidget {
     final colors = [
       const Color(0xFF315E60),
       const Color(0xFF77534F),
-      const Color(0xFFB29353),
+      const Color(0xFF725F35),
       const Color(0xFF555D7D),
     ];
     final color =
@@ -539,22 +709,32 @@ class _Cover extends StatelessWidget {
             colors.length];
     return ColoredBox(
       color: color,
-      child: Padding(
-        padding: const EdgeInsets.all(22),
-        child: Center(
-          child: Text(
-            book.title,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontFamily: 'Lora',
-              fontSize: 25,
-              height: 1.2,
-              color: Colors.white,
-              fontWeight: FontWeight.w600,
+      child: thumbnail
+          ? const Center(
+              child: Icon(
+                Icons.menu_book_outlined,
+                size: 20,
+                color: Colors.white,
+              ),
+            )
+          : Padding(
+              padding: const EdgeInsets.all(12),
+              child: Center(
+                child: Text(
+                  book.title,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontFamily: 'Lora',
+                    fontSize: 18,
+                    height: 1.2,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
-      ),
     );
   }
 }

@@ -14,6 +14,7 @@ import 'package:reader/models.dart';
 import 'package:reader/storage.dart';
 import 'package:reader/text/document.dart';
 import 'package:reader/text/viewport.dart';
+import 'package:reader/theme.dart';
 
 import '../test/fakes.dart';
 import '../test/text_parser_test.dart' show epubFixture;
@@ -64,6 +65,23 @@ void main() {
     expect(controller.books, hasLength(2));
     await tester.tap(find.text('Done'));
     await tester.pumpAndSettle();
+    for (final preset in ReadingTheme.values) {
+      await tester.tap(find.byTooltip('Appearance'));
+      await tester.pumpAndSettle();
+      final label = switch (preset) {
+        ReadingTheme.paper => 'Paper',
+        ReadingTheme.sepia => 'Sepia',
+        ReadingTheme.dark => 'Dark',
+      };
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+      expect(controller.settings.theme, preset);
+      expect(
+        Theme.of(tester.element(find.text('Your library'))).colorScheme,
+        buildReaderTheme(preset).colorScheme,
+      );
+      await _capture(screenshotKey, 'library-${preset.name}');
+    }
     await tester.ensureVisible(find.text('Unicode Test').last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Unicode Test').last);
@@ -91,6 +109,32 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(viewport.navigation.leadingPosition, anchor);
+    final stationaryBounds = tester.getRect(find.byType(TextViewport));
+    await tester.tap(find.byTooltip('Reading settings'));
+    await tester.pumpAndSettle();
+    for (final preset in ReadingTheme.values) {
+      final label = switch (preset) {
+        ReadingTheme.paper => 'Paper',
+        ReadingTheme.sepia => 'Sepia',
+        ReadingTheme.dark => 'Dark',
+      };
+      await tester.ensureVisible(find.text(label));
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+      final expected = buildReaderTheme(preset).colorScheme;
+      expect(
+        tester.widget<TextViewport>(find.byType(TextViewport)).background,
+        expected.surface,
+      );
+      expect(
+        Theme.of(tester.element(find.byTooltip('Close settings'))).colorScheme,
+        expected,
+      );
+      expect(viewport.navigation.leadingPosition, anchor);
+      expect(tester.getRect(find.byType(TextViewport)), stationaryBounds);
+    }
+    await tester.tap(find.byTooltip('Close settings'));
+    await tester.pumpAndSettle();
     // Hold an interactive curl while capturing real platform rendering.
     final viewportRect = tester.getRect(find.byType(TextViewport));
     final drag = await tester.startGesture(viewportRect.center);
@@ -100,17 +144,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     expect(viewport.navigation.leadingPosition, anchor);
     expect(viewport.navigation.retainedTextureCount, 2);
-    final image =
-        await (screenshotKey.currentContext!.findRenderObject()
-                as RenderRepaintBoundary)
-            .toImage(pixelRatio: 1);
-    final pixels = await image.toByteData(format: ui.ImageByteFormat.png);
-    final screenshot = File(
-      '${Directory.systemTemp.path}/reader-native-${Platform.operatingSystem}.png',
-    );
-    await screenshot.writeAsBytes(pixels!.buffer.asUint8List());
-    image.dispose();
-    debugPrint('Reader native screenshot: ${screenshot.path}');
+    await _capture(screenshotKey, 'curl');
     await drag.cancel();
     await tester.pumpAndSettle();
     expect(viewport.navigation.leadingPosition, anchor);
@@ -209,4 +243,21 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await root.delete(recursive: true);
   });
+}
+
+/// Captures real platform rendering inside the isolated test app's temporary area.
+Future<void> _capture(GlobalKey key, String name) async {
+  final image =
+      await (key.currentContext!.findRenderObject() as RenderRepaintBoundary)
+          .toImage(pixelRatio: 1);
+  try {
+    final pixels = await image.toByteData(format: ui.ImageByteFormat.png);
+    final screenshot = File(
+      '${Directory.systemTemp.path}/reader-$name-${Platform.operatingSystem}.png',
+    );
+    await screenshot.writeAsBytes(pixels!.buffer.asUint8List());
+    debugPrint('Reader native screenshot: ${screenshot.path}');
+  } finally {
+    image.dispose();
+  }
 }

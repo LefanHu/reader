@@ -12,7 +12,7 @@ enum ReadingMode {
   pageFlip,
 }
 
-/// Color presets used by the Flutter text viewport.
+/// App-wide color presets shared by the library, reading viewport, and overlays.
 enum ReadingTheme {
   /// Neutral ivory paper with dark ink.
   paper,
@@ -61,7 +61,7 @@ class ReaderSettings {
   /// Active flow mode.
   final ReadingMode mode;
 
-  /// Active reader color preset.
+  /// Persisted app-wide color preset; also determines opaque page texture colors.
   final ReadingTheme theme;
 
   /// Reader font scale as an integer percentage.

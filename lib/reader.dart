@@ -10,7 +10,6 @@ import 'controller.dart';
 import 'illustrations/api.dart';
 import 'illustrations/models.dart';
 import 'models.dart';
-import 'theme.dart';
 
 /// Flutter shell around the custom normalized text viewport.
 /// The shell owns controls and consent; positions always refer to source text.
@@ -148,15 +147,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     revealingIllustration = false;
   }
 
-  Color get _background => switch (widget.controller.settings.theme) {
-    ReadingTheme.paper => const Color(0xFFF7F4ED),
-    ReadingTheme.sepia => const Color(0xFFF0E1C2),
-    ReadingTheme.dark => const Color(0xFF171A18),
-  };
-
-  Color get _foreground => widget.controller.settings.theme == ReadingTheme.dark
-      ? const Color(0xFFE8E3D8)
-      : ink;
+  // Page textures and every control use the same app-wide opaque paper and ink.
+  Color get _background => Theme.of(context).colorScheme.surface;
+  Color get _foreground => Theme.of(context).colorScheme.onSurface;
 
   Future<void> _showToc(text.TextDocument pub) async {
     final items = <({text.TextContentsEntry link, int depth})>[];
@@ -858,7 +851,7 @@ class _NavigationBar extends StatelessWidget {
               value: progress,
               minHeight: 3,
               backgroundColor: foreground.withValues(alpha: .16),
-              color: accent,
+              color: Theme.of(context).colorScheme.primary,
             ),
           ),
         ),

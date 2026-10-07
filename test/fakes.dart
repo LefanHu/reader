@@ -239,13 +239,14 @@ class FakeIllustrationApi implements IllustrationApi {
 Future<ReaderController> testController({
   List<CatalogBook> books = const [],
   List<ImportCandidate> files = const [],
+  SettingsStore? settingsStore,
   Directory? root,
 }) async {
   final directory =
       root ?? Directory('${Directory.systemTemp.path}/reader_test');
   final controller = ReaderController(
     catalogStore: MemoryCatalogStore(books),
-    settingsStore: MemorySettingsStore(),
+    settingsStore: settingsStore ?? MemorySettingsStore(),
     importer: BookImporter(root: directory),
     picker: FakePicker(files),
     illustrationStore: MemoryIllustrationStore(),
