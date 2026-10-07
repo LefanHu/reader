@@ -412,7 +412,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                           widget.book.progress,
                       foreground: _foreground,
                       pages:
-                          widget.controller.settings.mode == ReadingMode.pages,
+                          widget.controller.settings.mode != ReadingMode.scroll,
                       rightToLeft: navigation.rightToLeft,
                       onPrevious: navigation.previous,
                       onNext: navigation.next,
@@ -435,6 +435,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     navigation: navigation,
     settings: widget.controller.settings,
     foreground: _foreground,
+    background: _background,
     initialPosition: widget.book.lastPosition,
     onTap: () => setState(() => controls = !controls),
     onPosition: (position, progress, title) {
@@ -838,6 +839,10 @@ class _SettingsPanel extends StatelessWidget {
             SegmentedButton<ReadingMode>(
               segments: const [
                 ButtonSegment(value: ReadingMode.pages, label: Text('Pages')),
+                ButtonSegment(
+                  value: ReadingMode.pageFlip,
+                  label: Text('Page flip'),
+                ),
                 ButtonSegment(value: ReadingMode.scroll, label: Text('Scroll')),
               ],
               selected: {settings.mode},

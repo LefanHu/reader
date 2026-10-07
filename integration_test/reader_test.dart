@@ -84,13 +84,22 @@ void main() {
       anchor.offset,
     );
     await controller.configure(
-      mode: ReadingMode.pages,
+      mode: ReadingMode.pageFlip,
       fontSize: 140,
       serif: false,
       theme: ReadingTheme.sepia,
     );
     await tester.pumpAndSettle();
     expect(viewport.navigation.leadingPosition, anchor);
+    // Hold an interactive curl while capturing real platform rendering.
+    final viewportRect = tester.getRect(find.byType(TextViewport));
+    final drag = await tester.startGesture(viewportRect.center);
+    await drag.moveBy(const Offset(-20, 0));
+    await tester.pump();
+    await drag.moveBy(Offset(-viewportRect.width * .28, 0));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(viewport.navigation.leadingPosition, anchor);
+    expect(viewport.navigation.retainedTextureCount, 2);
     final image =
         await (screenshotKey.currentContext!.findRenderObject()
                 as RenderRepaintBoundary)
@@ -102,6 +111,10 @@ void main() {
     await screenshot.writeAsBytes(pixels!.buffer.asUint8List());
     image.dispose();
     debugPrint('Reader native screenshot: ${screenshot.path}');
+    await drag.cancel();
+    await tester.pumpAndSettle();
+    expect(viewport.navigation.leadingPosition, anchor);
+    expect(viewport.navigation.retainedTextureCount, 0);
     await tester.tap(find.byTooltip('Hide reading controls'));
     await tester.pumpAndSettle();
     expect(find.byTooltip('Show reading controls'), findsOneWidget);

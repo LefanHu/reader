@@ -7,6 +7,9 @@ enum ReadingMode {
 
   /// Discrete horizontally navigated pages.
   pages,
+
+  /// Discrete pages with an interactive paper curl; persists as `pageFlip`.
+  pageFlip,
 }
 
 /// Color presets used by the Flutter text viewport.
