@@ -47,27 +47,24 @@ void main() {
     expect(restored.authorLine, 'Test Author');
   });
 
-  test(
-    'catalog recovers a valid temporary generation and serializes saves',
-    () async {
-      final book = await importTxt();
-      await File('${root.path}/catalog.json').writeAsString('{broken');
-      await File('${root.path}/catalog.json.tmp').writeAsString(
-        jsonEncode({
-          'version': 2,
-          'books': [book.toJson()],
-        }),
-      );
-      final store = FileCatalogStore(root);
-      expect((await store.load()).single.hash, book.hash);
-      await Future.wait([
-        store.save([book]),
-        store.save([]),
-        store.save([book.copyWith(progress: .7)]),
-      ]);
-      expect((await store.load()).single.progress, .7);
-    },
-  );
+  test('catalog recovers a valid temporary generation and serializes saves across instances', () async {
+    final book = await importTxt();
+    await File('${root.path}/catalog.json').writeAsString('{broken');
+    await File('${root.path}/catalog.json.tmp').writeAsString(
+      jsonEncode({
+        'version': 2,
+        'books': [book.toJson()],
+      }),
+    );
+    final store = FileCatalogStore(root);
+    expect((await store.load()).single.hash, book.hash);
+    await Future.wait([
+      store.save([book]),
+      FileCatalogStore(root).save([]),
+      store.save([book.copyWith(progress: .7)]),
+    ]);
+    expect((await store.load()).single.progress, .7);
+  });
 
   test(
     'legacy reset queues cloud deletions before removing owned book files',

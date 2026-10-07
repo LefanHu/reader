@@ -53,10 +53,11 @@ load_environment() {
   export ENVIRONMENT ENV_VARS PROJECT_ID REGION STATE_BUCKET STATE_PROJECT BILLING_ACCOUNT STATE_LOCATION
 }
 
+# Routine plans/deployments use checked-in provider locks; upgrades are explicit.
 terraform_init() {
   stack=$1
   prefix=$2
-  terraform -chdir="$INFRA_DIR/$stack" init -upgrade \
+  terraform -chdir="$INFRA_DIR/$stack" init \
     -reconfigure \
     -backend-config="bucket=$STATE_BUCKET" \
     -backend-config="prefix=$prefix"

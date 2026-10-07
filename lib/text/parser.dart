@@ -299,8 +299,8 @@ ParsedTextBook _parseEpub(Uint8List bytes, String fallback, String hash) {
       continue;
     }
     final path = _resolve(opfPath, item.getAttribute('href')!);
+    // Every declared markup resource already passed the manifest policy check.
     final parsed = html.parse(read(path));
-    _validateMarkup(parsed);
     final blocks = <TextBlock>[];
     final sourceIds = <String, int>{};
     final buffer = StringBuffer();

@@ -4,6 +4,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../atomic_json_file.dart';
+
 /// A cloud book deletion that must be retried after connectivity returns.
 class PendingBookDeletion {
   const PendingBookDeletion({
@@ -36,17 +38,15 @@ abstract interface class IllustrationDeletionOutbox {
 /// Atomic JSON outbox stored outside per-book directories.
 class FileIllustrationDeletionOutbox implements IllustrationDeletionOutbox {
   FileIllustrationDeletionOutbox(Directory catalogRoot)
-    : _file = File('${catalogRoot.path}/illustration-deletions.json');
+    : _file = AtomicJsonFile(
+        File('${catalogRoot.path}/illustration-deletions.json'),
+      );
 
-  final File _file;
+  final AtomicJsonFile _file;
 
   @override
   Future<List<PendingBookDeletion>> load() async {
-    for (final candidate in [
-      _file,
-      File('${_file.path}.tmp'),
-      File('${_file.path}.bak'),
-    ]) {
+    for (final candidate in _file.generations) {
       if (!await candidate.exists()) continue;
       try {
         final json = jsonDecode(await candidate.readAsString());
@@ -67,54 +67,28 @@ class FileIllustrationDeletionOutbox implements IllustrationDeletionOutbox {
     return [];
   }
 
-  static final _mutations = <String, Future<void>>{};
-  Future<void> _serialize(Future<void> Function() action) {
-    final key = _file.absolute.path;
-    final operation = (_mutations[key] ?? Future<void>.value()).then(
-      (_) => action(),
-    );
-    final tail = operation.catchError((Object _) {});
-    _mutations[key] = tail;
-    tail.whenComplete(() {
-      if (identical(_mutations[key], tail)) _mutations.remove(key);
-    });
-    return operation;
-  }
-
   @override
-  Future<void> enqueue(String cloudBookId) => _serialize(() async {
+  Future<void> enqueue(String cloudBookId) => _file.update(() async {
     final items = await load();
-    if (items.any((item) => item.cloudBookId == cloudBookId)) return;
-    await _save([
+    if (items.any((item) => item.cloudBookId == cloudBookId)) return null;
+    return _json([
       ...items,
       PendingBookDeletion(cloudBookId: cloudBookId, queuedAt: DateTime.now()),
     ]);
   });
 
   @override
-  Future<void> remove(String cloudBookId) => _serialize(() async {
+  Future<void> remove(String cloudBookId) => _file.update(() async {
     final items = await load();
-    await _save(
+    return _json(
       items.where((item) => item.cloudBookId != cloudBookId).toList(),
     );
   });
 
-  Future<void> _save(List<PendingBookDeletion> items) async {
-    await _file.parent.create(recursive: true);
-    final temporary = File('${_file.path}.tmp');
-    final backup = File('${_file.path}.bak');
-    await temporary.writeAsString(
-      jsonEncode({
-        'version': 1,
-        'items': items.map((item) => item.toJson()).toList(),
-      }),
-      flush: true,
-    );
-    if (await backup.exists()) await backup.delete();
-    if (await _file.exists()) await _file.rename(backup.path);
-    await temporary.rename(_file.path);
-    if (await backup.exists()) await backup.delete();
-  }
+  Map<String, dynamic> _json(List<PendingBookDeletion> items) => {
+    'version': 1,
+    'items': items.map((item) => item.toJson()).toList(),
+  };
 }
 
 /// In-memory default for custom controller graphs that do not own a root.

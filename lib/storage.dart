@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models.dart';
+import 'atomic_json_file.dart';
 import 'illustrations/outbox.dart';
 
 /// Persistence boundary for imported book records and their private files.
@@ -30,9 +31,7 @@ class FileCatalogStore implements CatalogStore {
   /// Directory containing catalog generations and imported book directories.
   final Directory root;
 
-  File get _catalog => File('${root.path}/catalog.json');
-  File get _temporary => File('${root.path}/catalog.json.tmp');
-  File get _backup => File('${root.path}/catalog.json.bak');
+  late final _catalogFile = AtomicJsonFile(File('${root.path}/catalog.json'));
 
   /// Creates the store under the platform's private Application Support area.
   static Future<FileCatalogStore> create() async {
@@ -40,7 +39,6 @@ class FileCatalogStore implements CatalogStore {
     return FileCatalogStore(Directory('${support.path}/Reader'));
   }
 
-  Future<void> _writes = Future.value();
   File get _reset => File('${root.path}/legacy-reset.json');
 
   @override
@@ -52,7 +50,7 @@ class FileCatalogStore implements CatalogStore {
     }
     if (await _reset.exists()) await _finishReset();
     var legacy = false;
-    for (final candidate in [_catalog, _temporary, _backup]) {
+    for (final candidate in _catalogFile.generations) {
       if (!await candidate.exists()) continue;
       try {
         final json = jsonDecode(await candidate.readAsString());
@@ -69,7 +67,7 @@ class FileCatalogStore implements CatalogStore {
                   _ownedDirectory(book) != null && File(book.path).existsSync(),
             )
             .toList();
-        if (candidate.path != _catalog.path) await save(books);
+        if (candidate.path != _catalogFile.file.path) await save(books);
         return books;
       } on Object {
         continue;
@@ -147,23 +145,10 @@ class FileCatalogStore implements CatalogStore {
   }
 
   @override
-  Future<void> save(List<CatalogBook> books) {
-    // Serialize generations; lifecycle flushes can overlap debounced writes.
-    final body = jsonEncode({
-      'version': 2,
-      'books': books.map((book) => book.toJson()).toList(),
-    });
-    final operation = _writes.then((_) async {
-      await root.create(recursive: true);
-      await _temporary.writeAsString(body, flush: true);
-      if (await _backup.exists()) await _backup.delete();
-      if (await _catalog.exists()) await _catalog.rename(_backup.path);
-      await _temporary.rename(_catalog.path);
-      if (await _backup.exists()) await _backup.delete();
-    });
-    _writes = operation.catchError((Object _) {});
-    return operation;
-  }
+  Future<void> save(List<CatalogBook> books) => _catalogFile.write({
+    'version': 2,
+    'books': books.map((book) => book.toJson()).toList(),
+  });
 
   Directory? _ownedDirectory(CatalogBook book) {
     if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(book.hash)) return null;

@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../models.dart';
+import '../atomic_json_file.dart';
 import 'models.dart';
 
 /// Atomic persistence boundary for illustration manifests, indexes, and art.
@@ -28,13 +29,15 @@ class FileIllustrationStore implements IllustrationStore {
   Directory _root(CatalogBook book) =>
       Directory('${File(book.path).parent.path}/visuals');
 
-  File _manifest(CatalogBook book) => File('${_root(book).path}/manifest.json');
-  File _index(CatalogBook book) => File('${_root(book).path}/index.json');
+  AtomicJsonFile _manifest(CatalogBook book) =>
+      AtomicJsonFile(File('${_root(book).path}/manifest.json'));
+  AtomicJsonFile _index(CatalogBook book) =>
+      AtomicJsonFile(File('${_root(book).path}/index.json'));
 
   @override
   Future<IllustrationManifest> loadManifest(CatalogBook book) async {
     final file = _manifest(book);
-    for (final candidate in _generations(file)) {
+    for (final candidate in file.generations) {
       if (!await candidate.exists()) continue;
       try {
         final json = (jsonDecode(await candidate.readAsString()) as Map)
@@ -50,12 +53,12 @@ class FileIllustrationStore implements IllustrationStore {
 
   @override
   Future<void> saveManifest(CatalogBook book, IllustrationManifest manifest) =>
-      _atomicJson(_manifest(book), manifest.toJson());
+      _manifest(book).write(manifest.toJson());
 
   @override
   Future<BookTextIndex?> loadIndex(CatalogBook book) async {
     final file = _index(book);
-    for (final candidate in _generations(file)) {
+    for (final candidate in file.generations) {
       if (!await candidate.exists()) continue;
       try {
         final value = BookTextIndex.fromJson(
@@ -72,7 +75,7 @@ class FileIllustrationStore implements IllustrationStore {
 
   @override
   Future<void> saveIndex(CatalogBook book, BookTextIndex index) =>
-      _atomicJson(_index(book), index.toJson());
+      _index(book).write(index.toJson());
 
   @override
   Future<String> saveImage(
@@ -100,36 +103,4 @@ class FileIllustrationStore implements IllustrationStore {
       if (await file.exists()) await file.delete();
     }
   }
-
-  static final _writes = <String, Future<void>>{};
-  Future<void> _atomicJson(File destination, Map<String, dynamic> json) {
-    final key = destination.absolute.path;
-    final body = jsonEncode(json);
-    final operation = (_writes[key] ?? Future<void>.value()).then(
-      (_) => _writeJson(destination, body),
-    );
-    final tail = operation.catchError((Object _) {});
-    _writes[key] = tail;
-    tail.whenComplete(() {
-      if (identical(_writes[key], tail)) _writes.remove(key);
-    });
-    return operation;
-  }
-
-  Future<void> _writeJson(File destination, String body) async {
-    await destination.parent.create(recursive: true);
-    final temporary = File('${destination.path}.tmp');
-    final backup = File('${destination.path}.bak');
-    await temporary.writeAsString(body, flush: true);
-    if (await backup.exists()) await backup.delete();
-    if (await destination.exists()) await destination.rename(backup.path);
-    await temporary.rename(destination.path);
-    if (await backup.exists()) await backup.delete();
-  }
-
-  List<File> _generations(File destination) => [
-    destination,
-    File('${destination.path}.tmp'),
-    File('${destination.path}.bak'),
-  ];
 }
