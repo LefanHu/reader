@@ -116,6 +116,7 @@ class CatalogBook {
     this.identifier,
     this.language,
     this.coverPath,
+    this.wordCount,
     this.lastPosition,
     this.progress = 0,
     this.lastOpenedAt,
@@ -145,6 +146,10 @@ class CatalogBook {
   /// Cached local cover path, or `null` for a generated cover.
   final String? coverPath;
 
+  /// Approximate normalized-text word count; absent until older books backfill.
+  /// This additive field does not change document identities or catalog version.
+  final int? wordCount;
+
   /// Leading normalized text position, independent of typography and viewport.
   final TextPosition? lastPosition;
 
@@ -169,6 +174,7 @@ class CatalogBook {
 
   /// Returns a new record with mutable reading-state fields replaced.
   CatalogBook copyWith({
+    int? wordCount,
     String? coverPath,
     TextPosition? lastPosition,
     double? progress,
@@ -182,6 +188,7 @@ class CatalogBook {
     identifier: identifier,
     language: language,
     coverPath: coverPath ?? this.coverPath,
+    wordCount: wordCount ?? this.wordCount,
     lastPosition: lastPosition ?? this.lastPosition,
     progress: progress ?? this.progress,
     addedAt: addedAt,
@@ -198,6 +205,7 @@ class CatalogBook {
     if (identifier != null) 'identifier': identifier,
     if (language != null) 'language': language,
     if (coverPath != null) 'coverPath': coverPath,
+    if (wordCount != null) 'wordCount': wordCount,
     if (lastPosition != null) 'lastPosition': lastPosition!.toJson(),
     'progress': progress,
     'addedAt': addedAt.toUtc().toIso8601String(),
@@ -217,6 +225,9 @@ class CatalogBook {
     identifier: json['identifier'] as String?,
     language: json['language'] as String?,
     coverPath: json['coverPath'] as String?,
+    wordCount: json['wordCount'] is int && (json['wordCount'] as int) >= 0
+        ? json['wordCount'] as int
+        : null,
     lastPosition: json['lastPosition'] == null
         ? null
         : TextPosition.fromJson(

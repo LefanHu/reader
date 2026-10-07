@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 
 import 'models.dart';
 import 'text/parser.dart';
+import 'text/word_count.dart';
 
 /// Lazy source selection so a multi-file import reads one book at a time.
 class ImportCandidate {
@@ -98,8 +99,8 @@ class BookImporter {
       final name = candidate.name;
       final extension = name.toLowerCase().endsWith('.txt') ? 'txt' : 'epub';
       // Parsing, hashing and sidecar writes stay off the UI isolate. Only the
-      // small document manifest crosses back after all policy checks succeed.
-      final document = await Isolate.run(() async {
+      // small document manifest and count cross back after all checks succeed.
+      final normalized = await Isolate.run(() async {
         final parsed = parseTextBook(bytes, name, hash);
         await File('$stagedPath/book.$extension')
             .writeAsBytes(bytes, flush: true);
@@ -114,8 +115,15 @@ class BookImporter {
           await File('$stagedPath/cover.${parsed.coverExtension}')
               .writeAsBytes(parsed.cover!, flush: true);
         }
-        return parsed.document;
+        return (
+          document: parsed.document,
+          wordCount: parsed.sections.fold<int>(
+            0,
+            (sum, section) => sum + countSectionWords(section),
+          ),
+        );
       });
+      final document = normalized.document;
       final destination = Directory('${books.path}/$hash');
       if (await destination.exists()) await destination.delete(recursive: true);
       await staging.rename(destination.path);
@@ -128,6 +136,7 @@ class BookImporter {
         fileName: candidate.name,
         path: '${destination.path}/book.$extension',
         title: document.title,
+        wordCount: normalized.wordCount,
         authors: document.authors,
         language: document.language,
         identifier: document.identifier,

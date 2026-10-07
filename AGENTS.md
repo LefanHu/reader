@@ -17,6 +17,8 @@
 - Curl previews must not advance positions, progress, persistence, or illustration gates. Commit only completed turns; cancel unfinished turns on reflow, chapter navigation, suspension, and exit. Preserve the existing two-section-layout and two-texture ownership limits, including disposal and stale-load rejection.
 - Keep the toolbar's 60-pixel and bottom navigation's 62-pixel areas reserved when controls are hidden. Visibility changes must leave the reading viewport stationary. Keep every toolbar button visible, and center the chapter title independently of their widths.
 - Honor reduced motion, paragraph semantics, keyboard navigation, and RTL logical navigation. Hidden controls must immediately stop receiving pointer, focus, and accessibility actions.
+- Library book presentation follows the platform: macOS uses cover grids with hover/focus metadata; every iOS width uses list rows. Keep overlay reveals stationary, pin them while menus are open, and retain metadata semantics when hidden. The 700-pixel breakpoint controls the sidebar, not the book presentation.
+- Approximate word counts come from normalized blocks, never source markup or widget builds. Keep `CatalogBook.wordCount` nullable for old catalogs; backfill outside the UI isolate, merge into current records, and never resurrect deleted books or discard reading updates.
 - Use `lib/theme.dart` and the active `ColorScheme` for library, reader, menus, and dialogs. The saved reading theme applies app-wide; reading font preferences affect book text only. Preserve the library's 700-pixel sidebar breakpoint and layouts that accommodate large accessibility text.
 
 ## Import, persistence, and cloud boundaries
@@ -38,6 +40,6 @@
 
 - Run `dart format lib test`, `flutter analyze`, and `flutter test` after Dart changes.
 - Format changed integration tests too. Run affected native scenarios on both macOS and an iOS simulator when changing shared reader or library behavior and those toolchains are available.
-- After intentional visual changes, regenerate affected goldens and inspect the images; do not accept baseline updates solely because tests pass. Library baselines cover Paper, Sepia, and Dark at compact and desktop widths.
+- After intentional visual changes, regenerate affected goldens and inspect the images; do not accept baseline updates solely because tests pass. Library baselines cover Paper, Sepia, and Dark in iOS lists and desktop grids, including revealed overlays.
 - Run `npm run build` and `npm test` in `backend/` when backend behavior changes.
 - When platform integration changes, also build or run the affected platform when its toolchain is available.

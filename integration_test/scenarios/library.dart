@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'dart:ui' show PointerDeviceKind;
+
+import 'package:reader/text/word_count.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -26,8 +29,75 @@ void registerLibraryTests() {
       final document = await TextDocumentStore().load(book.path);
       expect(document.title, title);
       expect(document.sections, isNotEmpty);
+      var words = 0;
+      for (final section in document.sections) {
+        words += countSectionWords(
+          await TextDocumentStore().loadSection(book.path, section.id),
+        );
+      }
+      expect(book.wordCount, words);
     }
   });
+
+  testWidgets(
+    'platform library shows readable counts and independent book actions',
+    (tester) async {
+      final app = await NativeTestApp.launch(tester);
+      final book = app.book('Unicode Test');
+      final entry = find.byKey(ValueKey('library-book-${book.hash}'));
+      await tester.ensureVisible(entry);
+      await tester.pumpAndSettle();
+      final bounds = tester.getRect(entry);
+      if (Platform.isMacOS) {
+        expect(find.byType(SliverGrid), findsOneWidget);
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        try {
+          await mouse.addPointer(location: Offset.zero);
+          await mouse.moveTo(bounds.center);
+          await tester.pumpAndSettle();
+          expect(tester.getRect(entry), bounds);
+          expect(
+            find.descendant(
+              of: entry,
+              matching: find.text(wordCountLabel(book.wordCount!)),
+            ),
+            findsOneWidget,
+          );
+          await app.capture('library-hover');
+          await tester.tap(
+            find.descendant(
+              of: entry,
+              matching: find.byTooltip('Book actions'),
+            ),
+          );
+          await tester.pumpAndSettle();
+          await mouse.moveTo(Offset.zero);
+          await tester.pumpAndSettle();
+          expect(find.text('Delete'), findsOneWidget);
+        } finally {
+          await mouse.removePointer();
+        }
+      } else {
+        expect(find.byType(SliverGrid), findsNothing);
+        expect(find.byType(SliverList), findsOneWidget);
+        expect(find.text(wordCountLabel(book.wordCount!)), findsOneWidget);
+        await app.capture('library-list');
+        await tester.tap(
+          find.descendant(of: entry, matching: find.byTooltip('Book actions')),
+        );
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.text('Delete'));
+      await tester.pumpAndSettle();
+      expect(find.text('Delete book?'), findsOneWidget);
+      await tester.tap(find.text('Delete').last);
+      await tester.pumpAndSettle();
+      expect(
+        app.controller.books.any((item) => item.hash == book.hash),
+        isFalse,
+      );
+    },
+  );
 
   for (final preset in ReadingTheme.values) {
     testWidgets(

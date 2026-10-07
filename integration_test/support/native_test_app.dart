@@ -106,9 +106,12 @@ class NativeTestApp {
 
   /// Opens a real imported document through its library tile.
   Future<void> openBook(String title) async {
-    await tester.ensureVisible(find.text(title).last);
+    // Metadata is hidden on desktop until hover; address the persistent cover
+    // target instead of depending on visible title widgets or fallback artwork.
+    final entry = find.byKey(ValueKey('library-book-${book(title).hash}'));
+    await tester.ensureVisible(entry);
     await tester.pumpAndSettle();
-    await tester.tap(find.text(title).last);
+    await tester.tap(entry);
     await tester.pumpAndSettle();
   }
 

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'controller.dart';
 import 'models.dart';
 import 'reader.dart';
+import 'text/word_count.dart';
 
 /// Adaptive catalog for importing, finding, opening, and deleting books.
 class LibraryScreen extends StatefulWidget {
@@ -194,6 +195,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final visible = _visible();
     final current = widget.controller.currentBook;
     final scaler = MediaQuery.textScalerOf(context);
+    // Presentation follows the platform, not iPad/window width. Width still
+    // selects the existing sidebar and header arrangements independently.
+    final list = Theme.of(context).platform == TargetPlatform.iOS;
     final horizontal = wide ? 32.0 : 20.0;
     final contentWidth = windowWidth - (wide ? 200 : 0) - horizontal * 2;
     final search = TextField(
@@ -223,8 +227,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
             children: [
               const Icon(Icons.sort, size: 20),
               const SizedBox(width: 8),
-              Text(
-                sort == LibrarySort.recent ? 'Recent activity' : 'Title A–Z',
+              Flexible(
+                child: Text(
+                  sort == LibrarySort.recent ? 'Recent activity' : 'Title A–Z',
+                ),
               ),
               const SizedBox(width: 4),
               const Icon(Icons.expand_more, size: 18),
@@ -347,46 +353,45 @@ class _LibraryScreenState extends State<LibraryScreen> {
         else
           SliverPadding(
             padding: EdgeInsets.fromLTRB(horizontal, 0, horizontal, 40),
-            sliver: SliverLayoutBuilder(
-              builder: (context, constraints) {
-                final gap = wide ? 24.0 : 16.0;
-                final columns = !wide && scaler.scale(1) >= 1.5
-                    ? 1
-                    : math.max(
+            sliver: list
+                ? SliverList.separated(
+                    itemCount: visible.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
+                    itemBuilder: (_, index) => _BookRow(
+                      book: visible[index],
+                      onOpen: () => _open(visible[index]),
+                      onDelete: () => _delete(visible[index]),
+                    ),
+                  )
+                : SliverLayoutBuilder(
+                    builder: (context, constraints) {
+                      final gap = wide ? 24.0 : 16.0;
+                      final columns = math.max(
                         1,
                         ((constraints.crossAxisExtent + gap) / (200 + gap))
                             .ceil(),
                       );
-                final width =
-                    (constraints.crossAxisExtent - gap * (columns - 1)) /
-                    columns;
-                // Reserve measured text heights instead of a fixed card height.
-                // Nonlinear accessibility scaling can grow metadata independently.
-                final metadataHeight = math.max(
-                  48.0,
-                  (scaler.scale(18) * 1.3).ceilToDouble() * 2 +
-                      4 +
-                      (scaler.scale(14) * 1.4).ceilToDouble(),
-                );
-                return SliverGrid(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: columns,
-                    mainAxisExtent: width * 1.5 + metadataHeight + 27,
-                    crossAxisSpacing: gap,
-                    mainAxisSpacing: 24,
+                      final width =
+                          (constraints.crossAxisExtent - gap * (columns - 1)) /
+                          columns;
+                      return SliverGrid(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: columns,
+                          mainAxisExtent: width * 1.5 + 7,
+                          crossAxisSpacing: gap,
+                          mainAxisSpacing: gap,
+                        ),
+                        delegate: SliverChildBuilderDelegate(
+                          (_, index) => _BookCard(
+                            book: visible[index],
+                            onOpen: () => _open(visible[index]),
+                            onDelete: () => _delete(visible[index]),
+                          ),
+                          childCount: visible.length,
+                        ),
+                      );
+                    },
                   ),
-                  delegate: SliverChildBuilderDelegate(
-                    (_, index) => _BookCard(
-                      book: visible[index],
-                      metadataHeight: metadataHeight,
-                      onOpen: () => _open(visible[index]),
-                      onDelete: () => _delete(visible[index]),
-                    ),
-                    childCount: visible.length,
-                  ),
-                );
-              },
-            ),
           ),
       ],
     );
@@ -590,87 +595,254 @@ class _EmptyLibrary extends StatelessWidget {
   );
 }
 
-/// Flat cover tile with scaled metadata and a separate accessible action target.
-class _BookCard extends StatelessWidget {
+/// Shared metadata remains available to assistive technology without hover.
+String _bookLabel(CatalogBook book) => [
+  book.title,
+  book.authorLine,
+  if (book.wordCount != null) 'Approximately ${book.wordCount} words',
+  '${(book.progress * 100).round()}% read',
+].join(', ');
+
+/// Metadata uses content-driven heights in lists and a scrollable cover overlay.
+class _BookDetails extends StatelessWidget {
+  const _BookDetails({required this.book});
+  final CatalogBook book;
+  @override
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          book.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontFamily: 'Lora',
+            fontSize: 18,
+            height: 1.3,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          book.authorLine,
+          style: TextStyle(
+            fontSize: 14,
+            height: 1.4,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        if (book.wordCount != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            wordCountLabel(book.wordCount!),
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.4,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+}
+
+/// Independent action target; opening its menu pins a desktop metadata overlay.
+class _BookActions extends StatelessWidget {
+  const _BookActions({required this.onDelete, this.onMenuChanged});
+  final VoidCallback onDelete;
+  final ValueChanged<bool>? onMenuChanged;
+  @override
+  Widget build(BuildContext context) => PopupMenuButton<String>(
+    tooltip: 'Book actions',
+    onOpened: () => onMenuChanged?.call(true),
+    onCanceled: () => onMenuChanged?.call(false),
+    onSelected: (_) {
+      onMenuChanged?.call(false);
+      onDelete();
+    },
+    itemBuilder: (_) => const [
+      PopupMenuItem(value: 'delete', child: Text('Delete')),
+    ],
+  );
+}
+
+/// Stationary macOS cover tile; metadata reveals on hover or descendant focus.
+/// Menus retain the reveal after the pointer leaves. Hidden actions cannot focus.
+class _BookCard extends StatefulWidget {
   const _BookCard({
     required this.book,
-    required this.metadataHeight,
     required this.onOpen,
     required this.onDelete,
   });
   final CatalogBook book;
-  final double metadataHeight;
   final VoidCallback onOpen, onDelete;
   @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      borderRadius: BorderRadius.circular(6),
-      onTap: onOpen,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          AspectRatio(
-            aspectRatio: 2 / 3,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: _Cover(book: book),
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            height: metadataHeight,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+  State<_BookCard> createState() => _BookCardState();
+}
+
+class _BookCardState extends State<_BookCard> {
+  bool _hovered = false, _focused = false, _menuOpen = false;
+  @override
+  Widget build(BuildContext context) {
+    final visible = _hovered || _focused || _menuOpen;
+    final colors = Theme.of(context).colorScheme;
+    return Semantics(
+      key: ValueKey('library-book-${widget.book.hash}'),
+      label: _bookLabel(widget.book),
+      button: true,
+      child: Focus(
+        skipTraversal: true,
+        onFocusChange: (value) => setState(() => _focused = value),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onHover: (value) => setState(() => _hovered = value),
+            onTap: widget.onOpen,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        book.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontFamily: 'Lora',
-                          fontSize: 18,
-                          height: 1.3,
-                          fontWeight: FontWeight.w600,
+                AspectRatio(
+                  aspectRatio: 2 / 3,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        ExcludeSemantics(child: _Cover(book: widget.book)),
+                        IgnorePointer(
+                          ignoring: !visible,
+                          child: ExcludeFocus(
+                            excluding: !visible,
+                            child: ExcludeSemantics(
+                              excluding: !visible,
+                              child: AnimatedOpacity(
+                                opacity: visible ? 1 : 0,
+                                duration:
+                                    MediaQuery.disableAnimationsOf(context)
+                                    ? Duration.zero
+                                    : const Duration(milliseconds: 150),
+                                child: Align(
+                                  alignment: Alignment.bottomCenter,
+                                  child: Material(
+                                    color: colors.surfaceContainer,
+                                    child: SingleChildScrollView(
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          12,
+                                          8,
+                                          4,
+                                          12,
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Expanded(
+                                              child: _BookDetails(
+                                                book: widget.book,
+                                              ),
+                                            ),
+                                            _BookActions(
+                                              onDelete: widget.onDelete,
+                                              onMenuChanged: (value) =>
+                                                  setState(
+                                                    () => _menuOpen = value,
+                                                  ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        book.authorLine,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          height: 1.4,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-                PopupMenuButton<String>(
-                  tooltip: 'Book actions',
-                  onSelected: (_) => onDelete(),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'delete', child: Text('Delete')),
-                  ],
-                ),
+                const SizedBox(height: 4),
+                _BookProgress(book: widget.book),
               ],
             ),
           ),
-          const SizedBox(height: 12),
-          LinearProgressIndicator(
-            value: book.progress,
-            minHeight: 3,
-            backgroundColor: Theme.of(context).colorScheme.outlineVariant,
-            color: Theme.of(context).colorScheme.primary,
-          ),
-        ],
+        ),
       ),
+    );
+  }
+}
+
+/// iOS uses a lazy, content-sized row even on wide iPads and at large text sizes.
+class _BookRow extends StatelessWidget {
+  const _BookRow({
+    required this.book,
+    required this.onOpen,
+    required this.onDelete,
+  });
+  final CatalogBook book;
+  final VoidCallback onOpen, onDelete;
+  @override
+  Widget build(BuildContext context) => Semantics(
+    key: ValueKey('library-book-${book.hash}'),
+    label: _bookLabel(book),
+    button: true,
+    child: Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ExcludeSemantics(
+                child: SizedBox(
+                  width: 64,
+                  height: 96,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: _Cover(book: book, thumbnail: true),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _BookDetails(book: book),
+                    const SizedBox(height: 12),
+                    _BookProgress(book: book),
+                  ],
+                ),
+              ),
+              _BookActions(onDelete: onDelete),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// Progress stays visible without desktop metadata and shares the app palette.
+class _BookProgress extends StatelessWidget {
+  const _BookProgress({required this.book});
+  final CatalogBook book;
+  @override
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: LinearProgressIndicator(
+      value: book.progress,
+      minHeight: 3,
+      backgroundColor: Theme.of(context).colorScheme.outlineVariant,
+      color: Theme.of(context).colorScheme.primary,
     ),
   );
 }

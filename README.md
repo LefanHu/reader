@@ -3,7 +3,8 @@
 An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and TXT imports are normalized by our Dart parser and displayed by a custom viewport using Flutter's text shaping and layout engine.
 
 - Import several EPUB or TXT files from the native document picker, up to 100 MB each.
-- Search by title or author; filter All / Reading / Finished; sort by recent activity or title. The adaptive library uses flat cover tiles and a compact resume card.
+- Search by title or author; filter All / Reading / Finished; sort by recent activity or title. The macOS library uses cover tiles with details on hover or keyboard focus; iPhone and iPad use lists with metadata alongside cover thumbnails. Both retain a compact resume card.
+- Subtle approximate word counts use the same normalized text as the reader. New imports count immediately; older books backfill in the background without changing reading positions. Unicode letter/number runs and individual Han/kana graphemes form a deterministic estimate; unspaced Thai and similar scripts can undercount.
 - Choose Paper, Sepia, or Dark from the library Appearance menu or reading settings. One saved palette applies immediately to the whole app, including menus and dialogs; typography controls affect book text only.
 - Switch Page flip / Pages / Scroll, typography, themes, and window sizes while retaining a grapheme-safe text position.
 - Preserve EPUB chapter structure, nested tables of contents, headings, paragraphs, and explicit line breaks. Publisher CSS, inline images, interactive links, and rich styling are omitted; local covers remain in the library.
@@ -26,7 +27,7 @@ flutter devices
 flutter run -d <ios-device-id>
 ```
 
-Library themes have desktop and compact visual baselines in `test/goldens/`. After intentional design changes, regenerate them with `flutter test test/library_theme_test.dart --update-goldens` and inspect all six images before committing.
+Library themes have desktop, hover-overlay, and compact iOS-list visual baselines in `test/goldens/`. After intentional design changes, regenerate them with `flutter test test/library_theme_test.dart --update-goldens` and inspect all nine images before committing.
 
 AI illustrations are inert unless the build supplies Firebase and API values:
 

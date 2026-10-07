@@ -46,7 +46,7 @@ void main() {
     addTearDown(controller.dispose);
     await tester.pumpWidget(
       MaterialApp(
-        theme: readerTheme,
+        theme: readerTheme.copyWith(platform: TargetPlatform.iOS),
         home: LibraryScreen(controller: controller),
       ),
     );

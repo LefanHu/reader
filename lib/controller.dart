@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'text/document.dart';
+import 'text/word_count.dart';
 
 import 'book_service.dart';
 import 'illustrations/api.dart';
@@ -30,11 +31,13 @@ class ReaderController extends ChangeNotifier {
     required this.picker,
     IllustrationStore? illustrationStore,
     TextIndexer? textIndexer,
+    BookWordCounter? wordCounter,
     IllustrationApi? illustrationApi,
     IllustrationDeletionOutbox? illustrationDeletionOutbox,
     this.illustrationGate = const IllustrationGate(),
   }) : illustrationStore = illustrationStore ?? FileIllustrationStore(),
        textIndexer = textIndexer ?? DocumentTextIndexer(),
+       wordCounter = wordCounter ?? FileBookWordCounter(),
        illustrationApi =
            illustrationApi ??
            HttpIllustrationApi(identity: FirebaseIllustrationIdentity()),
@@ -47,6 +50,9 @@ class ReaderController extends ChangeNotifier {
   final BookPicker picker;
   final IllustrationStore illustrationStore;
   final TextIndexer textIndexer;
+
+  /// Background normalized-text counting, independent of cloud indexing.
+  final BookWordCounter wordCounter;
   final IllustrationApi illustrationApi;
   final IllustrationDeletionOutbox illustrationDeletionOutbox;
   final IllustrationGate illustrationGate;
@@ -61,6 +67,7 @@ class ReaderController extends ChangeNotifier {
   int importDone = 0;
   int importTotal = 0;
   Timer? _positionSave;
+  bool _disposed = false;
   final Set<String> _advancingIllustrations = {};
   final Map<String, DateTime> _lastIllustrationRefresh = {};
 
@@ -95,7 +102,35 @@ class ReaderController extends ChangeNotifier {
         manifests.map((manifest) => MapEntry(manifest.bookHash, manifest)),
       );
     unawaited(_drainDeletionOutbox());
+    unawaited(_backfillWordCounts());
     notifyListeners();
+  }
+
+  // Snapshot identities only: positions can change while counting. Re-read the
+  // live record before merging, and never resurrect a deleted book or notify
+  // after disposal. Failures remain missing and retry on the next startup.
+  Future<void> _backfillWordCounts() async {
+    for (final candidate in List<CatalogBook>.of(books)) {
+      if (_disposed) return;
+      if (candidate.wordCount != null) continue;
+      try {
+        final count = await wordCounter.count(candidate.path);
+        if (_disposed) return;
+        final current = books
+            .where(
+              (book) =>
+                  book.addedAt == candidate.addedAt &&
+                  book.hash == candidate.hash &&
+                  book.path == candidate.path,
+            )
+            .firstOrNull;
+        if (current == null || current.wordCount != null) continue;
+        _replace(current.copyWith(wordCount: count));
+        await catalogStore.save(books);
+      } on Object {
+        // An unreadable section must not stop other books or offline reading.
+      }
+    }
   }
 
   /// Most recently opened book, used by the Continue reading card.
@@ -145,7 +180,9 @@ class ReaderController extends ChangeNotifier {
 
   /// Records recent activity before navigation enters the reader.
   Future<void> markOpened(CatalogBook book) async {
-    _replace(book.copyWith(lastOpenedAt: DateTime.now()));
+    final current = books.where((item) => item.hash == book.hash).firstOrNull;
+    if (current == null) return;
+    _replace(current.copyWith(lastOpenedAt: DateTime.now()));
     await catalogStore.save(books);
   }
 
@@ -540,6 +577,7 @@ class ReaderController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _positionSave?.cancel();
     super.dispose();
   }

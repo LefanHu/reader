@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' show CheckedState;
+import 'dart:ui' show CheckedState, PointerDeviceKind;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -34,6 +34,7 @@ List<CatalogBook> _books({bool longTitles = false, String? cover}) => [
             : ['Ernst Jünger', 'Virginia Woolf', 'Alain de Botton'][i],
       ],
       coverPath: cover,
+      wordCount: 52430 + i,
       addedAt: DateTime.utc(2026, 1, i + 1),
       lastOpenedAt: i == 0 ? DateTime.utc(2026, 2) : null,
       progress: i == 0 ? .18 : 0,
@@ -58,6 +59,7 @@ void main() {
       await (FontLoader(family)..addFont(rootBundle.load(path))).load();
     }
   });
+  setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.iOS);
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
   test(
@@ -135,6 +137,7 @@ void main() {
       buildReaderTheme(ReadingTheme.sepia).colorScheme.surface,
     );
     semantics.dispose();
+    debugDefaultTargetPlatformOverride = null;
     await tester.pumpWidget(const SizedBox.shrink());
     final restored = await testController(settingsStore: preferences);
     await tester.pumpWidget(ReaderApp(controller: restored));
@@ -144,6 +147,7 @@ void main() {
       Theme.of(tester.element(find.text('Your library'))).brightness,
       Brightness.light,
     );
+    debugDefaultTargetPlatformOverride = null;
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -208,6 +212,7 @@ void main() {
         Theme.of(tester.element(find.byType(AlertDialog))).colorScheme.surface,
         buildReaderTheme(ReadingTheme.dark).colorScheme.surface,
       );
+      debugDefaultTargetPlatformOverride = null;
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
@@ -238,13 +243,10 @@ void main() {
       tester.platformDispatcher.textScaleFactorTestValue = 2;
       addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
       await tester.pumpAndSettle();
-      final grid = tester.widget<SliverGrid>(find.byType(SliverGrid));
-      expect(
-        (grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount)
-            .crossAxisCount,
-        1,
-      );
+      expect(find.byType(SliverList), findsOneWidget);
+      expect(find.byType(SliverGrid), findsNothing);
       expect(tester.takeException(), isNull);
+      debugDefaultTargetPlatformOverride = null;
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
@@ -276,6 +278,7 @@ void main() {
           .every((image) => image.fit == BoxFit.contain),
       isTrue,
     );
+    debugDefaultTargetPlatformOverride = null;
     await tester.pumpWidget(const SizedBox.shrink());
     final missing = await testController(
       books: _books(cover: '${root.path}/missing.png'),
@@ -284,6 +287,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(Image), findsNothing);
     expect(tester.takeException(), isNull);
+    debugDefaultTargetPlatformOverride = null;
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -329,6 +333,24 @@ void main() {
               'goldens/library_${preset.name}_${compact ? 'compact' : 'desktop'}.png',
             ),
           );
+          if (!compact) {
+            final mouse = await tester.createGesture(
+              kind: PointerDeviceKind.mouse,
+            );
+            try {
+              await mouse.addPointer(location: Offset.zero);
+              await mouse.moveTo(
+                tester.getCenter(find.byType(AspectRatio).first),
+              );
+              await tester.pumpAndSettle();
+              await expectLater(
+                find.byKey(key),
+                matchesGoldenFile('goldens/library_${preset.name}_hover.png'),
+              );
+            } finally {
+              await mouse.removePointer();
+            }
+          }
           debugDefaultTargetPlatformOverride = null;
           await tester.pumpWidget(const SizedBox.shrink());
         },

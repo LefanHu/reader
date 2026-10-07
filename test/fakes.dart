@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:reader/text/document.dart';
+import 'package:reader/text/word_count.dart';
 import 'package:reader/controller.dart';
 import 'package:reader/book_service.dart';
 import 'package:reader/illustrations/api.dart';
@@ -240,6 +241,7 @@ Future<ReaderController> testController({
   List<CatalogBook> books = const [],
   List<ImportCandidate> files = const [],
   SettingsStore? settingsStore,
+  BookWordCounter? wordCounter,
   Directory? root,
 }) async {
   final directory =
@@ -251,6 +253,7 @@ Future<ReaderController> testController({
     picker: FakePicker(files),
     illustrationStore: MemoryIllustrationStore(),
     textIndexer: FakeTextIndexer(),
+    wordCounter: wordCounter ?? FakeWordCounter(),
     illustrationApi: FakeIllustrationApi(),
   );
   await controller.initialize();
@@ -269,3 +272,9 @@ CatalogBook testBook({TextPosition? position, double progress = 0}) =>
       lastPosition: position,
       progress: progress,
     );
+
+/// Default test backfill keeps widget scenarios independent of filesystem work.
+class FakeWordCounter implements BookWordCounter {
+  @override
+  Future<int> count(String sourcePath) async => 42;
+}
