@@ -11,7 +11,10 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   LicenseRegistry.addLicense(() async* {
     final notices = await rootBundle.loadString('THIRD_PARTY_NOTICES.md');
-    yield LicenseEntryWithLineBreaks(const ['Flureadium', 'Readium'], notices);
+    yield LicenseEntryWithLineBreaks(const ['Reader dependencies'], notices);
+    yield LicenseEntryWithLineBreaks(const [
+      'Unicode data',
+    ], await rootBundle.loadString('assets/licenses/Unicode-LICENSE.txt'));
   });
   final controller = await ReaderController.create();
   runApp(ReaderApp(controller: controller));
@@ -37,7 +40,7 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Persist the latest debounced locator before the process is suspended.
+    // Persist the latest debounced text position before the process is suspended.
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       widget.controller.flush();

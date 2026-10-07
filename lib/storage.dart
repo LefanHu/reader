@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models.dart';
+import 'illustrations/outbox.dart';
 
 /// Persistence boundary for imported book records and their private files.
 abstract interface class CatalogStore {
@@ -18,7 +19,7 @@ abstract interface class CatalogStore {
   Future<void> deleteFiles(CatalogBook book);
 }
 
-/// Stores a versioned catalog beside content-addressed EPUB directories.
+/// Stores a versioned catalog beside content-addressed book directories.
 ///
 /// Writes use temporary and backup files so startup can recover after an
 /// interruption between replacing the old catalog and committing the new one.
@@ -39,22 +40,34 @@ class FileCatalogStore implements CatalogStore {
     return FileCatalogStore(Directory('${support.path}/Reader'));
   }
 
+  Future<void> _writes = Future.value();
+  File get _reset => File('${root.path}/legacy-reset.json');
+
   @override
   Future<List<CatalogBook>> load() async {
     await root.create(recursive: true);
-    // Prefer the committed file, then recover an interrupted write or backup.
+    if (await FileSystemEntity.type('${root.path}/books', followLinks: false) ==
+        FileSystemEntityType.link) {
+      throw const FormatException('Book storage cannot be a symbolic link.');
+    }
+    if (await _reset.exists()) await _finishReset();
+    var legacy = false;
     for (final candidate in [_catalog, _temporary, _backup]) {
       if (!await candidate.exists()) continue;
       try {
         final json = jsonDecode(await candidate.readAsString());
-        if (json is! Map || json['version'] != 1 || json['books'] is! List) {
+        if (json is! Map || json['books'] is! List) continue;
+        if (json['version'] != 2) {
+          legacy = true;
           continue;
         }
-        // Catalog entries whose EPUB disappeared are not shown as broken books.
         final books = (json['books'] as List)
             .whereType<Map>()
             .map((item) => CatalogBook.fromJson(item.cast<String, dynamic>()))
-            .where((book) => File(book.path).existsSync())
+            .where(
+              (book) =>
+                  _ownedDirectory(book) != null && File(book.path).existsSync(),
+            )
             .toList();
         if (candidate.path != _catalog.path) await save(books);
         return books;
@@ -62,28 +75,118 @@ class FileCatalogStore implements CatalogStore {
         continue;
       }
     }
+    // Also clear orphaned legacy imports if their catalog was lost/corrupted.
+    if (legacy || await Directory('${root.path}/books').exists()) {
+      final hashes = <String>[];
+      final booksRoot = Directory('${root.path}/books');
+      if (await booksRoot.exists()) {
+        await for (final entry in booksRoot.list(followLinks: false)) {
+          final hash = entry.uri.pathSegments
+              .where((part) => part.isNotEmpty)
+              .last;
+          if (entry is Directory && RegExp(r'^[a-f0-9]{64}$').hasMatch(hash)) {
+            hashes.add(hash);
+          }
+        }
+      }
+      // The durable marker precedes catalog replacement. Restart repeats
+      // enqueue/commit/cleanup, never deleting data before privacy requests land.
+      final temp = File('${_reset.path}.tmp');
+      await temp.writeAsString(jsonEncode({'hashes': hashes}), flush: true);
+      await temp.rename(_reset.path);
+      await _finishReset();
+    }
     return [];
   }
 
+  Future<void> _finishReset() async {
+    final marker = jsonDecode(await _reset.readAsString()) as Map;
+    final hashes = (marker['hashes'] as List)
+        .whereType<String>()
+        .where((hash) => RegExp(r'^[a-f0-9]{64}$').hasMatch(hash))
+        .toList();
+    final outbox = FileIllustrationDeletionOutbox(root);
+    for (final hash in hashes) {
+      final directory = Directory('${root.path}/books/$hash');
+      if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        continue;
+      }
+      for (final suffix in ['', '.tmp', '.bak']) {
+        final sidecar = File('${directory.path}/visuals/manifest.json$suffix');
+        // Never follow a manipulated legacy sidecar outside app-owned storage.
+        if (await FileSystemEntity.type(
+                  '${directory.path}/visuals',
+                  followLinks: false,
+                ) !=
+                FileSystemEntityType.directory ||
+            await FileSystemEntity.type(sidecar.path, followLinks: false) !=
+                FileSystemEntityType.file) {
+          continue;
+        }
+        try {
+          final manifest = jsonDecode(await sidecar.readAsString()) as Map;
+          final id = (manifest['profile'] as Map?)?['cloudBookId'];
+          if (id is String && id.isNotEmpty) await outbox.enqueue(id);
+        } on FormatException {
+          continue;
+        } on TypeError {
+          continue;
+        }
+      }
+    }
+    await save([]);
+    for (final hash in hashes) {
+      final directory = Directory('${root.path}/books/$hash');
+      if (await FileSystemEntity.type(directory.path, followLinks: false) ==
+          FileSystemEntityType.directory) {
+        await directory.delete(recursive: true);
+      }
+    }
+    await _reset.delete();
+  }
+
   @override
-  Future<void> save(List<CatalogBook> books) async {
-    await root.create(recursive: true);
+  Future<void> save(List<CatalogBook> books) {
+    // Serialize generations; lifecycle flushes can overlap debounced writes.
     final body = jsonEncode({
-      'version': 1,
+      'version': 2,
       'books': books.map((book) => book.toJson()).toList(),
     });
-    // Keep one recoverable generation until the replacement is committed.
-    await _temporary.writeAsString(body, flush: true);
-    if (await _backup.exists()) await _backup.delete();
-    if (await _catalog.exists()) await _catalog.rename(_backup.path);
-    await _temporary.rename(_catalog.path);
-    if (await _backup.exists()) await _backup.delete();
+    final operation = _writes.then((_) async {
+      await root.create(recursive: true);
+      await _temporary.writeAsString(body, flush: true);
+      if (await _backup.exists()) await _backup.delete();
+      if (await _catalog.exists()) await _catalog.rename(_backup.path);
+      await _temporary.rename(_catalog.path);
+      if (await _backup.exists()) await _backup.delete();
+    });
+    _writes = operation.catchError((Object _) {});
+    return operation;
+  }
+
+  Directory? _ownedDirectory(CatalogBook book) {
+    if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(book.hash)) return null;
+    if (FileSystemEntity.typeSync('${root.path}/books', followLinks: false) !=
+        FileSystemEntityType.directory) {
+      return null;
+    }
+    final expected = Directory('${root.absolute.path}/books/${book.hash}');
+    if (File(book.path).absolute.parent.path != expected.path) return null;
+    if (FileSystemEntity.typeSync(expected.path, followLinks: false) !=
+        FileSystemEntityType.directory) {
+      return null;
+    }
+    return expected;
   }
 
   @override
   Future<void> deleteFiles(CatalogBook book) async {
-    final directory = File(book.path).parent;
-    if (await directory.exists()) await directory.delete(recursive: true);
+    final directory = _ownedDirectory(book);
+    if (directory == null) {
+      throw const FormatException('Book path is outside owned storage.');
+    }
+    await directory.delete(recursive: true);
   }
 }
 

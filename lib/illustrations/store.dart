@@ -23,7 +23,7 @@ abstract interface class IllustrationStore {
   Future<void> deleteSceneFiles(CatalogBook book, String sceneId);
 }
 
-/// Stores sidecars under `<book directory>/visuals` without touching the EPUB.
+/// Stores sidecars under `<book directory>/visuals` without touching the source book.
 class FileIllustrationStore implements IllustrationStore {
   Directory _root(CatalogBook book) =>
       Directory('${File(book.path).parent.path}/visuals');
@@ -101,11 +101,26 @@ class FileIllustrationStore implements IllustrationStore {
     }
   }
 
-  Future<void> _atomicJson(File destination, Map<String, dynamic> json) async {
+  static final _writes = <String, Future<void>>{};
+  Future<void> _atomicJson(File destination, Map<String, dynamic> json) {
+    final key = destination.absolute.path;
+    final body = jsonEncode(json);
+    final operation = (_writes[key] ?? Future<void>.value()).then(
+      (_) => _writeJson(destination, body),
+    );
+    final tail = operation.catchError((Object _) {});
+    _writes[key] = tail;
+    tail.whenComplete(() {
+      if (identical(_writes[key], tail)) _writes.remove(key);
+    });
+    return operation;
+  }
+
+  Future<void> _writeJson(File destination, String body) async {
     await destination.parent.create(recursive: true);
     final temporary = File('${destination.path}.tmp');
     final backup = File('${destination.path}.bak');
-    await temporary.writeAsString(jsonEncode(json), flush: true);
+    await temporary.writeAsString(body, flush: true);
     if (await backup.exists()) await backup.delete();
     if (await destination.exists()) await destination.rename(backup.path);
     await temporary.rename(destination.path);

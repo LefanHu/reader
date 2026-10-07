@@ -2,8 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flureadium/flureadium.dart';
-import 'package:url_launcher/url_launcher.dart';
+
+import 'text/document.dart' as text;
+import 'text/viewport.dart';
 
 import 'controller.dart';
 import 'illustrations/api.dart';
@@ -11,44 +12,34 @@ import 'illustrations/models.dart';
 import 'models.dart';
 import 'theme.dart';
 
-/// Injection point for replacing the native platform view in widget tests.
-typedef ReaderViewBuilder = Widget Function({
-  required Publication publication,
-  required Locator? initialLocator,
-  required ValueChanged<Offset> onTap,
-  required ValueChanged<String> onExternalLink,
-  required ValueChanged<Locator> onLocatorChanged,
-  required VoidCallback onReady,
-});
-
-/// Flutter shell around the native Readium publication navigator.
-///
-/// Flutter owns controls, consent dialogs, and settings. Readium owns EPUB
-/// layout, internal navigation, and the durable locator emitted by the content.
+/// Flutter shell around the custom normalized text viewport.
+/// The shell owns controls and consent; positions always refer to source text.
 class ReaderScreen extends StatefulWidget {
   /// Creates a reader for [book] using the shared [controller].
   const ReaderScreen({
     super.key,
     required this.book,
     required this.controller,
-    this.readerBuilder,
+    this.documentStore,
   });
 
-  /// Catalog record containing the EPUB path and saved locator.
+  /// Catalog record containing the private source path and saved text position.
   final CatalogBook book;
 
-  /// Owner of Readium, settings, and progress persistence.
+  /// Owner of settings, illustration jobs, and progress persistence.
   final ReaderController controller;
 
-  /// Optional native-view replacement used by widget tests.
-  final ReaderViewBuilder? readerBuilder;
+  /// Optional document boundary for tests; production reads private sidecars.
+  final text.TextDocumentStore? documentStore;
+
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
 class _ReaderScreenState extends State<ReaderScreen> {
-  late final Future<Publication> publication;
-  ReaderSettings? appliedSettings;
+  late final Future<text.TextDocument> publication;
+  final navigation = TextReaderNavigation();
+  late final store = widget.documentStore ?? text.TextDocumentStore();
   bool controls = true;
   bool closed = false;
   bool revealingIllustration = false;
@@ -62,25 +53,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     widget.controller.addListener(_controllerChanged);
   }
 
-  Future<Publication> _open() async {
-    // Defaults must be installed before Readium creates its navigator or the
-    // first frame can briefly use publisher/default presentation settings.
-    widget.controller.engine.setDefaults(
-      _preferences(widget.controller.settings),
-    );
-    appliedSettings = widget.controller.settings;
-    return widget.controller.engine.open(widget.book.path);
-  }
+  Future<text.TextDocument> _open() => store.load(widget.book.path);
 
-  void _controllerChanged() {
-    final current = widget.controller.settings;
-    if (current != appliedSettings) {
-      appliedSettings = current;
-      widget.controller.engine.setPreferences(_preferences(current));
-      if (mounted) setState(() {});
-    }
-    _queueIllustrationReveal();
-  }
+  void _controllerChanged() => _queueIllustrationReveal();
 
   void _queueIllustrationReveal() {
     if (!mounted ||
@@ -173,23 +148,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     revealingIllustration = false;
   }
 
-  EPUBPreferences _preferences(ReaderSettings settings) {
-    final colors = switch (settings.theme) {
-      ReadingTheme.paper => (const Color(0xFFF7F4ED), const Color(0xFF292E29)),
-      ReadingTheme.sepia => (const Color(0xFFF0E1C2), const Color(0xFF453A2E)),
-      ReadingTheme.dark => (const Color(0xFF171A18), const Color(0xFFE8E3D8)),
-    };
-    return EPUBPreferences(
-      fontFamily: settings.serif ? 'serif' : 'sans-serif',
-      fontSize: settings.fontSize,
-      fontWeight: 1,
-      verticalScroll: settings.mode == ReadingMode.scroll,
-      backgroundColor: colors.$1,
-      textColor: colors.$2,
-      pageMargins: 1,
-    );
-  }
-
   Color get _background => switch (widget.controller.settings.theme) {
     ReadingTheme.paper => const Color(0xFFF7F4ED),
     ReadingTheme.sepia => const Color(0xFFF0E1C2),
@@ -200,54 +158,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ? const Color(0xFFE8E3D8)
       : ink;
 
-  Future<void> _externalLink(String value) async {
-    final uri = Uri.tryParse(value);
-    if (uri == null || !{'http', 'https'}.contains(uri.scheme) || !mounted) {
-      return;
-    }
-    // EPUBs are untrusted documents. Keep internal navigation in Readium, but
-    // require explicit consent before handing HTTP(S) destinations to the OS.
-    final approved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Open external link?'),
-        content: Text('This book wants to open ${uri.host} in Safari.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Open Safari'),
-          ),
-        ],
-      ),
-    );
-    if (approved == true) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  Future<void> _showToc(Publication pub) async {
-    final items = <({Link link, int depth})>[];
-    // Flatten only for presentation; retain each original Link so goByLink can
-    // preserve fragments and other Readium navigation metadata.
-    void add(List<Link> links, int depth) {
+  Future<void> _showToc(text.TextDocument pub) async {
+    final items = <({text.TextContentsEntry link, int depth})>[];
+    // Flatten only for presentation, retaining resolved fragment targets.
+    void add(List<text.TextContentsEntry> links, int depth) {
       for (final link in links) {
         items.add((link: link, depth: depth));
         add(link.children, depth + 1);
       }
     }
 
-    add(pub.tableOfContents, 0);
+    add(pub.contents, 0);
     if (items.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('This book has no table of contents.')),
       );
       return;
     }
-    final choice = await showModalBottomSheet<Link>(
+    final choice = await showModalBottomSheet<text.TextContentsEntry>(
       context: context,
       isScrollControlled: true,
       builder: (context) => SafeArea(
@@ -275,8 +203,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             left: 20 + item.depth * 20.0,
                             right: 20,
                           ),
-                          title: Text(item.link.title ?? 'Untitled section'),
-                          onTap: () => Navigator.pop(context, item.link),
+                          title: Text(item.link.title),
+                          onTap: item.link.position == null
+                              ? null
+                              : () => Navigator.pop(context, item.link),
                         ),
                       )
                       .toList(),
@@ -287,7 +217,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         ),
       ),
     );
-    if (choice != null) await widget.controller.engine.goByLink(choice, pub);
+    if (choice?.position != null) navigation.goTo(choice!.position!);
   }
 
   Future<void> _showSettings() async {
@@ -395,12 +325,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _close() async {
-    // System back, toolbar back, and disposal can race; close the singleton
-    // native publication session exactly once.
+    // Back gestures and toolbar actions can race; flush only once on exit.
     if (closed) return;
     closed = true;
     await widget.controller.flush();
-    await widget.controller.engine.close();
     if (mounted) Navigator.pop(context);
   }
 
@@ -409,7 +337,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     revealTimer?.cancel();
     widget.controller.removeListener(_controllerChanged);
     widget.controller.flush();
-    if (!closed) widget.controller.engine.close();
     super.dispose();
   }
 
@@ -424,7 +351,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       builder: (context, _) => Scaffold(
         backgroundColor: _background,
         body: SafeArea(
-          child: FutureBuilder<Publication>(
+          child: FutureBuilder<text.TextDocument>(
             future: publication,
             builder: (context, snapshot) {
               if (snapshot.hasError) {
@@ -464,6 +391,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       ),
                     ),
                   Expanded(
+                    // A stable key preserves viewport state when conditional
+                    // chrome changes Flutter's sibling reconciliation order.
+                    key: const ValueKey('reading-content'),
                     child: Center(
                       child: ConstrainedBox(
                         // Long lines reduce readability, especially on iPad.
@@ -483,21 +413,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       foreground: _foreground,
                       pages:
                           widget.controller.settings.mode == ReadingMode.pages,
-                      onPrevious:
-                          // Visual left/right controls follow publication
-                          // direction while retaining their spatial meaning.
-                          pub.metadata.effectiveReadingProgression ==
-                              ReadingProgression.rtl
-                          ? widget.controller.engine.goRight
-                          : widget.controller.engine.goLeft,
-                      onNext:
-                          pub.metadata.effectiveReadingProgression ==
-                              ReadingProgression.rtl
-                          ? widget.controller.engine.goLeft
-                          : widget.controller.engine.goRight,
-                      onPreviousChapter:
-                          widget.controller.engine.previousChapter,
-                      onNextChapter: widget.controller.engine.nextChapter,
+                      rightToLeft: navigation.rightToLeft,
+                      onPrevious: navigation.previous,
+                      onNext: navigation.next,
+                      onPreviousChapter: navigation.previousSection,
+                      onNextChapter: navigation.nextSection,
                     ),
                 ],
               );
@@ -508,46 +428,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ),
   );
 
-  Widget _readerView(Publication pub) {
-    // A full locator survives mode and viewport changes more reliably than a
-    // page index, which is derived from the current typography and dimensions.
-    final initial = Locator.fromJson(
-      widget.book.lastLocator == null
-          ? null
-          : Map<String, dynamic>.of(widget.book.lastLocator!),
-    );
-    void locatorChanged(Locator locator) {
-      widget.controller.saveLocator(widget.book, locator);
-      if (chapterTitle != locator.title && mounted) {
-        setState(() => chapterTitle = locator.title);
+  Widget _readerView(text.TextDocument document) => TextViewport(
+    document: document,
+    sourcePath: widget.book.path,
+    store: store,
+    navigation: navigation,
+    settings: widget.controller.settings,
+    foreground: _foreground,
+    initialPosition: widget.book.lastPosition,
+    onTap: () => setState(() => controls = !controls),
+    onPosition: (position, progress, title) {
+      widget.controller.savePosition(widget.book, position, progress);
+      if (chapterTitle != title && mounted) {
+        setState(() => chapterTitle = title);
       }
-    }
-
-    void ready() => widget.controller.engine.setPreferences(
-      _preferences(widget.controller.settings),
-    );
-    // Tests supply a pure Flutter view; production embeds Readium's platform
-    // view with the identical callback contract.
-    final custom = widget.readerBuilder;
-    if (custom != null) {
-      return custom(
-        publication: pub,
-        initialLocator: initial,
-        onTap: (_) => setState(() => controls = !controls),
-        onExternalLink: _externalLink,
-        onLocatorChanged: locatorChanged,
-        onReady: ready,
-      );
-    }
-    return ReadiumReaderWidget(
-      publication: pub,
-      initialLocator: initial,
-      onTap: (_) => setState(() => controls = !controls),
-      onExternalLinkActivated: _externalLink,
-      onLocatorChanged: locatorChanged,
-      onReady: ready,
-    );
-  }
+    },
+  );
 }
 
 /// Top reader controls for leaving, navigating, configuring, and hiding chrome.
@@ -652,7 +548,7 @@ class _IllustrationConsentDialogState
           children: [
             const Text(
               'Reader sends only the current and next chapter’s normalized '
-              'text to the private generation service. The EPUB is never '
+              'text to the private generation service. The source book is never '
               'uploaded or changed, and art stays locked until you pass the '
               'scene it depicts.',
             ),
@@ -843,6 +739,7 @@ class _NavigationBar extends StatelessWidget {
     required this.progress,
     required this.foreground,
     required this.pages,
+    required this.rightToLeft,
     required this.onPrevious,
     required this.onNext,
     required this.onPreviousChapter,
@@ -851,10 +748,8 @@ class _NavigationBar extends StatelessWidget {
   final double progress;
   final Color foreground;
   final bool pages;
-  final Future<void> Function() onPrevious,
-      onNext,
-      onPreviousChapter,
-      onNextChapter;
+  final bool rightToLeft;
+  final VoidCallback onPrevious, onNext, onPreviousChapter, onNextChapter;
   @override
   Widget build(BuildContext context) => SizedBox(
     height: 62,
@@ -870,7 +765,7 @@ class _NavigationBar extends StatelessWidget {
           tooltip: pages ? 'Previous page' : 'Previous screen',
           color: foreground,
           onPressed: onPrevious,
-          icon: const Icon(Icons.chevron_left),
+          icon: Icon(rightToLeft ? Icons.chevron_right : Icons.chevron_left),
         ),
         Expanded(
           child: Semantics(
@@ -894,7 +789,7 @@ class _NavigationBar extends StatelessWidget {
           tooltip: pages ? 'Next page' : 'Next screen',
           color: foreground,
           onPressed: onNext,
-          icon: const Icon(Icons.chevron_right),
+          icon: Icon(rightToLeft ? Icons.chevron_left : Icons.chevron_right),
         ),
         IconButton(
           tooltip: 'Next chapter',

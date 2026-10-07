@@ -1,4 +1,6 @@
-/// Controls how reflowable EPUB content moves through the reader viewport.
+import 'text/document.dart';
+
+/// Controls how normalized text moves through the reader viewport.
 enum ReadingMode {
   /// One continuous vertical flow.
   scroll,
@@ -7,7 +9,7 @@ enum ReadingMode {
   pages,
 }
 
-/// Color presets translated into Readium background and foreground colors.
+/// Color presets used by the Flutter text viewport.
 enum ReadingTheme {
   /// Neutral ivory paper with dark ink.
   paper,
@@ -59,10 +61,10 @@ class ReaderSettings {
   /// Active reader color preset.
   final ReadingTheme theme;
 
-  /// Readium font scale as an integer percentage.
+  /// Reader font scale as an integer percentage.
   final int fontSize;
 
-  /// Whether Readium should prefer its generic serif family.
+  /// Whether the viewport should prefer the bundled serif reading family.
   final bool serif;
 
   /// Returns a new value with only the supplied fields replaced.
@@ -95,10 +97,10 @@ class ReaderSettings {
   );
 }
 
-/// Durable metadata and reading state for one locally stored EPUB.
+/// Durable metadata and reading state for one locally stored EPUB or TXT book.
 ///
-/// [lastLocator] contains the complete Readium locator rather than a derived
-/// page number, allowing the same passage to be restored in either layout.
+/// [lastPosition] identifies normalized text rather than a derived page number,
+/// allowing the same passage to be restored in either layout.
 class CatalogBook {
   /// Creates a durable catalog record from imported publication metadata.
   const CatalogBook({
@@ -111,18 +113,18 @@ class CatalogBook {
     this.identifier,
     this.language,
     this.coverPath,
-    this.lastLocator,
+    this.lastPosition,
     this.progress = 0,
     this.lastOpenedAt,
   });
 
-  /// SHA-256 of the source EPUB, used as its storage key and duplicate ID.
+  /// SHA-256 of the source bytes, used as its storage key and duplicate ID.
   final String hash;
 
   /// Original filename shown in import results and diagnostics.
   final String fileName;
 
-  /// Private application-support path to the copied EPUB.
+  /// Private application-support path to the copied EPUB or TXT source.
   final String path;
 
   /// Display title from publication metadata or the source filename.
@@ -140,16 +142,16 @@ class CatalogBook {
   /// Cached local cover path, or `null` for a generated cover.
   final String? coverPath;
 
-  /// Last locator emitted by Readium, preserved without lossy conversion.
-  final Map<String, dynamic>? lastLocator;
+  /// Leading normalized text position, independent of typography and viewport.
+  final TextPosition? lastPosition;
 
   /// Publication-wide progress normalized to the inclusive range 0–1.
   final double progress;
 
-  /// Time at which this EPUB was committed to the catalog.
+  /// Time at which this book was committed to the catalog.
   final DateTime addedAt;
 
-  /// Most recent reader entry or locator update.
+  /// Most recent reader entry or position update.
   final DateTime? lastOpenedAt;
 
   /// Human-readable author metadata with a reliable empty-metadata fallback.
@@ -157,15 +159,15 @@ class CatalogBook {
       authors.isEmpty ? 'Unknown author' : authors.join(', ');
 
   /// Whether the user has opened or advanced into this publication.
-  bool get started => lastLocator != null || progress > 0;
+  bool get started => lastPosition != null || progress > 0;
 
-  /// Treats the final half-percent as complete to absorb locator rounding.
+  /// Treats the final half-percent as complete to absorb position rounding.
   bool get finished => progress >= 0.995;
 
   /// Returns a new record with mutable reading-state fields replaced.
   CatalogBook copyWith({
     String? coverPath,
-    Map<String, dynamic>? lastLocator,
+    TextPosition? lastPosition,
     double? progress,
     DateTime? lastOpenedAt,
   }) => CatalogBook(
@@ -177,7 +179,7 @@ class CatalogBook {
     identifier: identifier,
     language: language,
     coverPath: coverPath ?? this.coverPath,
-    lastLocator: lastLocator ?? this.lastLocator,
+    lastPosition: lastPosition ?? this.lastPosition,
     progress: progress ?? this.progress,
     addedAt: addedAt,
     lastOpenedAt: lastOpenedAt ?? this.lastOpenedAt,
@@ -193,7 +195,7 @@ class CatalogBook {
     if (identifier != null) 'identifier': identifier,
     if (language != null) 'language': language,
     if (coverPath != null) 'coverPath': coverPath,
-    if (lastLocator != null) 'lastLocator': lastLocator,
+    if (lastPosition != null) 'lastPosition': lastPosition!.toJson(),
     'progress': progress,
     'addedAt': addedAt.toUtc().toIso8601String(),
     if (lastOpenedAt != null)
@@ -212,7 +214,11 @@ class CatalogBook {
     identifier: json['identifier'] as String?,
     language: json['language'] as String?,
     coverPath: json['coverPath'] as String?,
-    lastLocator: (json['lastLocator'] as Map?)?.cast<String, dynamic>(),
+    lastPosition: json['lastPosition'] == null
+        ? null
+        : TextPosition.fromJson(
+            (json['lastPosition'] as Map).cast<String, dynamic>(),
+          ),
     progress: ((json['progress'] as num?)?.toDouble() ?? 0).clamp(0, 1),
     addedAt: DateTime.parse(json['addedAt'] as String),
     lastOpenedAt: json['lastOpenedAt'] == null
@@ -223,7 +229,7 @@ class CatalogBook {
 
 /// Outcome categories reported independently for each selected file.
 enum ImportStatus {
-  /// The EPUB was validated and committed.
+  /// The source book was validated and committed.
   imported,
 
   /// An identical SHA-256 hash already exists in the catalog.
@@ -233,7 +239,7 @@ enum ImportStatus {
   failed,
 }
 
-/// User-facing result of one EPUB import attempt.
+/// User-facing result of one book import attempt.
 class ImportResult {
   /// Creates an outcome for one selected filename.
   const ImportResult(this.fileName, this.status, {this.message});

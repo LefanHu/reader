@@ -1,22 +1,14 @@
 # Third-party notices
 
-Reader includes or depends on the following software. Package versions used by a build are recorded in `pubspec.lock` and the CocoaPods lockfile.
-
-## Flureadium
-
-Copyright the Flureadium contributors. Licensed under the GNU Lesser General Public License, version 3.0 (LGPL-3.0). Source and license: <https://github.com/Mulev/flureadium>.
-
-Flureadium is integrated as a Flutter plugin. Before distributing the application, obtain legal review of the final linking, relinking, source-offer, attribution, and license-delivery process required by the LGPL.
-
-## Readium Swift Toolkit and Readium components
-
-Copyright the Readium Foundation and contributors. Licensed under the BSD 3-Clause License. Source and license: <https://github.com/readium/swift-toolkit>.
-
-Readium components are resolved through Flureadium's iOS CocoaPods integration. Preserve their copyright and license notices in distributed builds.
+Reader uses Flutter's text layout engine and the packages recorded in `pubspec.lock` and the CocoaPods lockfiles. The in-app **Open source licenses** screen displays licenses registered in Flutter's `LicenseRegistry`.
 
 ## Flutter packages
 
-`file_picker`, `path_provider`, `crypto`, `shared_preferences`, `url_launcher`, and their transitive packages retain their respective licenses. The in-app **Open source licenses** screen displays licenses registered in Flutter's `LicenseRegistry`.
+`archive`, `characters`, `crypto`, `file_picker`, `firebase_app_check`, `firebase_auth`, `firebase_core`, `html`, `http`, `path_provider`, `shared_preferences`, `xml`, and their transitive dependencies retain their respective licenses. Firebase's Apple integration is resolved through CocoaPods.
+
+## Unicode data
+
+The paragraph-direction table in `lib/text/direction.dart` is generated from Unicode 17.0.0 `DerivedBidiClass.txt` data. Unicode data is copyright Unicode, Inc. and distributed under the Unicode Data Files and Software License: <https://www.unicode.org/license.txt>.
 
 ## Fonts
 

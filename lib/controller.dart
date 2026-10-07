@@ -5,9 +5,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flureadium/flureadium.dart';
 
-import 'epub_service.dart';
+import 'text/document.dart';
+
+import 'book_service.dart';
 import 'illustrations/api.dart';
 import 'illustrations/gate.dart';
 import 'illustrations/indexer.dart';
@@ -17,7 +18,7 @@ import 'illustrations/store.dart';
 import 'models.dart';
 import 'storage.dart';
 
-/// Owns session state and coordinates UI, persistence, Readium, and art jobs.
+/// Owns session state and coordinates UI, persistence, normalized text, and art jobs.
 ///
 /// This remains the app's only shared [ChangeNotifier]. Illustration services
 /// are injected boundaries so reading and tests never depend on cloud plugins.
@@ -27,14 +28,13 @@ class ReaderController extends ChangeNotifier {
     required this.settingsStore,
     required this.importer,
     required this.picker,
-    required this.engine,
     IllustrationStore? illustrationStore,
-    EpubTextIndexer? textIndexer,
+    TextIndexer? textIndexer,
     IllustrationApi? illustrationApi,
     IllustrationDeletionOutbox? illustrationDeletionOutbox,
     this.illustrationGate = const IllustrationGate(),
   }) : illustrationStore = illustrationStore ?? FileIllustrationStore(),
-       textIndexer = textIndexer ?? ArchiveEpubTextIndexer(),
+       textIndexer = textIndexer ?? DocumentTextIndexer(),
        illustrationApi =
            illustrationApi ??
            HttpIllustrationApi(identity: FirebaseIllustrationIdentity()),
@@ -43,11 +43,10 @@ class ReaderController extends ChangeNotifier {
 
   final CatalogStore catalogStore;
   final SettingsStore settingsStore;
-  final EpubImporter importer;
-  final EpubPicker picker;
-  final ReadiumEngine engine;
+  final BookImporter importer;
+  final BookPicker picker;
   final IllustrationStore illustrationStore;
-  final EpubTextIndexer textIndexer;
+  final TextIndexer textIndexer;
   final IllustrationApi illustrationApi;
   final IllustrationDeletionOutbox illustrationDeletionOutbox;
   final IllustrationGate illustrationGate;
@@ -61,20 +60,18 @@ class ReaderController extends ChangeNotifier {
   String? illustrationError;
   int importDone = 0;
   int importTotal = 0;
-  Timer? _locatorSave;
+  Timer? _positionSave;
   final Set<String> _advancingIllustrations = {};
   final Map<String, DateTime> _lastIllustrationRefresh = {};
 
   /// Creates the production dependency graph and restores persisted state.
   static Future<ReaderController> create() async {
     final store = await FileCatalogStore.create();
-    final engine = FlureadiumEngine();
     final controller = ReaderController(
       catalogStore: store,
       settingsStore: PreferenceSettingsStore(),
-      importer: EpubImporter(root: store.root, engine: engine),
-      picker: NativeEpubPicker(),
-      engine: engine,
+      importer: BookImporter(root: store.root),
+      picker: NativeBookPicker(),
       illustrationDeletionOutbox: FileIllustrationDeletionOutbox(store.root),
     );
     await controller.initialize();
@@ -117,8 +114,7 @@ class ReaderController extends ChangeNotifier {
 
   /// Picks files and imports them serially.
   ///
-  /// Flureadium owns one native publication session, so overlapping imports
-  /// could close or replace the publication another import is inspecting.
+  /// Serial staging bounds memory and avoids duplicate directory commits.
   Future<List<ImportResult>> pickAndImport() async {
     final candidates = await picker.pick();
     if (candidates.isEmpty) return [];
@@ -127,21 +123,24 @@ class ReaderController extends ChangeNotifier {
     importTotal = candidates.length;
     notifyListeners();
     final results = <ImportResult>[];
-    final hashes = books.map((book) => book.hash).toSet();
-    for (final candidate in candidates) {
-      final imported = await importer.import(candidate, hashes);
-      results.add(imported.result);
-      if (imported.book != null) {
-        books = [...books, imported.book!];
-        hashes.add(imported.book!.hash);
-        await catalogStore.save(books);
+    try {
+      final hashes = books.map((book) => book.hash).toSet();
+      for (final candidate in candidates) {
+        final imported = await importer.import(candidate, hashes);
+        results.add(imported.result);
+        if (imported.book != null) {
+          books = [...books, imported.book!];
+          hashes.add(imported.book!.hash);
+          await catalogStore.save(books);
+        }
+        importDone++;
+        notifyListeners();
       }
-      importDone++;
+      return results;
+    } finally {
+      importing = false;
       notifyListeners();
     }
-    importing = false;
-    notifyListeners();
-    return results;
   }
 
   /// Records recent activity before navigation enters the reader.
@@ -159,6 +158,15 @@ class ReaderController extends ChangeNotifier {
     notifyListeners();
     try {
       final index = await _indexFor(book);
+      await illustrationApi.signIn();
+      await _drainDeletionOutbox();
+      // Reimported bytes produce the same cloud identity. Finish old deletions
+      // before registration so a delayed retry cannot delete the new profile.
+      if ((await illustrationDeletionOutbox.load()).isNotEmpty) {
+        throw const IllustrationException(
+          'Cloud cleanup is pending. Try enabling illustrations again when connected.',
+        );
+      }
       return await illustrationApi.registerBook(
         book,
         chapterCount: index.chapters.length,
@@ -195,30 +203,32 @@ class ReaderController extends ChangeNotifier {
       book,
       manifest,
       await _indexFor(book),
-      book.lastLocator,
+      book.lastPosition,
     );
   }
 
-  /// Updates the complete locator and evaluates spoiler gates asynchronously.
-  Future<void> saveLocator(CatalogBook book, Locator locator) async {
+  /// Updates the leading text position and evaluates spoiler gates asynchronously.
+  Future<void> savePosition(
+    CatalogBook book,
+    TextPosition position,
+    double progress,
+  ) async {
     final current = books.firstWhere(
       (item) => item.hash == book.hash,
       orElse: () => book,
     );
-    final progress = (locator.locations?.totalProgression ?? current.progress)
-        .clamp(0.0, 1.0);
     _replace(
       current.copyWith(
-        lastLocator: locator.toJson(),
-        progress: progress,
+        lastPosition: position,
+        progress: progress.clamp(0, 1),
         lastOpenedAt: DateTime.now(),
       ),
     );
-    _locatorSave?.cancel();
-    _locatorSave = Timer(const Duration(milliseconds: 500), () {
+    _positionSave?.cancel();
+    _positionSave = Timer(const Duration(milliseconds: 500), () {
       catalogStore.save(books);
     });
-    unawaited(_advanceIllustrations(book, locator));
+    unawaited(_advanceIllustrations(book, position));
   }
 
   /// First downloaded scene that has not yet interrupted the reader.
@@ -263,16 +273,15 @@ class ReaderController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Polls auxiliary work while the reader is idle on a stable locator.
+  /// Polls auxiliary work while the reader is idle on a stable text position.
   Future<void> refreshIllustrations(CatalogBook book) async {
     final current = books.where((item) => item.hash == book.hash).firstOrNull;
-    final raw = current?.lastLocator ?? book.lastLocator;
+    final raw = current?.lastPosition ?? book.lastPosition;
     if (raw == null) return;
-    final locator = Locator.fromJson(Map<String, dynamic>.of(raw));
-    if (locator != null) await _advanceIllustrations(book, locator);
+    await _advanceIllustrations(book, raw);
   }
 
-  /// Removes one local and cloud scene without modifying the source EPUB.
+  /// Removes one local and cloud scene without modifying the source book.
   Future<void> deleteIllustration(
     CatalogBook book,
     IllustrationScene scene,
@@ -295,7 +304,7 @@ class ReaderController extends ChangeNotifier {
 
   /// Forces pending reading state to disk during lifecycle transitions.
   Future<void> flush() async {
-    _locatorSave?.cancel();
+    _positionSave?.cancel();
     await catalogStore.save(books);
   }
 
@@ -319,15 +328,31 @@ class ReaderController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _drainDeletionOutbox() async {
-    if (!illustrationApi.configured) return;
-    for (final pending in await illustrationDeletionOutbox.load()) {
-      try {
-        await illustrationApi.deleteBook(pending.cloudBookId);
-        await illustrationDeletionOutbox.remove(pending.cloudBookId);
-      } on Object {
-        // Leave remaining records durable for the next app launch.
+  Future<void>? _deletionDrain;
+  Future<void> _drainDeletionOutbox() => _deletionDrain ??=
+      _performDeletionDrain().whenComplete(() => _deletionDrain = null);
+
+  Future<void> _performDeletionDrain() async {
+    try {
+      final pendingDeletions = await illustrationDeletionOutbox.load();
+      if (pendingDeletions.isEmpty ||
+          !illustrationApi.configured ||
+          !await illustrationApi.hasSession()) {
+        return;
       }
+      for (final pending in pendingDeletions) {
+        try {
+          await illustrationApi.deleteBook(
+            pending.cloudBookId,
+            interactive: false,
+          );
+          await illustrationDeletionOutbox.remove(pending.cloudBookId);
+        } on Object {
+          // Leave requests durable while connectivity or identity is unavailable.
+        }
+      }
+    } on Object {
+      // Startup privacy retries are auxiliary and must never block offline reading.
     }
   }
 
@@ -381,7 +406,7 @@ class ReaderController extends ChangeNotifier {
       return stored;
     }
     final created = await textIndexer.index(
-      epubPath: book.path,
+      sourcePath: book.path,
       bookHash: book.hash,
     );
     _textIndexes[book.hash] = created;
@@ -393,11 +418,11 @@ class ReaderController extends ChangeNotifier {
     CatalogBook book,
     IllustrationManifest manifest,
     BookTextIndex index,
-    Map<String, dynamic>? rawLocator,
+    TextPosition? position,
   ) async {
     final profile = manifest.profile;
     if (profile == null || !profile.enabled) return;
-    final href = rawLocator?['href'] as String?;
+    final href = position?.sectionId;
     final current = href == null
         ? index.chapters.first
         : index.chapterForHref(href);
@@ -419,7 +444,10 @@ class ReaderController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _advanceIllustrations(CatalogBook book, Locator locator) async {
+  Future<void> _advanceIllustrations(
+    CatalogBook book,
+    TextPosition position,
+  ) async {
     if (_advancingIllustrations.contains(book.hash) ||
         !manifestFor(book).enabled) {
       return;
@@ -427,7 +455,7 @@ class ReaderController extends ChangeNotifier {
     _advancingIllustrations.add(book.hash);
     try {
       final index = await _indexFor(book);
-      await _scheduleAhead(book, manifestFor(book), index, locator.toJson());
+      await _scheduleAhead(book, manifestFor(book), index, position);
       final lastRefresh = _lastIllustrationRefresh[book.hash];
       if (lastRefresh == null ||
           DateTime.now().difference(lastRefresh) >
@@ -440,7 +468,7 @@ class ReaderController extends ChangeNotifier {
             !illustrationGate.hasPassed(
               anchor: scene.anchor,
               index: index,
-              locator: locator,
+              position: position,
             )) {
           continue;
         }
@@ -512,7 +540,7 @@ class ReaderController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _locatorSave?.cancel();
+    _positionSave?.cancel();
     super.dispose();
   }
 }

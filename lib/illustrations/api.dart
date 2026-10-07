@@ -15,8 +15,11 @@ import 'models.dart';
 
 /// Recoverable configuration, authentication, or server failure.
 class IllustrationException implements Exception {
-  const IllustrationException(this.message);
+  const IllustrationException(this.message, {this.statusCode});
   final String message;
+
+  /// Optional HTTP status for idempotent privacy retries.
+  final int? statusCode;
   @override
   String toString() => message;
 }
@@ -71,8 +74,11 @@ class UnlockedIllustration {
 /// Authentication boundary supplying Firebase ID and App Check credentials.
 abstract interface class IllustrationIdentity {
   bool get configured;
+
+  /// Checks existing identity without opening a sign-in prompt.
+  Future<bool> hasSession();
   Future<void> signInWithApple();
-  Future<Map<String, String>> authorizationHeaders();
+  Future<Map<String, String>> authorizationHeaders({bool interactive = true});
   Future<void> signOut();
   Future<void> deleteAccount();
 }
@@ -107,6 +113,13 @@ class FirebaseIllustrationIdentity implements IllustrationIdentity {
       _appId.isNotEmpty &&
       _messagingSenderId.isNotEmpty &&
       _projectId.isNotEmpty;
+
+  @override
+  Future<bool> hasSession() async {
+    if (!configured) return false;
+    await _initialize();
+    return FirebaseAuth.instance.currentUser != null;
+  }
 
   Future<void> _initialize() {
     if (!configured) {
@@ -143,8 +156,14 @@ class FirebaseIllustrationIdentity implements IllustrationIdentity {
   }
 
   @override
-  Future<Map<String, String>> authorizationHeaders() async {
-    await signInWithApple();
+  Future<Map<String, String>> authorizationHeaders({
+    bool interactive = true,
+  }) async {
+    if (interactive) {
+      await signInWithApple();
+    } else {
+      await _initialize();
+    }
     final user = FirebaseAuth.instance.currentUser;
     final idToken = await user?.getIdToken();
     final appCheck = await FirebaseAppCheck.instance.getToken();
@@ -172,7 +191,12 @@ class FirebaseIllustrationIdentity implements IllustrationIdentity {
 
 /// Authenticated API used by the reader; implementations never receive EPUBs.
 abstract interface class IllustrationApi {
+  /// User-triggered identity preparation before retrying old privacy requests.
+  Future<void> signIn();
   bool get configured;
+
+  /// Checks existing identity without opening a sign-in prompt.
+  Future<bool> hasSession();
   Future<IllustrationSetup> registerBook(
     CatalogBook book, {
     required int chapterCount,
@@ -186,7 +210,7 @@ abstract interface class IllustrationApi {
   Future<UnlockedIllustration> unlockScene(String sceneId);
   Future<void> regenerateScene(String sceneId);
   Future<void> deleteScene(String sceneId);
-  Future<void> deleteBook(String cloudBookId);
+  Future<void> deleteBook(String cloudBookId, {bool interactive = true});
   Future<void> signOut();
   Future<void> deleteAccount();
 }
@@ -208,6 +232,12 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   bool get configured => identity.configured && baseUri.hasScheme;
+
+  @override
+  Future<bool> hasSession() => identity.hasSession();
+
+  @override
+  Future<void> signIn() => identity.signInWithApple();
 
   @override
   Future<IllustrationSetup> registerBook(
@@ -347,8 +377,14 @@ class HttpIllustrationApi implements IllustrationApi {
       _empty('DELETE', '/v1/scenes/$sceneId');
 
   @override
-  Future<void> deleteBook(String cloudBookId) =>
-      _empty('DELETE', '/v1/books/$cloudBookId');
+  Future<void> deleteBook(String cloudBookId, {bool interactive = true}) async {
+    try {
+      await _json('DELETE', '/v1/books/$cloudBookId', interactive: interactive);
+    } on IllustrationException catch (error) {
+      // A completed previous delete is success, including crash/retry recovery.
+      if (error.statusCode != 404) rethrow;
+    }
+  }
 
   @override
   Future<void> signOut() => identity.signOut();
@@ -363,13 +399,16 @@ class HttpIllustrationApi implements IllustrationApi {
     String method,
     String path, {
     Map<String, dynamic>? body,
+    bool interactive = true,
   }) async {
     if (!configured) {
       throw const IllustrationException(
         'Illustrations are not configured in this build.',
       );
     }
-    final headers = await identity.authorizationHeaders();
+    final headers = await identity.authorizationHeaders(
+      interactive: interactive,
+    );
     final request = http.Request(method, baseUri.resolve(path))
       ..headers.addAll(headers);
     if (body != null) request.body = jsonEncode(body);
@@ -383,7 +422,7 @@ class HttpIllustrationApi implements IllustrationApi {
       } on Object {
         // Keep the non-sensitive generic response for malformed server errors.
       }
-      throw IllustrationException(message);
+      throw IllustrationException(message, statusCode: response.statusCode);
     }
     if (response.body.isEmpty) return {};
     return (jsonDecode(response.body) as Map).cast<String, dynamic>();

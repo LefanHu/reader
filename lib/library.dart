@@ -8,7 +8,7 @@ import 'models.dart';
 import 'reader.dart';
 import 'theme.dart';
 
-/// Adaptive catalog for importing, finding, opening, and deleting EPUBs.
+/// Adaptive catalog for importing, finding, opening, and deleting books.
 class LibraryScreen extends StatefulWidget {
   /// Creates the catalog bound to the shared [controller].
   const LibraryScreen({super.key, required this.controller});
@@ -25,27 +25,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String query = '';
 
   Future<void> _import() async {
-    // Flureadium declares macOS support but its current macOS plugin is only a
-    // template stub. Guard the call so users see an explanation instead of a
-    // MissingPluginException from loadPublication.
-    if (Platform.isMacOS) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Use the iOS app to import EPUBs'),
-          content: const Text(
-            'Flureadium 0.19.3 does not implement publication loading in its macOS plugin. Run Reader on an iPhone or iPad simulator or device to import and read EPUBs.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Done'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
     List<ImportResult> results;
     try {
       results = await widget.controller.pickAndImport();
@@ -177,8 +156,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   ],
                 ),
                 if (widget.controller.importing)
-                  // Block overlapping picker/import actions while Readium owns
-                  // the single native publication session.
+                  // Block overlapping picker/import actions to bound staged source memory.
                   ColoredBox(
                     color: Colors.black38,
                     child: Center(
@@ -242,7 +220,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       onPressed: () => showLicensePage(
                         context: context,
                         applicationName: 'Reader',
-                        applicationLegalese: 'EPUB rendering uses Flureadium and the Readium toolkits.',
+                        applicationLegalese: 'Text layout uses Flutter with Unicode-aware passage positions.',
                       ),
                       icon: const Icon(Icons.info_outline),
                     ),
@@ -250,11 +228,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       FilledButton.icon(
                         onPressed: _import,
                         icon: const Icon(Icons.add),
-                        label: const Text('Import EPUBs'),
+                        label: const Text('Import books'),
                       )
                     else
                       IconButton.filled(
-                        tooltip: 'Import EPUBs',
+                        tooltip: 'Import books',
                         onPressed: _import,
                         icon: const Icon(Icons.add),
                       ),
@@ -448,14 +426,14 @@ class _EmptyLibrary extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Import reflowable, DRM-free EPUB books from Files.',
+            'Import EPUB or TXT books from Files.',
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 22),
           FilledButton.icon(
             onPressed: onImport,
             icon: const Icon(Icons.file_open),
-            label: const Text('Import EPUBs'),
+            label: const Text('Import books'),
           ),
         ],
       ),

@@ -1,7 +1,7 @@
 // Persisted field meanings and lifecycle invariants are documented per model.
 // ignore_for_file: public_member_api_docs
 
-/// Lifecycle states for a generated scene stored outside the source EPUB.
+/// Lifecycle states for a generated scene stored outside the source book.
 enum IllustrationSceneState {
   queued,
   generating,
@@ -54,7 +54,7 @@ class IllustrationProfile {
       );
 }
 
-/// Stable paragraph extracted from one XHTML spine resource.
+/// Stable normalized block shared verbatim with the reading viewport.
 class IndexedParagraph {
   const IndexedParagraph({
     required this.id,
@@ -66,6 +66,9 @@ class IndexedParagraph {
 
   final String id;
   final String text;
+
+  /// Deterministic block selector retained for backend wire compatibility.
+  /// Unlocking uses paragraph identity, never DOM visibility.
   final String cssSelector;
   final int ordinal;
   final double progression;
@@ -88,7 +91,7 @@ class IndexedParagraph {
       );
 }
 
-/// Ordered text and DOM mapping for one EPUB spine resource.
+/// Ordered normalized section and deterministic server paragraph mappings.
 class ChapterTextIndex {
   const ChapterTextIndex({
     required this.href,
@@ -98,6 +101,7 @@ class ChapterTextIndex {
     this.language,
   });
 
+  /// Normalized section ID used as the backend resource identifier.
   final String href;
   final int spineOrdinal;
   final String? title;
@@ -173,9 +177,13 @@ class SceneAnchor {
     required this.fallbackProgression,
   });
 
+  /// Normalized section ID used as the backend resource identifier.
   final String href;
   final int spineOrdinal;
   final String paragraphId;
+
+  /// Deterministic block selector retained for backend wire compatibility.
+  /// Unlocking uses paragraph identity, never DOM visibility.
   final String cssSelector;
   final double fallbackProgression;
 

@@ -67,23 +67,37 @@ class FileIllustrationDeletionOutbox implements IllustrationDeletionOutbox {
     return [];
   }
 
+  static final _mutations = <String, Future<void>>{};
+  Future<void> _serialize(Future<void> Function() action) {
+    final key = _file.absolute.path;
+    final operation = (_mutations[key] ?? Future<void>.value()).then(
+      (_) => action(),
+    );
+    final tail = operation.catchError((Object _) {});
+    _mutations[key] = tail;
+    tail.whenComplete(() {
+      if (identical(_mutations[key], tail)) _mutations.remove(key);
+    });
+    return operation;
+  }
+
   @override
-  Future<void> enqueue(String cloudBookId) async {
+  Future<void> enqueue(String cloudBookId) => _serialize(() async {
     final items = await load();
     if (items.any((item) => item.cloudBookId == cloudBookId)) return;
     await _save([
       ...items,
       PendingBookDeletion(cloudBookId: cloudBookId, queuedAt: DateTime.now()),
     ]);
-  }
+  });
 
   @override
-  Future<void> remove(String cloudBookId) async {
+  Future<void> remove(String cloudBookId) => _serialize(() async {
     final items = await load();
     await _save(
       items.where((item) => item.cloudBookId != cloudBookId).toList(),
     );
-  }
+  });
 
   Future<void> _save(List<PendingBookDeletion> items) async {
     await _file.parent.create(recursive: true);

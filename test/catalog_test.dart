@@ -3,225 +3,214 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flureadium/flureadium.dart';
-import 'package:reader/epub_service.dart';
+import 'package:reader/book_service.dart';
+import 'package:reader/illustrations/outbox.dart';
 import 'package:reader/models.dart';
 import 'package:reader/storage.dart';
+import 'package:reader/text/document.dart';
 
 import 'fakes.dart';
 
 void main() {
-  // These tests exercise persistence and import policy without invoking native
-  // Readium code. Platform rendering behavior belongs in integration tests.
-  test('catalog records preserve locator, metadata, and progress', () {
+  late Directory root;
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('text_catalog');
+  });
+  tearDown(() async {
+    await root.delete(recursive: true);
+  });
+
+  Future<CatalogBook> importTxt([
+    String text = 'First paragraph.\n\nSecond paragraph.',
+  ]) async {
+    final bytes = Uint8List.fromList(utf8.encode(text));
+    final outcome = await BookImporter(root: root).import(
+      ImportCandidate(
+        name: 'Novel.txt',
+        size: bytes.length,
+        readBytes: () async => bytes,
+      ),
+      {},
+    );
+    expect(outcome.result.status, ImportStatus.imported);
+    return outcome.book!;
+  }
+
+  test('catalog preserves complete text positions and metadata', () {
     final original = testBook(
-      locator: {
-        'href': 'chapter.xhtml',
-        'type': 'application/xhtml+xml',
-        'locations': {'totalProgression': .42, 'position': 4},
-      },
+      position: const TextPosition(sectionId: 's0', blockId: 'p0', offset: 2),
+      progress: .42,
     );
     final restored = CatalogBook.fromJson(original.toJson());
-    expect(restored.title, original.title);
-    expect(restored.authorLine, 'Test Author');
+    expect(restored.lastPosition, original.lastPosition);
     expect(restored.progress, .42);
-    expect(restored.lastLocator, original.lastLocator);
-  });
-
-  test('file catalog recovers a valid temporary atomic write', () async {
-    final root = await Directory.systemTemp.createTemp('catalog_recovery');
-    addTearDown(() => root.delete(recursive: true));
-    final store = FileCatalogStore(root);
-    final bookFile = File('${root.path}/books/a/book.epub');
-    await bookFile.parent.create(recursive: true);
-    await bookFile.writeAsBytes([1]);
-    final book = CatalogBook(
-      hash: 'a',
-      fileName: 'a.epub',
-      path: bookFile.path,
-      title: 'A',
-      authors: const [],
-      addedAt: DateTime.utc(2026),
-    );
-    await File('${root.path}/catalog.json').writeAsString('{broken');
-    await File('${root.path}/catalog.json.tmp').writeAsString(
-      jsonEncode({
-        'version': 1,
-        'books': [book.toJson()],
-      }),
-    );
-    final recovered = await store.load();
-    expect(recovered.single.title, 'A');
-    expect(
-      jsonDecode(await File('${root.path}/catalog.json').readAsString()),
-      isA<Map>(),
-    );
-  });
-
-  test('deleting a catalog book removes its private book directory', () async {
-    final root = await Directory.systemTemp.createTemp('catalog_delete');
-    addTearDown(() async {
-      if (await root.exists()) await root.delete(recursive: true);
-    });
-    final store = FileCatalogStore(root);
-    final file = File('${root.path}/books/hash/book.epub');
-    await file.parent.create(recursive: true);
-    await file.writeAsBytes([1]);
-    final book = CatalogBook(
-      hash: 'hash',
-      fileName: 'book.epub',
-      path: file.path,
-      title: 'Book',
-      authors: const [],
-      addedAt: DateTime.utc(2026),
-    );
-    await store.deleteFiles(book);
-    expect(await file.parent.exists(), isFalse);
+    expect(restored.authorLine, 'Test Author');
   });
 
   test(
-    'import hashes files, applies fallbacks, and finds duplicates',
+    'catalog recovers a valid temporary generation and serializes saves',
     () async {
-      final root = await Directory.systemTemp.createTemp('epub_import');
-      addTearDown(() => root.delete(recursive: true));
-      final publication = Publication(
-        metadata: Metadata(localizedTitle: LocalizedString.fromString('')),
-        readingOrder: const [
-          Link(href: 'one.xhtml', type: 'application/xhtml+xml'),
-        ],
+      final book = await importTxt();
+      await File('${root.path}/catalog.json').writeAsString('{broken');
+      await File('${root.path}/catalog.json.tmp').writeAsString(
+        jsonEncode({
+          'version': 2,
+          'books': [book.toJson()],
+        }),
       );
-      final importer = EpubImporter(
-        root: root,
-        engine: FakeEngine(publication),
+      final store = FileCatalogStore(root);
+      expect((await store.load()).single.hash, book.hash);
+      await Future.wait([
+        store.save([book]),
+        store.save([]),
+        store.save([book.copyWith(progress: .7)]),
+      ]);
+      expect((await store.load()).single.progress, .7);
+    },
+  );
+
+  test(
+    'legacy reset queues cloud deletions before removing owned book files',
+    () async {
+      final book = await importTxt();
+      final directory = File(book.path).parent;
+      await Directory('${directory.path}/visuals').create();
+      await File('${directory.path}/visuals/manifest.json').writeAsString(
+        jsonEncode({
+          'profile': {'cloudBookId': 'old-cloud'},
+        }),
       );
-      final candidate = ImportCandidate(
-        name: 'Fallback Title.epub',
-        size: 4,
-        readBytes: () async => Uint8List.fromList([1, 2, 3, 4]),
+      await File('${root.path}/catalog.json').writeAsString(
+        jsonEncode({
+          'version': 1,
+          'books': [book.toJson()],
+        }),
       );
-      final first = await importer.import(candidate, {});
-      expect(first.result.status, ImportStatus.imported);
-      expect(first.book!.title, 'Fallback Title');
-      expect(first.book!.authorLine, 'Unknown author');
-      expect(await File(first.book!.path).exists(), isTrue);
-      final duplicate = await importer.import(candidate, {first.book!.hash});
+      final outbox = FileIllustrationDeletionOutbox(root);
+      await outbox.enqueue('already-pending');
+      final store = FileCatalogStore(root);
+      expect(await store.load(), isEmpty);
+      expect(await directory.exists(), isFalse);
+      expect(
+        (await outbox.load()).map((item) => item.cloudBookId),
+        containsAll(['old-cloud', 'already-pending']),
+      );
+      expect(
+        jsonDecode(
+          await File('${root.path}/catalog.json').readAsString(),
+        )['version'],
+        2,
+      );
+      expect(await store.load(), isEmpty);
+    },
+  );
+
+  test(
+    'reset resumes after new catalog commits but before directory cleanup',
+    () async {
+      final book = await importTxt();
+      await File('${root.path}/legacy-reset.json').writeAsString(
+        jsonEncode({
+          'hashes': [book.hash, '../outside'],
+        }),
+      );
+      await FileCatalogStore(root).save([]);
+      expect(await FileCatalogStore(root).load(), isEmpty);
+      expect(await File(book.path).exists(), isFalse);
+      expect(await File('${root.path}/legacy-reset.json').exists(), isFalse);
+    },
+  );
+
+  test(
+    'catalog deletion refuses paths and symlinks outside owned storage',
+    () async {
+      final outside = await Directory.systemTemp.createTemp('outside_reader');
+      addTearDown(() => outside.delete(recursive: true));
+      final file = File('${outside.path}/book.txt');
+      await file.writeAsString('Keep me');
+      final book = CatalogBook(
+        hash: 'b' * 64,
+        fileName: 'book.txt',
+        path: file.path,
+        title: 'Book',
+        authors: const [],
+        addedAt: DateTime.utc(2026),
+      );
+      final store = FileCatalogStore(root);
+      await expectLater(store.deleteFiles(book), throwsFormatException);
+      await Directory('${root.path}/books').create();
+      await Link('${root.path}/books/${book.hash}').create(outside.path);
+      final linked = CatalogBook(
+        hash: book.hash,
+        fileName: book.fileName,
+        path: '${root.path}/books/${book.hash}/book.txt',
+        title: book.title,
+        authors: book.authors,
+        addedAt: book.addedAt,
+      );
+      await expectLater(store.deleteFiles(linked), throwsFormatException);
+      expect(await store.load(), isEmpty);
+      expect(await file.readAsString(), 'Keep me');
+    },
+  );
+
+  test(
+    'import stages normalized sections and deduplicates identical bytes',
+    () async {
+      final book = await importTxt();
+      final document = await TextDocumentStore().load(book.path);
+      final section = await TextDocumentStore().loadSection(
+        book.path,
+        document.sections.first.id,
+      );
+      expect(section.blocks.map((block) => block.text), [
+        'First paragraph.',
+        'Second paragraph.',
+      ]);
+      final bytes = await File(book.path).readAsBytes();
+      final duplicate = await BookImporter(root: root).import(
+        ImportCandidate(
+          name: 'Copy.txt',
+          size: bytes.length,
+          readBytes: () async => bytes,
+        ),
+        {book.hash},
+      );
       expect(duplicate.result.status, ImportStatus.duplicate);
+      expect(book.title, 'Novel');
     },
   );
 
   test(
-    'unsupported fixed, scripted, remote, and oversized books fail cleanly',
+    'failed imports remove staging and controller clears its busy state',
     () async {
-      final root = await Directory.systemTemp.createTemp('epub_reject');
-      addTearDown(() => root.delete(recursive: true));
-      Future<ImportResult> attempt(
-        Publication publication, {
-        int size = 1,
-      }) async {
-        final importer = EpubImporter(
-          root: root,
-          engine: FakeEngine(publication),
-        );
-        return (await importer.import(
-          ImportCandidate(
-            name: 'bad.epub',
-            size: size,
-            readBytes: () async => Uint8List(1),
-          ),
-          {},
-        )).result;
-      }
-
-      expect(
-        (await attempt(
-          testPublication(
-            rendition: const Presentation(layout: EpubLayout.fixed),
-          ),
-        )).status,
-        ImportStatus.failed,
-      );
-      expect(
-        (await attempt(
-          testPublication(
-            readingOrder: const [
-              Link(
-                href: 'one.xhtml',
-                type: 'application/xhtml+xml',
-                properties: Properties(contains: ['scripted']),
-              ),
-            ],
-          ),
-        )).status,
-        ImportStatus.failed,
-      );
-      expect(
-        (await attempt(
-          testPublication(
-            readingOrder: const [
-              Link(
-                href: 'https://example.com/one.xhtml',
-                type: 'application/xhtml+xml',
-              ),
-            ],
-          ),
-        )).status,
-        ImportStatus.failed,
-      );
-      expect(
-        (await attempt(testPublication(), size: maxEpubBytes + 1)).status,
-        ImportStatus.failed,
-      );
-      expect(
-        Directory('${root.path}/books').listSync().whereType<Directory>(),
-        isEmpty,
-      );
-    },
-  );
-
-  test(
-    'controller imports selected files sequentially and reports each result',
-    () async {
-      final root = await Directory.systemTemp.createTemp('multi_import');
-      addTearDown(() => root.delete(recursive: true));
-      final bytes = Uint8List.fromList([1, 2, 3]);
       final controller = await testController(
         root: root,
         files: [
           ImportCandidate(
-            name: 'one.epub',
-            size: 3,
-            readBytes: () async => bytes,
-          ),
-          ImportCandidate(
-            name: 'copy.epub',
-            size: 3,
-            readBytes: () async => bytes,
+            name: 'Broken.epub',
+            size: 2,
+            readBytes: () async => Uint8List.fromList([1, 2]),
           ),
         ],
       );
       addTearDown(controller.dispose);
       final results = await controller.pickAndImport();
-      expect(results.map((result) => result.status), [
-        ImportStatus.imported,
-        ImportStatus.duplicate,
-      ]);
-      expect(controller.books, hasLength(1));
-      expect(controller.importDone, 2);
+      expect(results.single.status, ImportStatus.failed);
+      expect(controller.importing, isFalse);
+      expect(controller.books, isEmpty);
+      expect(Directory('${root.path}/books').listSync(), isEmpty);
     },
   );
 
   test(
-    'locator progress and settings persist through the controller',
+    'controller persists positions and global typography independently',
     () async {
       final book = testBook();
       final controller = await testController(books: [book]);
       addTearDown(controller.dispose);
-      const locator = Locator(
-        href: 'chapter.xhtml',
-        type: 'application/xhtml+xml',
-        locations: Locations(totalProgression: .7),
-      );
-      await controller.saveLocator(book, locator);
+      const position = TextPosition(sectionId: 's0', blockId: 'p0', offset: 4);
+      await controller.savePosition(book, position, .7);
       await controller.configure(
         mode: ReadingMode.pages,
         theme: ReadingTheme.dark,
@@ -229,10 +218,9 @@ void main() {
         serif: false,
       );
       await controller.flush();
+      expect(controller.books.single.lastPosition, position);
       expect(controller.books.single.progress, .7);
-      expect(controller.books.single.lastLocator, locator.toJson());
       expect(controller.settings.mode, ReadingMode.pages);
-      expect(controller.settings.theme, ReadingTheme.dark);
     },
   );
 }

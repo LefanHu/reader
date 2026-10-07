@@ -1,208 +1,158 @@
 import 'dart:io';
 
-import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flureadium/flureadium.dart';
 import 'package:reader/controller.dart';
-import 'package:reader/epub_service.dart';
+import 'package:reader/book_service.dart';
 import 'package:reader/illustrations/api.dart';
 import 'package:reader/illustrations/gate.dart';
-import 'package:reader/illustrations/indexer.dart';
 import 'package:reader/illustrations/models.dart';
 import 'package:reader/illustrations/outbox.dart';
 import 'package:reader/illustrations/store.dart';
 import 'package:reader/models.dart';
+import 'package:reader/text/document.dart';
 
 import 'fakes.dart';
 
 void main() {
-  test('illustration profiles version temporal continuity jobs', () {
-    const current = IllustrationProfile(
-      enabled: true,
-      style: 'Ink',
-      density: 2,
-      styleVersion: 1,
-      cloudBookId: 'book',
-    );
-    expect(current.analysisVersion, 2);
-    expect(current.toJson()['analysisVersion'], 2);
-
-    final legacy = IllustrationProfile.fromJson({
-      'enabled': true,
-      'style': 'Ink',
-      'density': 2,
-      'styleVersion': 1,
-      'cloudBookId': 'book',
-    });
-    expect(legacy.analysisVersion, 2);
-  });
-
-  group('EPUB illustration index', () {
-    test(
-      'indexes only spine XHTML and produces stable sanitized blocks',
-      () async {
-        final directory = await Directory.systemTemp.createTemp(
-          'reader-index-',
-        );
-        addTearDown(() => directory.delete(recursive: true));
-        final epub = File('${directory.path}/book.epub');
-        final original = _epubBytes();
-        await epub.writeAsBytes(original);
-
-        final indexer = ArchiveEpubTextIndexer();
-        final first = await indexer.index(
-          epubPath: epub.path,
-          bookHash: 'book-hash',
-        );
-        final second = await indexer.index(
-          epubPath: epub.path,
-          bookHash: 'book-hash',
-        );
-
-        expect(first.chapters, hasLength(2));
-        expect(first.chapters.first.language, 'en');
-        expect(first.chapters.map((chapter) => chapter.href), [
-          'text/one.xhtml',
-          'text/two.xhtml',
-        ]);
-        expect(
-          first.chapters.first.paragraphs.map((paragraph) => paragraph.text),
-          containsAll([
-            'Chapter One',
-            'Hello “reader”.',
-            'A moonlit gate',
-            'Mountain crest',
-          ]),
-        );
-        expect(
-          first.chapters.first.paragraphs
-              .map((paragraph) => paragraph.text)
-              .join(' '),
-          isNot(contains('spoiler script')),
-        );
-        expect(
-          first.chapters.first.paragraphs.map((paragraph) => paragraph.id),
-          second.chapters.first.paragraphs.map((paragraph) => paragraph.id),
-        );
-        expect(await epub.readAsBytes(), original);
-      },
-    );
-
-    test('rejects archive path traversal before reading content', () async {
-      final directory = await Directory.systemTemp.createTemp('reader-index-');
-      addTearDown(() => directory.delete(recursive: true));
-      final archive = Archive()
-        ..addFile(ArchiveFile.string('../escape', 'nope'));
-      final epub = File('${directory.path}/unsafe.epub');
-      await epub.writeAsBytes(ZipEncoder().encode(archive));
-
-      expect(
-        () => ArchiveEpubTextIndexer().index(
-          epubPath: epub.path,
-          bookHash: 'book-hash',
+  test(
+    'spoiler gate requires valid identities and a passage beyond the anchor',
+    () {
+      final chapters = List.generate(
+        2,
+        (c) => ChapterTextIndex(
+          href: 's$c',
+          spineOrdinal: c,
+          title: null,
+          paragraphs: List.generate(
+            3,
+            (p) => IndexedParagraph(
+              id: 'c$c-p$p',
+              text: 'مرحبا',
+              cssSelector: '',
+              ordinal: p,
+              progression: p / 2,
+            ),
+          ),
         ),
-        throwsA(isA<FormatException>()),
       );
-    });
-  });
+      final index = BookTextIndex(bookHash: 'book', chapters: chapters);
+      const anchor = SceneAnchor(
+        href: 's0',
+        spineOrdinal: 0,
+        paragraphId: 'c0-p1',
+        cssSelector: '',
+        fallbackProgression: .5,
+      );
+      const gate = IllustrationGate();
+      bool passed(TextPosition p) =>
+          gate.hasPassed(anchor: anchor, index: index, position: p);
+      expect(
+        passed(
+          const TextPosition(sectionId: 's0', blockId: 'c0-p1', offset: 4),
+        ),
+        isFalse,
+      );
+      expect(
+        passed(
+          const TextPosition(sectionId: 's0', blockId: 'c0-p1', offset: 5),
+        ),
+        isTrue,
+      );
+      expect(
+        passed(const TextPosition(sectionId: 's0', blockId: 'c0-p2')),
+        isTrue,
+      );
+      expect(
+        passed(const TextPosition(sectionId: 's1', blockId: 'c1-p0')),
+        isTrue,
+      );
+      expect(
+        passed(const TextPosition(sectionId: 's1', blockId: 'missing')),
+        isFalse,
+      );
+      expect(
+        passed(
+          const TextPosition(sectionId: 's0', blockId: 'c0-p2', version: 9),
+        ),
+        isFalse,
+      );
+      expect(
+        passed(
+          const TextPosition(sectionId: 's0', blockId: 'c0-p2', offset: 99),
+        ),
+        isFalse,
+      );
+    },
+  );
 
-  test('locator gate never releases at the ending paragraph', () {
-    const paragraphs = [
-      IndexedParagraph(
-        id: 'p1',
-        text: 'One',
-        cssSelector: 'body > p:nth-of-type(1)',
-        ordinal: 0,
-        progression: 0,
-      ),
-      IndexedParagraph(
-        id: 'p2',
-        text: 'Two',
-        cssSelector: 'body > p:nth-of-type(2)',
-        ordinal: 1,
-        progression: .5,
-      ),
-      IndexedParagraph(
-        id: 'p3',
-        text: 'Three',
-        cssSelector: 'body > p:nth-of-type(3)',
-        ordinal: 2,
-        progression: 1,
-      ),
-    ];
-    const index = BookTextIndex(
-      bookHash: 'hash',
-      chapters: [
-        ChapterTextIndex(
-          href: 'one.xhtml',
-          spineOrdinal: 0,
-          title: null,
-          paragraphs: paragraphs,
-        ),
-        ChapterTextIndex(
-          href: 'two.xhtml',
-          spineOrdinal: 1,
-          title: null,
-          paragraphs: paragraphs,
-        ),
-      ],
-    );
-    const anchor = SceneAnchor(
-      href: 'one.xhtml',
-      spineOrdinal: 0,
-      paragraphId: 'p2',
-      cssSelector: 'body > p:nth-of-type(2)',
-      fallbackProgression: .5,
-    );
-    const gate = IllustrationGate();
+  test(
+    'startup deletion retries never initiate illustration sign-in',
+    () async {
+      final outbox = MemoryIllustrationDeletionOutbox();
+      await outbox.enqueue('old-book');
+      final api = FakeIllustrationApi(configured: true)..session = false;
+      final controller = ReaderController(
+        catalogStore: MemoryCatalogStore(),
+        settingsStore: MemorySettingsStore(),
+        importer: BookImporter(root: Directory.systemTemp),
+        picker: FakePicker(),
+        illustrationApi: api,
+        illustrationDeletionOutbox: outbox,
+      );
+      await controller.initialize();
+      await Future<void>.delayed(Duration.zero);
+      expect(api.deletedBooks, isEmpty);
+      expect(await outbox.load(), hasLength(1));
+      controller.dispose();
+    },
+  );
+  test(
+    'concurrent privacy requests across outbox instances retain every deletion',
+    () async {
+      final root = await Directory.systemTemp.createTemp('outbox_concurrent');
+      addTearDown(() => root.delete(recursive: true));
+      final first = FileIllustrationDeletionOutbox(root);
+      final second = FileIllustrationDeletionOutbox(root);
+      await Future.wait([
+        first.enqueue('a'),
+        second.enqueue('b'),
+        first.enqueue('c'),
+      ]);
+      expect((await first.load()).map((item) => item.cloudBookId), [
+        'a',
+        'b',
+        'c',
+      ]);
+      await Future.wait([first.remove('b'), second.enqueue('d')]);
+      expect((await first.load()).map((item) => item.cloudBookId), [
+        'a',
+        'c',
+        'd',
+      ]);
+    },
+  );
 
-    expect(
-      gate.hasPassed(
-        anchor: anchor,
-        index: index,
-        locator: const Locator(
-          href: 'one.xhtml',
-          type: 'application/xhtml+xml',
-          locations: Locations(cssSelector: 'body > p:nth-of-type(2)'),
-        ),
-      ),
-      isFalse,
+  test('re-enabling a reimported book drains old cloud deletion before registration', () async {
+    final outbox = MemoryIllustrationDeletionOutbox();
+    await outbox.enqueue('old-book');
+    final api = FakeIllustrationApi(configured: true)..session = false;
+    final book = testBook();
+    final controller = ReaderController(
+      catalogStore: MemoryCatalogStore([book]),
+      settingsStore: MemorySettingsStore(),
+      importer: BookImporter(root: Directory.systemTemp),
+      picker: FakePicker(),
+      illustrationApi: api,
+      illustrationDeletionOutbox: outbox,
+      illustrationStore: MemoryIllustrationStore(),
+      textIndexer: FakeTextIndexer(),
     );
-    expect(
-      gate.hasPassed(
-        anchor: anchor,
-        index: index,
-        locator: const Locator(
-          href: 'one.xhtml',
-          type: 'application/xhtml+xml',
-          locations: Locations(progression: .99),
-        ),
-      ),
-      isFalse,
-    );
-    expect(
-      gate.hasPassed(
-        anchor: anchor,
-        index: index,
-        locator: const Locator(
-          href: 'one.xhtml',
-          type: 'application/xhtml+xml',
-          locations: Locations(cssSelector: 'body > p:nth-of-type(3)'),
-        ),
-      ),
-      isTrue,
-    );
-    expect(
-      gate.hasPassed(
-        anchor: anchor,
-        index: index,
-        locator: const Locator(
-          href: 'two.xhtml',
-          type: 'application/xhtml+xml',
-        ),
-      ),
-      isTrue,
-    );
+    await controller.initialize();
+    final setup = await controller.beginIllustrationSetup(book);
+    expect(setup.cloudBookId, 'cloud-book');
+    expect(api.deletedBooks, ['old-book']);
+    expect(await outbox.load(), isEmpty);
+    controller.dispose();
   });
 
   test('sidecars and cloud deletion outbox recover atomically', () async {
@@ -248,7 +198,7 @@ void main() {
       final chapters = List.generate(
         3,
         (chapter) => ChapterTextIndex(
-          href: '$chapter.xhtml',
+          href: 's$chapter',
           spineOrdinal: chapter,
           title: 'Chapter $chapter',
           paragraphs: List.generate(
@@ -270,10 +220,7 @@ void main() {
         title: 'Test Book',
         authors: const ['Test Author'],
         addedAt: DateTime.utc(2026),
-        lastLocator: const Locator(
-          href: '0.xhtml',
-          type: 'application/xhtml+xml',
-        ).toJson(),
+        lastPosition: const TextPosition(sectionId: 's0', blockId: 'c0-p0'),
       );
       final api = FakeIllustrationApi(configured: true);
       api.jobResults['job-0'] = IllustrationJobResult(
@@ -285,7 +232,7 @@ void main() {
             jobId: 'job-0',
             state: IllustrationSceneState.readyLocked,
             anchor: SceneAnchor(
-              href: '0.xhtml',
+              href: 's0',
               spineOrdinal: 0,
               paragraphId: 'c0-p1',
               cssSelector: 'body > p:nth-of-type(2)',
@@ -297,12 +244,8 @@ void main() {
       final controller = ReaderController(
         catalogStore: MemoryCatalogStore([book]),
         settingsStore: MemorySettingsStore(),
-        importer: EpubImporter(
-          root: Directory.systemTemp,
-          engine: FakeEngine(testPublication()),
-        ),
+        importer: BookImporter(root: Directory.systemTemp),
         picker: FakePicker(),
-        engine: FakeEngine(testPublication()),
         illustrationStore: MemoryIllustrationStore(),
         textIndexer: FakeTextIndexer(chapters: chapters),
         illustrationApi: api,
@@ -321,31 +264,24 @@ void main() {
       );
       expect(api.createdChapterOrdinals, [0, 1]);
 
-      await controller.saveLocator(
+      await controller.savePosition(
         book,
-        const Locator(
-          href: '0.xhtml',
-          type: 'application/xhtml+xml',
-          locations: Locations(cssSelector: 'body > p:nth-of-type(2)'),
-        ),
+        const TextPosition(sectionId: 's0', blockId: 'c0-p1'),
+        .1,
       );
       await _waitUntil(() => controller.manifestFor(book).scenes.isNotEmpty);
       expect(api.unlockedSceneIds, isEmpty);
-
-      await controller.saveLocator(
+      await controller.savePosition(
         book,
-        const Locator(
-          href: '0.xhtml',
-          type: 'application/xhtml+xml',
-          locations: Locations(cssSelector: 'body > p:nth-of-type(3)'),
-        ),
+        const TextPosition(sectionId: 's0', blockId: 'c0-p2'),
+        .2,
       );
       await _waitUntil(() => api.unlockedSceneIds.isNotEmpty);
       expect(controller.pendingRevealFor(book)?.id, 'scene-0');
-
-      await controller.saveLocator(
+      await controller.savePosition(
         book,
-        const Locator(href: '1.xhtml', type: 'application/xhtml+xml'),
+        const TextPosition(sectionId: 's1', blockId: 'c1-p0'),
+        .4,
       );
       await _waitUntil(() => api.createdChapterOrdinals.contains(2));
       expect(api.createdChapterOrdinals, [0, 1, 2]);
@@ -358,41 +294,4 @@ Future<void> _waitUntil(bool Function() condition) async {
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
   expect(condition(), isTrue);
-}
-
-List<int> _epubBytes() {
-  const container = '''<?xml version="1.0"?>
-<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
-  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
-</container>''';
-  const opf = '''<?xml version="1.0"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
-  <manifest>
-    <item id="one" href="text/one.xhtml" media-type="application/xhtml+xml"/>
-    <item id="two" href="text/two.xhtml" media-type="application/xhtml+xml"/>
-    <item id="unused" href="unused.xhtml" media-type="application/xhtml+xml"/>
-  </manifest>
-  <spine><itemref idref="one"/><itemref idref="two"/></spine>
-</package>''';
-  const one = '''<html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head>
-<title>One</title><style>.secret { display: none; }</style></head><body>
-<h1>Chapter One</h1><p>Hello “reader”.</p>
-<p><img src="gate.png" alt="A moonlit gate"/></p>
-<img src="mountain.png" alt="Mountain crest"/>
-<p hidden="hidden">Hidden future</p><script>spoiler script</script>
-</body></html>''';
-  const two = '''<html xmlns="http://www.w3.org/1999/xhtml" dir="rtl"><head><title>Two</title></head>
-<body><p>مرحبا بالعالم</p></body></html>''';
-  final archive = Archive()
-    ..addFile(ArchiveFile.string('META-INF/container.xml', container))
-    ..addFile(ArchiveFile.string('OEBPS/content.opf', opf))
-    ..addFile(ArchiveFile.string('OEBPS/text/one.xhtml', one))
-    ..addFile(ArchiveFile.string('OEBPS/text/two.xhtml', two))
-    ..addFile(
-      ArchiveFile.string(
-        'OEBPS/unused.xhtml',
-        '<html><body><p>Must not be indexed</p></body></html>',
-      ),
-    );
-  return ZipEncoder().encode(archive);
 }

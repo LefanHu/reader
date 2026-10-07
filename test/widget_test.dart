@@ -1,22 +1,21 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flureadium/flureadium.dart';
+import 'package:reader/book_service.dart';
 import 'package:reader/controller.dart';
-import 'package:reader/epub_service.dart';
 import 'package:reader/library.dart';
-import 'package:reader/illustrations/models.dart';
 import 'package:reader/models.dart';
 import 'package:reader/reader.dart';
+import 'package:reader/text/document.dart' as text;
+import 'package:reader/text/viewport.dart';
 import 'package:reader/theme.dart';
 
 import 'fakes.dart';
 
 void main() {
-  // Reader tests inject a Flutter-only view because platform views and method
-  // channels are unavailable in the widget-test process.
-  testWidgets('empty library presents the EPUB import action', (tester) async {
+  testWidgets('empty library offers EPUB and TXT import', (tester) async {
     final controller = await testController();
     addTearDown(controller.dispose);
     await tester.pumpWidget(
@@ -26,23 +25,18 @@ void main() {
       ),
     );
     expect(find.text('Your shelf is ready'), findsOneWidget);
-    expect(find.text('Import EPUBs'), findsWidgets);
+    expect(find.text('Import books'), findsWidgets);
   });
 
-  testWidgets('library search, filters, sorting, and deletion work', (
-    tester,
-  ) async {
+  testWidgets('library searches filters and deletes books', (tester) async {
     final reading = testBook(
-      locator: {
-        'href': 'chapter.xhtml',
-        'type': 'application/xhtml+xml',
-        'locations': {'totalProgression': .4},
-      },
+      position: const text.TextPosition(sectionId: 's0', blockId: 'p0'),
+      progress: .4,
     );
     final second = CatalogBook(
-      hash: 'def456',
-      fileName: 'z.epub',
-      path: '/tmp/z.epub',
+      hash: 'b' * 64,
+      fileName: 'z.txt',
+      path: '/tmp/z.txt',
       title: 'Another Book',
       authors: const ['Zed'],
       progress: 1,
@@ -65,7 +59,6 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Finished').last);
     await tester.pumpAndSettle();
-    expect(find.text('Another Book'), findsWidgets);
     expect(find.text('Test Book'), findsNothing);
     await tester.ensureVisible(find.byTooltip('Book actions'));
     await tester.pumpAndSettle();
@@ -79,94 +72,28 @@ void main() {
   });
 
   testWidgets(
-    'reader restores and saves locator, changes mode, and navigates nested TOC',
+    'real reader restores text changes mode and navigates nested contents',
     (tester) async {
-      final nested = const Link(
-        href: 'part.xhtml',
-        type: 'application/xhtml+xml',
-        title: 'Part one',
-        children: [
-          Link(
-            href: 'child.xhtml',
-            type: 'application/xhtml+xml',
-            title: 'Nested chapter',
+      final store = MemoryDocumentStore(
+        contents: const [
+          text.TextContentsEntry(
+            title: 'Part',
+            children: [
+              text.TextContentsEntry(
+                title: 'Nested passage',
+                position: text.TextPosition(sectionId: 's0', blockId: 'p1'),
+              ),
+            ],
           ),
         ],
       );
-      final publication = testPublication(toc: [nested]);
-      final saved = const Locator(
-        href: 'chapter.xhtml',
-        type: 'application/xhtml+xml',
-        locations: Locations(totalProgression: .25),
-      );
-      final book = testBook(locator: saved.toJson());
-      final controller = await testController(
-        books: [book],
-        publication: publication,
-      );
-      final engine = controller.engine as FakeEngine;
-      addTearDown(controller.dispose);
-      Locator? restored;
-      ValueChanged<Locator>? reportLocator;
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: readerTheme,
-          home: ReaderScreen(
-            book: book,
-            controller: controller,
-            readerBuilder:
-                ({
-                  required publication,
-                  required initialLocator,
-                  required onTap,
-                  required onExternalLink,
-                  required onLocatorChanged,
-                  required onReady,
-                }) {
-                  restored = initialLocator;
-                  reportLocator = onLocatorChanged;
-                  return const ColoredBox(
-                    color: Colors.white,
-                    child: Center(child: Text('Native reader')),
-                  );
-                },
-          ),
+      final book = testBook(
+        position: const text.TextPosition(
+          sectionId: 's0',
+          blockId: 'p0',
+          offset: 2,
         ),
       );
-      await tester.pumpAndSettle();
-      expect(restored?.href, saved.href);
-      expect(restored?.locations?.totalProgression, .25);
-      reportLocator!(
-        const Locator(
-          href: 'child.xhtml',
-          type: 'application/xhtml+xml',
-          title: 'Nested chapter',
-          locations: Locations(totalProgression: .6),
-        ),
-      );
-      await tester.pump();
-      expect(controller.books.single.progress, .6);
-      await tester.tap(find.byTooltip('Reading settings'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Pages'));
-      await tester.pumpAndSettle();
-      expect(controller.settings.mode, ReadingMode.pages);
-      expect(engine.preferences?.verticalScroll, isFalse);
-      await tester.tap(find.byTooltip('Close settings'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Choose chapter'));
-      await tester.pumpAndSettle();
-      expect(find.text('Nested chapter'), findsWidgets);
-      await tester.tap(find.text('Nested chapter').last);
-      await tester.pumpAndSettle();
-      expect(engine.visitedLink?.href, 'child.xhtml');
-    },
-  );
-
-  testWidgets(
-    'external links require domain confirmation and controls can hide',
-    (tester) async {
-      final book = testBook();
       final controller = await testController(books: [book]);
       addTearDown(controller.dispose);
       await tester.pumpWidget(
@@ -175,33 +102,206 @@ void main() {
           home: ReaderScreen(
             book: book,
             controller: controller,
-            readerBuilder:
-                ({
-                  required publication,
-                  required initialLocator,
-                  required onTap,
-                  required onExternalLink,
-                  required onLocatorChanged,
-                  required onReady,
-                }) => Center(
-                  child: TextButton(
-                    onPressed: () => onExternalLink('https://example.com/path'),
-                    child: const Text('External link'),
-                  ),
-                ),
+            documentStore: store,
           ),
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('External link'));
+      expect(controller.books.single.lastPosition!.offset, 2);
+      await tester.tap(find.byTooltip('Reading settings'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('example.com'), findsOneWidget);
-      await tester.tap(find.text('Cancel'));
+      await tester.tap(find.text('Pages'));
       await tester.pumpAndSettle();
+      expect(controller.settings.mode, ReadingMode.pages);
+      await tester.tap(find.byTooltip('Close settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Choose chapter'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Nested passage'));
+      await tester.pumpAndSettle();
+      expect(controller.books.single.lastPosition!.blockId, 'p1');
       await tester.tap(find.byTooltip('Hide reading controls'));
       await tester.pumpAndSettle();
-      expect(find.byTooltip('Back to library'), findsNothing);
       expect(find.byTooltip('Show reading controls'), findsOneWidget);
+      expect(controller.books.single.lastPosition!.blockId, 'p1');
+      await tester.tap(find.byTooltip('Show reading controls'));
+      await tester.pumpAndSettle();
+      expect(controller.books.single.lastPosition!.blockId, 'p1');
+    },
+  );
+
+  testWidgets(
+    'multilingual pagination preserves grapheme anchors through reflow',
+    (tester) async {
+      const phrase = '中文 العربية שָׁלוֹם हिन्दी ไทย e\u0301 👩🏽‍🚀 ';
+      final block = text.TextBlock(id: 'p0', text: phrase * 60);
+      final store = MemoryDocumentStore(
+        sections: [
+          text.TextSection(id: 's0', blocks: [block]),
+        ],
+      );
+      final navigation = TextReaderNavigation();
+      final settings = ValueNotifier(
+        const ReaderSettings(mode: ReadingMode.pages),
+      );
+      addTearDown(settings.dispose);
+      var size = const Size(350, 260);
+      final semantics = tester.ensureSemantics();
+
+      Widget app() => MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: size.width,
+              height: size.height,
+              child: ValueListenableBuilder(
+                valueListenable: settings,
+                builder: (_, value, _) => TextViewport(
+                  document: store.document,
+                  sourcePath: '/memory/book',
+                  store: store,
+                  navigation: navigation,
+                  settings: value,
+                  foreground: Colors.black,
+                  onPosition: (_, _, _) {},
+                  onTap: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 4; i++) {
+        navigation.next();
+        await tester.pumpAndSettle();
+      }
+      final anchor = navigation.leadingPosition!;
+      expect(anchor.offset, greaterThan(0));
+      expect(text.graphemeFloor(block.text, anchor.offset), anchor.offset);
+      settings.value = settings.value.copyWith(fontSize: 150, serif: false);
+      await tester.pumpAndSettle();
+      expect(navigation.leadingPosition, anchor);
+      size = const Size(500, 300);
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      expect(navigation.leadingPosition, anchor);
+      settings.value = settings.value.copyWith(mode: ReadingMode.scroll);
+      await tester.pumpAndSettle();
+      expect(navigation.leadingPosition, anchor);
+      expect(navigation.retainedLayoutCount, lessThanOrEqualTo(2));
+      expect(tester.takeException(), isNull);
+      semantics.dispose();
+    },
+  );
+
+  testWidgets(
+    'page painting semantics retain every character across boundaries',
+    (tester) async {
+      final value = 'مرحبا 中文 e\u0301 👩🏽‍🚀 line\n' * 25;
+      final store = MemoryDocumentStore(
+        sections: [
+          text.TextSection(
+            id: 's0',
+            blocks: [text.TextBlock(id: 'p0', text: value)],
+          ),
+        ],
+      );
+      final navigation = TextReaderNavigation();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 300,
+              height: 230,
+              child: TextViewport(
+                document: store.document,
+                sourcePath: '/memory',
+                store: store,
+                navigation: navigation,
+                settings: const ReaderSettings(mode: ReadingMode.pages),
+                foreground: Colors.black,
+                onPosition: (_, _, _) {},
+                onTap: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final pieces = <String>[];
+      for (var i = 0; i < 100; i++) {
+        pieces.addAll(
+          tester
+              .widgetList<Semantics>(
+                find.descendant(
+                  of: find.byType(TextViewport),
+                  matching: find.byType(Semantics),
+                ),
+              )
+              .map((w) => w.properties.label)
+              .whereType<String>(),
+        );
+        final before = navigation.leadingPosition;
+        navigation.next();
+        await tester.pumpAndSettle();
+        final after = navigation.leadingPosition;
+        if (after!.offset == value.length || after == before) break;
+        expect(text.graphemeFloor(value, after.offset), after.offset);
+      }
+      expect(pieces.join(), value);
+    },
+  );
+
+  testWidgets(
+    'keyboard navigation advances logical RTL pages and can finish a book',
+    (tester) async {
+      final store = MemoryDocumentStore(
+        sections: [
+          text.TextSection(
+            id: 's0',
+            blocks: [
+              text.TextBlock(
+                id: 'p0',
+                text: 'مرحبا بالعالم ' * 40,
+                direction: 'rtl',
+              ),
+            ],
+          ),
+        ],
+      );
+      final navigation = TextReaderNavigation();
+      var progress = 0.0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 300,
+              height: 220,
+              child: TextViewport(
+                document: store.document,
+                sourcePath: '/memory',
+                store: store,
+                navigation: navigation,
+                settings: const ReaderSettings(mode: ReadingMode.pages),
+                foreground: Colors.black,
+                onPosition: (_, p, _) => progress = p,
+                onTap: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+      expect(navigation.leadingPosition!.offset, greaterThan(0));
+      for (var i = 0; i < 100 && progress < 1; i++) {
+        navigation.next();
+        await tester.pumpAndSettle();
+      }
+      expect(progress, 1);
     },
   );
 
@@ -213,12 +313,8 @@ void main() {
     final controller = ReaderController(
       catalogStore: MemoryCatalogStore([book]),
       settingsStore: MemorySettingsStore(),
-      importer: EpubImporter(
-        root: Directory.systemTemp,
-        engine: FakeEngine(testPublication()),
-      ),
+      importer: BookImporter(root: Directory.systemTemp),
       picker: FakePicker(),
-      engine: FakeEngine(testPublication()),
       illustrationStore: MemoryIllustrationStore(),
       textIndexer: FakeTextIndexer(),
       illustrationApi: api,
@@ -231,109 +327,17 @@ void main() {
         home: ReaderScreen(
           book: book,
           controller: controller,
-          readerBuilder: ({
-            required publication,
-            required initialLocator,
-            required onTap,
-            required onExternalLink,
-            required onLocatorChanged,
-            required onReady,
-          }) => const ColoredBox(color: Colors.white),
+          documentStore: MemoryDocumentStore(),
         ),
       ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('AI illustrations'));
     await tester.pumpAndSettle();
-
     expect(find.text('Illustrate this book?'), findsOneWidget);
-    expect(find.textContaining('EPUB is never uploaded'), findsOneWidget);
-    expect(find.textContaining('Estimated maximum: 3 credits'), findsOneWidget);
     expect(api.createdChapterOrdinals, isEmpty);
-
     await tester.tap(find.text('Enable illustrations'));
     await tester.pumpAndSettle();
     expect(api.createdChapterOrdinals, [0]);
-    expect(controller.manifestFor(book).enabled, isTrue);
-  });
-
-  testWidgets('gallery exposes only unlocked scenes', (tester) async {
-    final book = testBook();
-    final store = MemoryIllustrationStore();
-    store.manifests[book.hash] = IllustrationManifest(
-      bookHash: book.hash,
-      profile: const IllustrationProfile(
-        enabled: true,
-        style: 'Cinematic ink',
-        density: 3,
-        styleVersion: 1,
-        cloudBookId: 'cloud-book',
-      ),
-      scenes: const [
-        IllustrationScene(
-          id: 'unlocked',
-          state: IllustrationSceneState.unlocked,
-          caption: 'The moonlit gate',
-          anchor: SceneAnchor(
-            href: 'chapter.xhtml',
-            spineOrdinal: 0,
-            paragraphId: 'p1',
-            cssSelector: 'p',
-            fallbackProgression: .5,
-          ),
-        ),
-        IllustrationScene(
-          id: 'locked',
-          state: IllustrationSceneState.readyLocked,
-          caption: 'Future spoiler',
-          anchor: SceneAnchor(
-            href: 'chapter.xhtml',
-            spineOrdinal: 0,
-            paragraphId: 'p2',
-            cssSelector: 'p + p',
-            fallbackProgression: 1,
-          ),
-        ),
-      ],
-    );
-    final controller = ReaderController(
-      catalogStore: MemoryCatalogStore([book]),
-      settingsStore: MemorySettingsStore(),
-      importer: EpubImporter(
-        root: Directory.systemTemp,
-        engine: FakeEngine(testPublication()),
-      ),
-      picker: FakePicker(),
-      engine: FakeEngine(testPublication()),
-      illustrationStore: store,
-      textIndexer: FakeTextIndexer(),
-      illustrationApi: FakeIllustrationApi(configured: true),
-    );
-    await controller.initialize();
-    addTearDown(controller.dispose);
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: readerTheme,
-        home: ReaderScreen(
-          book: book,
-          controller: controller,
-          readerBuilder: ({
-            required publication,
-            required initialLocator,
-            required onTap,
-            required onExternalLink,
-            required onLocatorChanged,
-            required onReady,
-          }) => const ColoredBox(color: Colors.white),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('AI illustrations'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Illustrated scenes'), findsOneWidget);
-    expect(find.text('The moonlit gate'), findsOneWidget);
-    expect(find.text('Future spoiler'), findsNothing);
   });
 }

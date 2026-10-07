@@ -1,17 +1,19 @@
 # Reader
 
-An offline-first Flutter EPUB reader for iPhone and iPad. It imports reflowable, non-DRM EPUB 2 and EPUB 3 books and renders them with Readium through [`flureadium`](https://pub.dev/packages/flureadium).
+An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and TXT imports are normalized by our Dart parser and displayed by a custom viewport using Flutter's text shaping and layout engine.
 
-- Import several EPUB files from the native document picker, up to 100 MB each.
+- Import several EPUB or TXT files from the native document picker, up to 100 MB each.
 - Search by title or author; filter All / Reading / Finished; sort by recent activity or title.
-- Resume from a complete Readium locator and switch between Pages and Scroll without losing the passage.
-- Use nested tables of contents, internal links, images, SVG, RTL content, and publisher semantics handled by Readium.
-- Adjust serif/sans-serif text, size, and paper/sepia/dark colors. Hide controls for focused reading.
-- Opt in per book to spoiler-safe AI illustrations that unlock only after the
-  depicted passage and remain in a local unlocked-scenes gallery.
-- Persist the catalog under Application Support and global reading settings in SharedPreferences.
+- Switch Pages / Scroll, typography, themes, and window sizes while retaining a grapheme-safe text position.
+- Preserve EPUB chapter structure, nested tables of contents, headings, paragraphs, and explicit line breaks. Publisher CSS, inline images, interactive links, and rich styling are omitted; local covers remain in the library.
+- Read horizontal Unicode text, including RTL and mixed-direction passages, CJK, Indic scripts, Thai, combining marks, and emoji. Font coverage uses platform fallback. Vertical writing is not supported.
+- Import strict UTF-8 TXT (with optional BOM) or BOM-marked UTF-16 LE/BE. Form feeds separate sections; large sections and paragraphs split deterministically at paragraph/grapheme boundaries to fit illustration API limits.
+- Opt in per book to spoiler-safe AI illustrations, using exactly the text the viewport displays. Illustrations unlock after the leading reading position passes their ending paragraph, and persist in a local gallery.
+- Persist source files, normalized sections, and the catalog under Application Support; global reading preferences remain in SharedPreferences.
 
-Scripted, remote-resource, fixed-layout, and DRM-protected publications are rejected. Web links show their destination domain and require consent before opening outside the app.
+Scripted, remote-resource, fixed-layout, and encrypted/DRM publications are rejected. Archive traversal, expansion, entry-count, and markup limits apply to every EPUB import. Import parsing and sidecar serialization run outside the UI isolate. The viewport retains at most two measured section layouts. Unicode direction ranges are generated from Unicode 17.0.0; regeneration instructions are in `tool/generate_direction.py`.
+
+Catalog version 2 intentionally discards legacy imported books and Readium reading positions on first launch. Global preferences survive. A durable reset marker makes cleanup restartable; known cloud illustration book IDs are queued for deletion before local data is removed. Startup retries use an existing identity session and never prompt for sign-in.
 
 ## Development
 
@@ -60,15 +62,18 @@ flutter pub outdated
 flutter pub upgrade --dry-run
 ```
 
-This project disables Flutter's Swift Package Manager integration because Flureadium 0.19.3 does not provide a compatible macOS Swift package. Native Apple dependencies are resolved through CocoaPods. Install and validate them with:
+Apple dependencies use CocoaPods for the remaining Firebase and file-picker integration. Install and validate with:
 
 ```sh
-cd ios && pod install --repo-update && cd ..
-cd macos && pod install --repo-update && cd ..
+cd ios && pod install && cd ..
+cd macos && pod install && cd ..
 flutter build ios --simulator --no-codesign
+flutter build macos
+flutter test integration_test/reader_test.dart -d macos
+flutter test integration_test/reader_test.dart -d <ios-simulator-id>
 ```
 
-Flureadium's published macOS plugin currently contains only a platform stub and does not implement publication loading or its reader view. The macOS shell builds, but EPUB import and reading are intentionally limited to iPhone and iPad until the package ships a functional macOS implementation.
+Offline importing and reading work on iOS and macOS. Illustration authentication remains iOS-only. The iOS deployment target is 15.0 and macOS target is 12.0. No loopback web server or EPUB-specific App Transport Security exception is required.
 
 Validate every EPUB fixture separately with the official EPUBCheck release:
 
@@ -76,18 +81,17 @@ Validate every EPUB fixture separately with the official EPUBCheck release:
 java -jar /path/to/epubcheck.jar path/to/book.epub
 ```
 
-The iOS deployment target is 15.0. App Transport Security permits local networking only for Readium's loopback content server; arbitrary network loads are not enabled.
-
 ## Organization
 
-- `lib/models.dart` contains versioned catalog records and reader settings.
-- `lib/storage.dart` contains atomic catalog and preferences persistence.
-- `lib/epub_service.dart` contains picker, validation, hashing, copying, and the Readium adapter.
+- `lib/models.dart` contains catalog records, complete text positions, and reader settings.
+- `lib/storage.dart` contains serialized atomic catalog writes, restartable legacy reset, and preferences persistence.
+- `lib/book_service.dart` contains selection, isolated parsing, hashing, and atomic import staging.
+- `lib/text/` contains normalized documents, EPUB/TXT parsing, Unicode direction detection, lazy section loading, measured scroll/page layout, and logical navigation.
 - `lib/controller.dart` is the single shared `ChangeNotifier`.
-- `lib/illustrations/` contains bounded EPUB indexing, spoiler gating,
+- `lib/illustrations/` contains normalized text indexing, spoiler gating,
   authenticated REST, atomic sidecars, local assets, and deletion retries.
 - `lib/library.dart` and `lib/reader.dart` contain the adaptive library and reader shell.
 - `backend/` contains the Cloud Run API/worker, scene planning, image provider,
   moderation, credit reservations, private delivery, and deletion endpoints.
 
-Lora and DM Sans are bundled under the SIL Open Font License. Flureadium and Readium notices are recorded in `THIRD_PARTY_NOTICES.md`. Distribution builds require an LGPL compliance review.
+Lora and DM Sans are bundled under the SIL Open Font License. Remaining dependency and Unicode data notices are recorded in `THIRD_PARTY_NOTICES.md`.

@@ -1,57 +1,45 @@
-// The small public boundary is documented on IllustrationGate itself.
-// ignore_for_file: public_member_api_docs
-
-import 'package:flureadium/flureadium.dart';
-
+import '../text/document.dart';
 import 'models.dart';
 
-/// Compares resolved Readium locators with scene-end anchors conservatively.
-///
-/// A same-resource locator without a DOM selector never unlocks a scene. The
-/// next spine resource is the safe fallback, avoiding early reveals when a
-/// publisher's markup cannot be mapped back to the local index.
+/// Releases scenes only after the viewport's leading passage passes their end.
+/// End-exclusive offsets also release a final paragraph after explicit finish.
+/// Unknown anchors or positions remain locked; visibility alone is insufficient.
 class IllustrationGate {
+  /// Stateless gate over normalized paragraph identities.
   const IllustrationGate();
 
+  /// Both position and anchor must resolve in the same normalized document.
   bool hasPassed({
     required SceneAnchor anchor,
     required BookTextIndex index,
-    required Locator locator,
+    required TextPosition position,
   }) {
-    final currentChapter = index.chapterForHref(locator.href);
-    if (currentChapter == null) return false;
-    if (currentChapter.spineOrdinal > anchor.spineOrdinal) return true;
-    if (currentChapter.spineOrdinal < anchor.spineOrdinal) return false;
-
+    if (position.version != textDocumentVersion) return false;
     final anchorChapter = index.chapters
-        .where((chapter) => chapter.spineOrdinal == anchor.spineOrdinal)
+        .where(
+          (c) => c.href == anchor.href && c.spineOrdinal == anchor.spineOrdinal,
+        )
         .firstOrNull;
-    if (anchorChapter == null) return false;
+    final currentChapter = index.chapterForHref(position.sectionId);
+    if (anchorChapter == null || currentChapter == null) return false;
     final anchorOrdinal = anchorChapter.paragraphs
-        .where((paragraph) => paragraph.id == anchor.paragraphId)
+        .where((p) => p.id == anchor.paragraphId)
         .firstOrNull
         ?.ordinal;
-    if (anchorOrdinal == null) return false;
-
-    final locations = locator.toJson()['locations'] as Map?;
-    final selector = locations?['cssSelector'] as String?;
-    if (selector == null || selector.isEmpty) return false;
-    final currentOrdinal = _matchSelector(anchorChapter, selector)?.ordinal;
-    return currentOrdinal != null && currentOrdinal > anchorOrdinal;
-  }
-
-  IndexedParagraph? _matchSelector(ChapterTextIndex chapter, String selector) {
-    for (final paragraph in chapter.paragraphs) {
-      if (paragraph.cssSelector == selector ||
-          selector.startsWith('${paragraph.cssSelector} >') ||
-          paragraph.cssSelector.startsWith('$selector >')) {
-        return paragraph;
-      }
+    final current = currentChapter.paragraphs
+        .where((p) => p.id == position.blockId)
+        .firstOrNull;
+    if (anchorOrdinal == null ||
+        current == null ||
+        position.offset < 0 ||
+        position.offset > current.text.length ||
+        graphemeFloor(current.text, position.offset) != position.offset) {
+      return false;
     }
-    return null;
+    if (currentChapter.spineOrdinal > anchor.spineOrdinal) return true;
+    return currentChapter.spineOrdinal == anchor.spineOrdinal &&
+        (current.ordinal > anchorOrdinal ||
+            (current.ordinal == anchorOrdinal &&
+                position.offset == current.text.length));
   }
-}
-
-extension _FirstOrNull<T> on Iterable<T> {
-  T? get firstOrNull => isEmpty ? null : first;
 }
