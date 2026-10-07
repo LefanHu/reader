@@ -45,9 +45,20 @@ variable "illustrations_bucket" {
 }
 
 variable "budget_amount_usd" {
-  description = "Monthly Google Cloud budget in USD."
+  description = "Monthly budget in budget_currency; legacy variable name retained for environment compatibility."
   type        = number
 }
+
+variable "budget_currency" {
+  description = "ISO 4217 currency matching the linked billing account; Google rejects a different currency."
+  type        = string
+  default     = "USD"
+  validation {
+    condition     = can(regex("^[A-Z]{3}$", var.budget_currency))
+    error_message = "Budget currency must be an uppercase three-letter ISO currency code."
+  }
+}
+
 
 variable "alert_email" {
   description = "Email address receiving budget and operational alerts."

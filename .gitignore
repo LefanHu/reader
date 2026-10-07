@@ -35,6 +35,8 @@ migrate_working_dir/
 /backend/node_modules/
 /backend/dist/
 /.dart-defines/
+# Local OAuth and cloud credentials must never enter source control.
+/.credentials/
 **/.terraform/
 /infra/modules/*/.terraform.lock.hcl
 *.tfplan

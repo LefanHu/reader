@@ -29,3 +29,9 @@ output "firebase_macos_config" {
   sensitive   = true
   value       = module.foundation.firebase_macos_config
 }
+
+output "google_client_id" {
+  description = "Web OAuth audience passed to the native sign-in client; contains no secret."
+  value       = var.google_client_id
+  sensitive   = true
+}

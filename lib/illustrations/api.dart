@@ -69,17 +69,8 @@ class UnlockedIllustration {
   final int generationVersion;
 }
 
-/// Authentication boundary supplying Firebase ID and App Check credentials.
-abstract interface class IllustrationIdentity {
-  bool get configured;
-
-  /// Checks existing identity without opening a sign-in prompt.
-  Future<bool> hasSession();
-  Future<void> signInWithApple();
-  Future<Map<String, String>> authorizationHeaders({bool interactive = true});
-  Future<void> signOut();
-  Future<void> deleteAccount();
-}
+/// Compatibility name for the shared provider-neutral account boundary.
+typedef IllustrationIdentity = CloudIdentity;
 
 /// Illustration identity stays iOS-only while sharing lazy cloud initialization.
 class FirebaseIllustrationIdentity extends FirebaseCloudIdentity {
@@ -136,7 +127,7 @@ class HttpIllustrationApi implements IllustrationApi {
   Future<bool> hasSession() => identity.hasSession();
 
   @override
-  Future<void> signIn() => identity.signInWithApple();
+  Future<void> signIn() => identity.signIn();
 
   @override
   Future<IllustrationSetup> registerBook(
@@ -290,6 +281,7 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<void> deleteAccount() async {
+    await identity.reauthenticate();
     await _empty('DELETE', '/v1/account');
     await identity.deleteAccount();
   }

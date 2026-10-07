@@ -5,7 +5,7 @@ Four independently stateful stacks share one environment project and database:
 
 - `bootstrap` protects the dedicated state project and versioned GCS bucket.
 - `foundation` is core: project/billing, shared APIs, Firebase Apple app, App Check,
-  Apple authentication, Firestore database/rules, budget, and notification channel.
+  Google authentication, Firestore database/rules, budget, and notification channel.
   Its directory, state prefix, and existing resource addresses remain unchanged.
 - `illustrations` owns feature APIs, indexes/TTL, private asset bucket and Storage
   rules, queue, service identities/IAM, container registry, and secrets.
@@ -13,8 +13,16 @@ Four independently stateful stacks share one environment project and database:
   Both services use one immutable image; Firebase Auth handles accounts directly.
 
 Core owns shared APIs; illustrations owns feature-specific APIs. Neither stack
-creates another project, database, auth service, or notification channel. This
-reorganization preserves Apple-only sign-in; Google sign-in is a separate change.
+creates another project, database, auth service, or notification channel.
+Google is the only sign-in provider; native Firebase Apple-platform registrations
+remain necessary on iOS/macOS. Protected feature requests additionally require
+App Check; validate attestation on the intended macOS distribution before rollout.
+
+Core client-based APIs (Firebase Auth, App Check, and budgets) explicitly charge
+quota to the environment project through dedicated provider aliases. User ADC
+must have `serviceusage.services.use` there; no quota project from an unrelated
+local gcloud configuration is used. Default project/API providers remain separate
+so new projects can bootstrap before their client APIs are available.
 
 All stacks require Terraform 1.14 or newer, Python 3, gcloud, and jq. Provider
 versions and root lock files are pinned. Use the repository commands for writes:
@@ -30,9 +38,17 @@ tool/deploy_backend dev --scope illustrations
 tool/deploy_backend dev
 ```
 
-The core path bootstraps state when necessary and requires Apple credentials.
-Supply `TF_VAR_apple_client_id` and `TF_VAR_apple_client_secret`, or enter them at
-its prompts. The illustration path never requests Apple credentials; it requests
+The core path bootstraps state when necessary and requires a Google web OAuth
+client. Supply `TF_VAR_google_client_id` and `TF_VAR_google_client_secret` privately,
+or enter them at its interactive prompts. Downloaded OAuth JSON belongs in the
+Git-ignored `.credentials/` directory with owner-only permissions; never put its
+secret in Flutter defines. The web client needs the authorized redirect URI
+`https://reader-35ca1.firebaseapp.com/__/auth/handler` for this development project.
+Configure branding as Reader Development,
+External/Testing audience, and basic identity scopes in the existing environment
+project. Native OAuth clients must match the existing iOS/macOS bundle IDs; adopt
+matching clients instead of duplicating them. The illustration path never requests
+OAuth credentials; it requests
 an OpenAI key only when the secret has no enabled version. It additionally needs
 npm and curl, runs backend build/tests/production audit, builds through Cloud
 Build, resolves an immutable digest, deploys runtime, and smoke-tests endpoints.
@@ -112,9 +128,16 @@ reads `backend/firestore.indexes.json`, `backend/firestore.rules`, and
 
 ## Secrets and deletion safety
 
-The Sign in with Apple secret is necessarily retained in encrypted remote state
-and must be rotated by supplying a new `TF_VAR_apple_client_secret`. Restrict
-access to the state project and bucket accordingly. The OpenAI key is never a
+The Google OAuth client secret is necessarily retained in protected remote state;
+rotate it with `TF_VAR_google_client_secret`. Restrict access to the state project
+and bucket. Neither the secret nor Apple retirement credentials enter generated
+app configuration. Existing protected Apple provider state is retired in two
+applies: recover its credentials privately from state, disable the provider and
+persist deletion policy DELETE, then remove only that provider. Interrupted
+transitions are restartable; existing Firebase users and data are preserved.
+`tool/plan_infra` shows the transition first when necessary; review the final
+Google-only plan after this stage. Historical versioned state can still contain
+retired Apple secrets and must remain private. The OpenAI key is never a
 Terraform input: the deploy command writes it straight to Secret Manager and
 Cloud Run references the secret rather than receiving plaintext environment
 data. The fingerprint secret is generated once and retained in protected state.
@@ -125,7 +148,9 @@ Terraform destruction. Removing them requires an explicit configuration/state
 change, not merely `terraform destroy`.
 
 Google Cloud budget notifications are informational and do not cap spending.
-The development threshold is $25 USD per month at 50%, 80%, and 100%. OpenAI
+The development threshold is $25 CAD per month at 50%, 80%, and 100%.
+Set `budget_currency` to the linked billing account's currency; `budget_amount_usd`
+is expressed in that currency despite its historical name. Google rejects mismatched currency codes. OpenAI
 usage is outside Google Cloud Billing, so configure a separate OpenAI project
 budget and usage notification in the OpenAI platform.
 
@@ -134,7 +159,7 @@ budget and usage notification in the OpenAI platform.
 Copy `environments/dev.tfvars`, choose a globally unique project ID and bucket,
 and update the environment-specific values. Set
 `enable_existing_imports = false`; project creation, billing attachment, and
-Firebase activation are automatic. Then provide Apple credentials and run the
+Firebase activation are automatic. Then configure Google OAuth and provide its credentials before running the
 same deploy command. The OpenAI key is requested only when the new project's
 secret has no enabled version.
 
@@ -165,4 +190,3 @@ terraform -chdir=infra/runtime test
 shellcheck tool/deploy_backend tool/plan_infra tool/infra_common.sh tool/migrate_backend_state
 python3 -m unittest discover -s tool/tests -v
 ```
-

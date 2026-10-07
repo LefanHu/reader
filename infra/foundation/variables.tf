@@ -38,16 +38,35 @@ variable "apple_team_id" {
   type        = string
 }
 
-variable "apple_client_id" {
-  description = "Sign in with Apple Services ID configured in Firebase Authentication."
+variable "google_client_id" {
+  description = "Web OAuth client ID used by the Firebase Google provider."
   type        = string
   sensitive   = true
 }
 
-variable "apple_client_secret" {
-  description = "Rotating Sign in with Apple OAuth client secret; retained only in protected state."
+variable "google_client_secret" {
+  description = "Private Google OAuth client secret; retained only in protected remote state."
   type        = string
   sensitive   = true
+}
+
+# Used only by the staged removal of an existing protected Apple provider.
+variable "retain_legacy_apple_provider" {
+  description = "Temporarily retain a disabled Apple provider to persist relaxed deletion protection."
+  type        = bool
+  default     = false
+}
+variable "apple_client_id" {
+  description = "Existing Apple credentials recovered privately from state during retirement."
+  type        = string
+  sensitive   = true
+  default     = null
+}
+variable "apple_client_secret" {
+  description = "Existing Apple secret needed only for the provider retirement transition."
+  type        = string
+  sensitive   = true
+  default     = null
 }
 
 variable "illustrations_bucket" {
@@ -56,9 +75,20 @@ variable "illustrations_bucket" {
 }
 
 variable "budget_amount_usd" {
-  description = "Monthly Google Cloud budget in USD."
+  description = "Monthly budget in budget_currency; legacy variable name retained for environment compatibility."
   type        = number
 }
+
+variable "budget_currency" {
+  description = "ISO 4217 currency matching the linked billing account; Google rejects a different currency."
+  type        = string
+  default     = "USD"
+  validation {
+    condition     = can(regex("^[A-Z]{3}$", var.budget_currency))
+    error_message = "Budget currency must be an uppercase three-letter ISO currency code."
+  }
+}
+
 
 variable "alert_email" {
   description = "Email address receiving budget and operational alerts."

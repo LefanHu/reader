@@ -12,3 +12,6 @@ PRODUCT_BUNDLE_IDENTIFIER = com.leafmealone.reader.macos
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
+
+// Optional private native callbacks generated with Firebase Dart configuration.
+#include? "../../../.dart-defines/macos.xcconfig"

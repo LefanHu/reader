@@ -293,7 +293,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           title: const Text('Illustrations are not configured'),
           content: const Text(
             'This build needs Firebase and the illustration API environment '
-            'values before Sign in with Apple and generation can be used.',
+            'values before Google sign-in and generation can be used.',
           ),
           actions: [
             FilledButton(
@@ -708,7 +708,7 @@ class _IllustrationConsentDialogState
             ),
             const SizedBox(height: 12),
             const Text(
-              'Sign in with Apple is used to protect generation credits. '
+              'Google sign-in is used to protect generation credits. '
               'Reading remains available offline and without an account.',
             ),
           ],

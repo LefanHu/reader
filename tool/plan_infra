@@ -14,10 +14,16 @@ gcloud storage buckets describe "gs://$STATE_BUCKET" --project="$STATE_PROJECT" 
 terraform_init foundation "reader/$ENVIRONMENT/foundation"
 assert_migrated
 if [ "$SCOPE" != illustrations ]; then
-  require_apple_credentials
-  plan="$WORK_DIR/foundation.tfplan"
-  terraform -chdir="$INFRA_DIR/foundation" plan -var-file="$ENV_VARS" -out="$plan"
-  assert_safe_plan foundation "$plan"
+  require_google_credentials
+  prepare_apple_retirement
+  if [ "$APPLE_RETIREMENT_REQUIRED" = true ]; then
+    plan_apple_retirement
+    printf '%s\n' "Review this Apple disable/protection transition first; deployment then removes only the retired provider."
+  else
+    plan="$WORK_DIR/foundation.tfplan"
+    terraform -chdir="$INFRA_DIR/foundation" plan -var-file="$ENV_VARS" -out="$plan"
+    assert_safe_plan foundation "$plan"
+  fi
 fi
 [ "$SCOPE" != core ] || exit 0
 require_core

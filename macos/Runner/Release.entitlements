@@ -6,14 +6,16 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
-	<!-- Cloud narration needs outbound HTTPS, Apple identity and persisted auth. -->
+	<!-- Cloud features need outbound HTTPS and persistent Firebase/Google identity. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<key>com.apple.developer.applesignin</key>
-	<array><string>Default</string></array>
 	<key>keychain-access-groups</key>
-	<array><string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string></array>
-	<key>com.apple.developer.devicecheck.appattest-environment</key>
-	<string>production</string>
+	<array>
+		<string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
+		<!-- Required by the GoogleSignIn native SDK on macOS. -->
+		<string>$(AppIdentifierPrefix)com.google.GIDSignIn</string>
+	</array>
+	<!-- Apple limits the App Attest environment entitlement to iOS-family
+	     platforms. Protected Mac requests still require valid App Check tokens. -->
 </dict>
 </plist>

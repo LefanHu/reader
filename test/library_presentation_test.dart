@@ -106,9 +106,12 @@ void main() {
         matching: find.byType(AnimatedOpacity),
       );
       expect(tester.widget<AnimatedOpacity>(opacity).duration, Duration.zero);
+      // Traverse a complete focus cycle; adding an account control must not make
+      // this accessibility proof depend on the toolbar's exact button count.
+      final stops = FocusManager.instance.rootScope.traversalDescendants.length;
       for (
         var i = 0;
-        i < 8 && tester.widget<AnimatedOpacity>(opacity).opacity == 0;
+        i < stops && tester.widget<AnimatedOpacity>(opacity).opacity == 0;
         i++
       ) {
         await tester.sendKeyEvent(LogicalKeyboardKey.tab);

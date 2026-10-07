@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'controller.dart';
+import 'cloud_identity.dart';
 import 'models.dart';
 import 'narration/sheet.dart';
 import 'reader.dart';
@@ -290,6 +291,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       ),
                     const SizedBox(width: 8),
                     _AppearanceMenu(controller: widget.controller),
+                    _AccountMenu(controller: widget.controller),
                   ],
                 ),
                 const SizedBox(height: 20),
@@ -400,6 +402,49 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ],
     );
   }
+}
+
+/// Library accounts remain separate from per-book upload consent and API rollout.
+class _AccountMenu extends StatelessWidget {
+  const _AccountMenu({required this.controller});
+  final ReaderController controller;
+
+  Future<void> _action(BuildContext context, bool signOut) async {
+    try {
+      if (signOut) {
+        await controller.signOutOfCloud();
+      } else {
+        await controller.signInToCloud();
+      }
+    } on Object catch (error) {
+      if (error is CloudIdentityException && error.cancelled) return;
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopupMenuButton<bool>(
+    tooltip: 'Account',
+    enabled: !controller.cloudAccountBusy,
+    icon: const Icon(Icons.account_circle_outlined),
+    onSelected: (signOut) => _action(context, signOut),
+    itemBuilder: (_) => [
+      if (controller.cloudEmail != null)
+        PopupMenuItem<bool>(
+          enabled: false,
+          child: Text(controller.cloudEmail!),
+        ),
+      PopupMenuItem<bool>(
+        value: controller.cloudEmail != null,
+        child: Text(
+          controller.cloudEmail == null ? 'Sign in with Google' : 'Sign out',
+        ),
+      ),
+    ],
+  );
 }
 
 /// Library entry point to the persisted app-wide palette and dependency notices.

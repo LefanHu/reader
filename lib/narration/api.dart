@@ -20,7 +20,7 @@ abstract interface class NarrationApi {
   /// Rollout and allowance check uses an existing identity when available.
   Future<Map<String, dynamic>> configuration();
 
-  /// Called only after explicit per-book consent; may open Apple sign-in.
+  /// Called only after explicit per-book consent; may open Google sign-in.
   Future<NarrationRegistration> register(CatalogBook book);
 
   /// Idempotent generation/download of one exact chunk, bounded by the caller.
@@ -99,7 +99,7 @@ class HttpNarrationApi implements NarrationApi {
       _json('GET', '/v1/narration/config');
   @override
   Future<NarrationRegistration> register(CatalogBook book) async {
-    await identity.signInWithApple();
+    await identity.signIn();
     final key = await _json('GET', '/v1/fingerprint-key');
     // Reuse the privacy-preserving account-specific fingerprint protocol.
     final fingerprint = narrationFingerprint(book.hash, key['key'] as String);
@@ -191,6 +191,7 @@ class HttpNarrationApi implements NarrationApi {
 
   @override
   Future<void> deleteAccount() async {
+    await identity.reauthenticate();
     await _json('DELETE', '/v1/account');
     await identity.deleteAccount();
   }

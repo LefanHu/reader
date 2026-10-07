@@ -11,6 +11,11 @@ gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q . ||
 gcloud auth application-default print-access-token >/dev/null 2>&1 || \
   die "Terraform needs Application Default Credentials; run gcloud auth application-default login"
 
+# Resolve OAuth prerequisites before bootstrap can mutate cloud resources.
+if [ "$SCOPE" != illustrations ]; then
+  require_google_credentials
+fi
+
 # Tool requirements follow the selected path so accounts need no Node toolchain.
 if [ "$SCOPE" != core ]; then
   require_command npm
@@ -66,7 +71,11 @@ if [ "$core_initialized" = false ]; then
   assert_migrated
 fi
 if [ "$SCOPE" != illustrations ]; then
-  require_apple_credentials
+  prepare_apple_retirement
+  if [ "$APPLE_RETIREMENT_REQUIRED" = true ]; then
+    plan_apple_retirement
+    terraform -chdir="$INFRA_DIR/foundation" apply "$WORK_DIR/apple-retirement.tfplan"
+  fi
   plan_apply_infrastructure foundation
 else
   require_core

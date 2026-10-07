@@ -242,6 +242,9 @@ if name=='terraform':
     if 'pull' in args:
         if os.environ.get('LEGACY_STATE')=='1':
             print(json.dumps({'resources':[{'module':'module.foundation','mode':'managed','type':'random_password','name':'fingerprint','provider':'random','instances':[{'attributes':{'id':'test'}}]}]}))
+        elif os.environ.get('APPLE_STATE') in ('protected','disabled'):
+            protected = os.environ['APPLE_STATE']=='protected'
+            print(json.dumps({'resources':[{'module':'module.foundation','mode':'managed','type':'google_identity_platform_default_supported_idp_config','name':'apple','provider':'google','instances':[{'attributes':{'enabled':protected,'deletion_policy':'PREVENT' if protected else 'DELETE','client_id':'legacy-client','client_secret':'never-print-legacy-secret'}}]}]}))
         else: print('{"resources":[]}')
     if 'show' in args: print('{"resource_changes":[]}')
     if 'output' in args:
@@ -249,7 +252,7 @@ if name=='terraform':
         if key=='project_id' and os.environ.get('MISSING_CORE')=='1': sys.exit(1)
         if key in ('firebase_config', 'firebase_macos_config'):
             print(base64.b64encode(plistlib.dumps({'API_KEY':'key','GOOGLE_APP_ID':'app','GCM_SENDER_ID':'sender','PROJECT_ID':'project'})).decode())
-        else: print({'project_id':'reader-test','build_service_account':'build@example.test','openai_secret_id':'openai','api_url':'https://api.test','worker_url':'https://worker.test','image':'test@sha256:'+'a'*64}.get(key,''))
+        else: print({'google_client_id':'test.apps.googleusercontent.com','project_id':'reader-test','build_service_account':'build@example.test','openai_secret_id':'openai','api_url':'https://api.test','worker_url':'https://worker.test','image':'test@sha256:'+'a'*64}.get(key,''))
     if 'list' in args: print('google_project.state\ngoogle_storage_bucket.state')
 elif name=='gcloud':
     if args[:2]==['auth','list']: print('test@example.test')
@@ -277,7 +280,7 @@ class DeploymentTests(unittest.TestCase):
             path.chmod(0o755)
         self.log = self.root / "calls.jsonl"
         self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "CALL_LOG": str(self.log),
-                    "TF_VAR_apple_client_id": "client", "TF_VAR_apple_client_secret": "secret"}
+                    "TF_VAR_google_client_id": "client", "TF_VAR_google_client_secret": "secret"}
 
     def execute(self, script, *args, **env):
         result = subprocess.run([str(self.root / "tool" / script), "dev", *args], env={**self.env, **env}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
@@ -293,6 +296,40 @@ class DeploymentTests(unittest.TestCase):
         config = json.loads((self.root / ".dart-defines/dev.json").read_text())
         self.assertNotIn("ILLUSTRATION_API_BASE_URL", config)
 
+    def test_protected_apple_provider_is_disabled_before_removal_without_new_credentials(self):
+        result, calls = self.execute("deploy_backend", "--scope", "core", APPLE_STATE='protected')
+        self.assertEqual(0, result.returncode, result.stderr)
+        foundation_applies = [c for c in calls if c[0]=='terraform' and '/foundation' in c[1] and 'apply' in c]
+        self.assertEqual(2, len(foundation_applies))
+        self.assertIn('apple-retirement.tfplan', foundation_applies[0][-1])
+        self.assertIn('foundation.tfplan', foundation_applies[1][-1])
+        self.assertNotIn('never-print-legacy-secret', result.stdout + result.stderr + self.log.read_text())
+
+    def test_disabled_apple_retirement_resumes_with_only_final_apply(self):
+        result, calls = self.execute("deploy_backend", "--scope", "core", APPLE_STATE='disabled')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, sum(c[0]=='terraform' and '/foundation' in c[1] and 'apply' in c for c in calls))
+
+    def test_apple_retirement_plan_reviews_transition_without_apply(self):
+        result, calls = self.execute("plan_infra", "--scope", "core", APPLE_STATE='protected')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('-var=retain_legacy_apple_provider=true' in c for c in calls))
+        self.assertFalse(any('apply' in c for c in calls))
+
+    def test_missing_google_credentials_reports_prerequisite_without_apple_prompt(self):
+        result, _ = self.execute("plan_infra", "--scope", "core", TF_VAR_google_client_id='', TF_VAR_google_client_secret='')
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('configure a Google web OAuth client', result.stderr)
+        self.assertNotIn('Apple', result.stderr)
+
+    def test_missing_google_credentials_blocks_deploy_before_cloud_mutation(self):
+        result, calls = self.execute("deploy_backend", "--scope", "core", TF_VAR_google_client_id='', TF_VAR_google_client_secret='')
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('configure a Google web OAuth client', result.stderr)
+        self.assertFalse(any('apply' in c for c in calls))
+        self.assertFalse(any(c[:3]==['gcloud','billing','projects'] for c in calls))
+        self.assertFalse(any(c[:3]==['gcloud','services','enable'] for c in calls))
+
     def test_default_deployment_keeps_full_workflow_and_one_build(self):
         result, calls = self.execute("deploy_backend")
         self.assertEqual(0, result.returncode, result.stderr)
@@ -307,8 +344,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(any('apply' in c for c in calls))
         self.assertFalse(any(c[:3]==['gcloud','builds','submit'] for c in calls))
 
-    def test_illustrations_deployment_does_not_request_apple_credentials(self):
-        result, calls = self.execute("deploy_backend", "--scope", "illustrations", TF_VAR_apple_client_id='', TF_VAR_apple_client_secret='')
+    def test_illustrations_deployment_does_not_request_auth_credentials(self):
+        result, calls = self.execute("deploy_backend", "--scope", "illustrations", TF_VAR_google_client_id='', TF_VAR_google_client_secret='')
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse(any('apply' in c and '/foundation' in c[1] for c in calls if c[0]=='terraform'))
         self.assertFalse(any(c[:3]==['gcloud','projects','create'] for c in calls))

@@ -77,9 +77,9 @@ void registerNarrationTests() {
       expect(session.book, isNull);
       expect(await File(book.path).exists(), isFalse);
       expect(find.byTooltip('Play narration'), findsNothing);
-      await tester.runAsync(app.controller.signOutOfIllustrations);
+      await tester.runAsync(app.controller.signOutOfCloud);
       expect(api.signOuts, 1);
-      await tester.runAsync(app.controller.deleteIllustrationAccount);
+      await tester.runAsync(app.controller.deleteCloudAccount);
       expect(api.accountDeletions, 1);
       expect(app.controller.books, hasLength(1));
     },

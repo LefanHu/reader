@@ -109,9 +109,25 @@ java -jar /path/to/epubcheck.jar path/to/book.epub
 
 Lora and DM Sans are bundled under the SIL Open Font License. Remaining dependency and Unicode data notices are recorded in `THIRD_PARTY_NOTICES.md`.
 
+## Google accounts
+
+The library’s Account menu signs in with Google independently of cloud generation.
+Signing in does not consent to uploading prose. Reading and importing remain
+account-free; only opted-in cloud features require authentication and App Check.
+Sign out clears both Google and Firebase sessions without changing local books.
+
+Deploy authentication with `tool/deploy_backend dev --scope core` after configuring
+Google OAuth clients. It requires no OpenAI key or feature API deployment. Supply
+web OAuth credentials privately through `TF_VAR_google_client_id` and
+`TF_VAR_google_client_secret`; never commit them. See [infrastructure setup](infra/README.md).
+Build with `--dart-define-from-file=.dart-defines/dev.json` after generating the
+matching iOS/macOS callback settings. Regenerate the selected environment before
+switching builds. Google sign-in replaces Apple authentication; native Firebase
+registrations and App Attest remain in place.
+
 ## Listening to books
 
-The Listen toolbar action opens per-book consent before Apple sign-in or prose
+The Listen toolbar action opens per-book consent before Google sign-in or prose
 upload. Narration supports Marin/Cedar voices, 0.75–2× speed, chapter selection,
 play/pause, ±15-second audio seeking, remaining allowance and local cache clearing.
 One audio handler continues playback in the library and while the device is
@@ -133,9 +149,12 @@ local audio. Changing speed reuses audio; changing voice generates new speech.
 Narration remains remotely disabled by default. See [backend configuration](backend/README.md#ai-narration-disabled-by-default)
 and the guarantees in [AGENTS.md](AGENTS.md#narration-guarantees). Generated Firebase
 Dart defines include separate iOS/macOS app identifiers and API keys under one
-project; cloud narration on macOS requires signed Apple sign-in, Keychain and
-App Attest capabilities on macOS 14 or later. Existing offline reading remains
-available on supported older systems.
+project. Local macOS builds use development signing and a matching provisioning
+profile for the Keychain groups required by Google sign-in. Protected generation additionally
+requires a valid App Check token from a supported installation on macOS 14 or
+later; the OS version alone does not guarantee App Attest availability. Validate
+attestation on the intended distribution before enabling rollout. Existing
+offline reading remains available on supported older systems.
 
 The **Narration** native test group uses real imports, local audio files, native
 audio decoding, storage and rendering, with fake cloud generation. Run it with

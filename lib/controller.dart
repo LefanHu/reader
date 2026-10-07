@@ -45,6 +45,7 @@ class ReaderController extends ChangeNotifier {
     NarrationStore? narrationStore,
     TextDocumentStore? narrationDocuments,
     IllustrationDeletionOutbox? narrationDeletionOutbox,
+    this.cloudIdentity,
     this.illustrationGate = const IllustrationGate(),
   }) : illustrationStore = illustrationStore ?? FileIllustrationStore(),
        textIndexer = textIndexer ?? DocumentTextIndexer(),
@@ -84,6 +85,15 @@ class ReaderController extends ChangeNotifier {
   /// App-lifetime narration; absent in offline/test dependency graphs.
   NarrationSession? narration;
 
+  /// Shared account boundary works with core-only configuration and no API URL.
+  final CloudIdentity? cloudIdentity;
+
+  /// Restored account label; it is not used to authorize requests or gate reading.
+  String? cloudEmail;
+
+  /// Disables duplicate account actions while a native sign-in dialog is active.
+  bool cloudAccountBusy = false;
+
   /// Narration deletion retries stay outside book directories and never sign in.
   final IllustrationDeletionOutbox narrationDeletionOutbox;
 
@@ -117,8 +127,10 @@ class ReaderController extends ChangeNotifier {
   /// Creates the production dependency graph and restores persisted state.
   static Future<ReaderController> create() async {
     final store = await FileCatalogStore.create();
+    final identity = FirebaseCloudIdentity();
     final controller = ReaderController(
-      narrationApi: HttpNarrationApi(identity: FirebaseCloudIdentity()),
+      cloudIdentity: identity,
+      narrationApi: HttpNarrationApi(identity: identity),
       narrationPlayer: await NativeNarrationPlayer.create(),
       narrationStore: FileNarrationStore(store.root),
       narrationDeletionOutbox: FileIllustrationDeletionOutbox(
@@ -154,6 +166,7 @@ class ReaderController extends ChangeNotifier {
     unawaited(_drainDeletionOutbox());
     unawaited(drainNarrationDeletions());
     unawaited(_backfillWordCounts());
+    unawaited(refreshCloudAccount());
     notifyListeners();
   }
 
@@ -250,6 +263,7 @@ class ReaderController extends ChangeNotifier {
     try {
       final index = await _indexFor(book);
       await illustrationApi.signIn();
+      await refreshCloudAccount();
       await _drainDeletionOutbox();
       // Reimported bytes produce the same cloud identity. Finish old deletions
       // before registration so a delayed retry cannot delete the new profile.
@@ -504,21 +518,65 @@ class ReaderController extends ChangeNotifier {
       throw StateError('Cloud cleanup is pending. Retry when connected.');
     }
     await narration?.consent(book);
+    await refreshCloudAccount();
+  }
+
+  /// Restores account metadata without sign-in, attestation or feature requests.
+  Future<void> refreshCloudAccount() async {
+    final identity = cloudIdentity;
+    if (identity == null || !identity.configured) return;
+    try {
+      cloudEmail = await identity.hasSession() ? identity.email : null;
+      if (!_disposed) notifyListeners();
+    } on Object {
+      // Offline startup never blocks local reading or forces authentication.
+    }
+  }
+
+  /// Explicit library sign-in is independent of per-book generation consent.
+  Future<void> signInToCloud() async {
+    if (cloudAccountBusy) return;
+    final identity = cloudIdentity;
+    if (identity == null || !identity.configured) {
+      throw const CloudIdentityException(
+        'Google sign-in is not configured in this build.',
+      );
+    }
+    cloudAccountBusy = true;
+    notifyListeners();
+    try {
+      await identity.signIn();
+      await refreshCloudAccount();
+      unawaited(_drainDeletionOutbox());
+      unawaited(drainNarrationDeletions());
+    } finally {
+      cloudAccountBusy = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   /// Ends the shared cloud identity session; offline reading is unchanged.
-  Future<void> signOutOfIllustrations() async {
+  Future<void> signOutOfCloud() async {
     await narration?.stop();
-    if (narration?.api.configured == true) {
-      await narration!.api.signOut();
-    } else {
-      await illustrationApi.signOut();
+    try {
+      if (cloudIdentity != null) {
+        await cloudIdentity!.signOut();
+      } else if (narration?.api.configured == true) {
+        await narration!.api.signOut();
+      } else {
+        await illustrationApi.signOut();
+      }
+    } finally {
+      // Native selector cleanup can fail after Firebase successfully signs out.
+      // Reflect the actual Firebase account rather than a stale UI label.
+      cloudEmail = cloudIdentity?.email;
+      if (!_disposed) notifyListeners();
     }
   }
 
   /// Purges both cloud features before removing the Firebase user. Narration's
   /// shared identity boundary supports macOS without enabling illustrations.
-  Future<void> deleteIllustrationAccount() async {
+  Future<void> deleteCloudAccount() async {
     final active = narration?.book;
     if (active != null) await narration!.detach(active);
     if (narration?.api.configured == true) {
@@ -541,6 +599,7 @@ class ReaderController extends ChangeNotifier {
       illustrationManifests[book.hash] = manifest;
       await illustrationStore.saveManifest(book, manifest);
     }
+    cloudEmail = null;
     notifyListeners();
   }
 

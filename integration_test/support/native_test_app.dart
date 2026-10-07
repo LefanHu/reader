@@ -13,6 +13,7 @@ import 'package:reader/library.dart';
 import 'package:reader/models.dart';
 import 'package:reader/narration/player.dart';
 import 'package:reader/narration/store.dart';
+import 'package:reader/cloud_identity.dart';
 
 import '../../test/support/narration_fakes.dart';
 
@@ -49,6 +50,7 @@ class NativeTestApp {
     WidgetTester tester, {
     bool importBooks = true,
     bool narration = false,
+    CloudIdentity? cloudIdentity,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
     final app = NativeTestApp._(tester, root);
@@ -62,6 +64,7 @@ class NativeTestApp {
     );
     final epub = epubFixture();
     app.controller = ReaderController(
+      cloudIdentity: cloudIdentity,
       narrationApi: narration ? FakeNarrationApi() : null,
       narrationPlayer: narration ? await NativeNarrationPlayer.create() : null,
       narrationStore: narration ? FileNarrationStore(root) : null,

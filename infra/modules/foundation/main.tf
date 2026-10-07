@@ -72,7 +72,7 @@ resource "time_sleep" "apple_app_propagation" {
 }
 
 resource "google_firebase_app_check_app_attest_config" "reader" {
-  provider = google-beta
+  provider = google-beta.quota
 
   project   = google_project.environment.project_id
   app_id    = google_firebase_apple_app.reader.app_id
@@ -94,22 +94,47 @@ data "google_firebase_apple_app_config" "reader" {
   provider = google-beta
   project  = google_project.environment.project_id
   app_id   = google_firebase_apple_app.reader.app_id
+
+  # Enabling Google can add native OAuth client/callback fields to the plist.
+  # Read only after the provider exists, including on the first core apply.
+  depends_on = [google_identity_platform_default_supported_idp_config.google]
 }
 
 resource "google_identity_platform_config" "auth" {
-  project = google_project.environment.project_id
+  provider = google.quota
+  project  = google_project.environment.project_id
 
   depends_on = [google_project_service.required]
 }
 
+resource "google_identity_platform_default_supported_idp_config" "google" {
+  provider      = google.quota
+  project       = google_project.environment.project_id
+  idp_id        = "google.com"
+  enabled       = true
+  client_id     = var.google_client_id
+  client_secret = var.google_client_secret
+
+  deletion_policy = "PREVENT"
+  depends_on      = [google_identity_platform_config.auth]
+}
+
+# Preserve the complete provider state while disabling Apple and relaxing its
+# API-side deletion protection. The next apply removes only this provider.
+moved {
+  from = google_identity_platform_default_supported_idp_config.apple
+  to   = google_identity_platform_default_supported_idp_config.apple[0]
+}
 resource "google_identity_platform_default_supported_idp_config" "apple" {
+  provider      = google.quota
+  count         = var.retain_legacy_apple_provider ? 1 : 0
   project       = google_project.environment.project_id
   idp_id        = "apple.com"
-  enabled       = true
+  enabled       = false
   client_id     = var.apple_client_id
   client_secret = var.apple_client_secret
 
-  deletion_policy = "PREVENT"
+  deletion_policy = "DELETE"
   depends_on      = [google_identity_platform_config.auth]
 }
 
@@ -163,6 +188,7 @@ resource "google_monitoring_notification_channel" "email" {
 }
 
 resource "google_billing_budget" "monthly" {
+  provider        = google.quota
   billing_account = var.billing_account
   display_name    = "Reader ${var.environment} monthly budget"
 
@@ -172,7 +198,7 @@ resource "google_billing_budget" "monthly" {
 
   amount {
     specified_amount {
-      currency_code = "USD"
+      currency_code = var.budget_currency
       units         = tostring(var.budget_amount_usd)
     }
   }
@@ -208,7 +234,7 @@ resource "time_sleep" "macos_app_propagation" {
   depends_on      = [google_firebase_apple_app.macos]
 }
 resource "google_firebase_app_check_app_attest_config" "macos" {
-  provider  = google-beta
+  provider  = google-beta.quota
   project   = google_project.environment.project_id
   app_id    = google_firebase_apple_app.macos.app_id
   token_ttl = "3600s"
@@ -225,4 +251,8 @@ data "google_firebase_apple_app_config" "macos" {
   provider = google-beta
   project  = google_project.environment.project_id
   app_id   = google_firebase_apple_app.macos.app_id
+
+  # Enabling Google can add native OAuth client/callback fields to the plist.
+  # Read only after the provider exists, including on the first core apply.
+  depends_on = [google_identity_platform_default_supported_idp_config.google]
 }

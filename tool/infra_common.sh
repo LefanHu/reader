@@ -70,22 +70,61 @@ terraform_init() {
     -backend-config="prefix=$prefix"
 }
 
-require_apple_credentials() {
-  if [ -z "${TF_VAR_apple_client_id:-}" ]; then
-    printf 'Sign in with Apple client ID: ' >&2
-    IFS= read -r TF_VAR_apple_client_id
-    export TF_VAR_apple_client_id
+require_google_credentials() {
+  if [ -z "${TF_VAR_google_client_id:-}" ] || [ -z "${TF_VAR_google_client_secret:-}" ]; then
+    [ -t 0 ] || die "configure a Google web OAuth client and supply TF_VAR_google_client_id and TF_VAR_google_client_secret privately"
   fi
-  if [ -z "${TF_VAR_apple_client_secret:-}" ]; then
-    printf 'Sign in with Apple client secret: ' >&2
+  if [ -z "${TF_VAR_google_client_id:-}" ]; then
+    printf 'Google web OAuth client ID: ' >&2
+    IFS= read -r TF_VAR_google_client_id
+    export TF_VAR_google_client_id
+  fi
+  if [ -z "${TF_VAR_google_client_secret:-}" ]; then
+    printf 'Google web OAuth client secret: ' >&2
     stty -echo
-    IFS= read -r TF_VAR_apple_client_secret
+    IFS= read -r TF_VAR_google_client_secret
     stty echo
     printf '\n' >&2
-    export TF_VAR_apple_client_secret
+    export TF_VAR_google_client_secret
   fi
-  [ -n "$TF_VAR_apple_client_id" ] || die "Apple client ID cannot be empty"
-  [ -n "$TF_VAR_apple_client_secret" ] || die "Apple client secret cannot be empty"
+  [ -n "$TF_VAR_google_client_id" ] || die "Google client ID cannot be empty"
+  [ -n "$TF_VAR_google_client_secret" ] || die "Google client secret cannot be empty"
+}
+
+# Recover transition credentials without printing state or asking for obsolete
+# Apple secrets. Never remove users: this retires only the OAuth provider config.
+prepare_apple_retirement() {
+  apple_state="$WORK_DIR/apple-retirement-state.json"
+  if ! terraform -chdir="$INFRA_DIR/foundation" state pull >"$apple_state" 2>"$WORK_DIR/apple-state-error"; then
+    if grep -q 'No state file was found' "$WORK_DIR/apple-state-error"; then
+      printf '{"resources":[]}' >"$apple_state"
+    else
+      die "unable to inspect existing authentication state safely; check remote-state access before deployment"
+    fi
+  fi
+  rm -f "$WORK_DIR/apple-state-error"
+  apple_record="$WORK_DIR/apple-retirement-record.json"
+  jq '[.resources[]? | select(.module == "module.foundation" and .type == "google_identity_platform_default_supported_idp_config" and .name == "apple") | .instances[]?.attributes] | first // null' "$apple_state" >"$apple_record"
+  rm -f "$apple_state"
+  APPLE_RETIREMENT_REQUIRED=false
+  export APPLE_RETIREMENT_REQUIRED
+  if [ "$(jq -r '. != null' "$apple_record")" = true ]; then
+    TF_VAR_apple_client_id=$(jq -r '.client_id // empty' "$apple_record")
+    TF_VAR_apple_client_secret=$(jq -r '.client_secret // empty' "$apple_record")
+    [ -n "$TF_VAR_apple_client_id" ] && [ -n "$TF_VAR_apple_client_secret" ] || die "existing Apple provider state is missing transition credentials; recover protected state before retirement"
+    export TF_VAR_apple_client_id TF_VAR_apple_client_secret
+    if [ "$(jq -r '.enabled == true or .deletion_policy != "DELETE"' "$apple_record")" = true ]; then
+      APPLE_RETIREMENT_REQUIRED=true
+    fi
+  fi
+  rm -f "$apple_record"
+}
+
+plan_apple_retirement() {
+  plan="$WORK_DIR/apple-retirement.tfplan"
+  terraform -chdir="$INFRA_DIR/foundation" plan -var-file="$ENV_VARS" \
+    -var=retain_legacy_apple_provider=true -out="$plan"
+  assert_safe_plan foundation "$plan"
 }
 
 # Reject destructive changes to durable data in every infrastructure stack.
@@ -131,8 +170,9 @@ generate_dart_defines() {
 
   macos_config_file="$WORK_DIR/firebase-macos-config"
   terraform -chdir="$INFRA_DIR/foundation" output -raw firebase_macos_config | base64 --decode >"$macos_config_file"
+  google_server_client_id=$(terraform -chdir="$INFRA_DIR/foundation" output -raw google_client_id)
   python3 "$READER_ROOT/tool/write_firebase_defines.py" "$config_file" \
-    "$READER_ROOT/.dart-defines/$ENVIRONMENT.json" "$api_url" "$macos_config_file"
+    "$READER_ROOT/.dart-defines/$ENVIRONMENT.json" "$api_url" "$macos_config_file" "$google_server_client_id"
   rm -f "$config_file" "$macos_config_file"
 }
 

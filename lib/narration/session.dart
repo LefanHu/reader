@@ -139,7 +139,7 @@ class NarrationSession {
     changed();
   }
 
-  /// Consent precedes Apple sign-in and cloud book registration.
+  /// Consent precedes Google sign-in and cloud book registration.
   Future<void> consent(CatalogBook target) async {
     await attach(target);
     final epoch = _epoch;

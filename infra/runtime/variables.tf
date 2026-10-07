@@ -95,6 +95,17 @@ variable "budget_amount_usd" {
   type        = number
 }
 
+variable "budget_currency" {
+  description = "ISO 4217 currency matching the linked billing account; Google rejects a different currency."
+  type        = string
+  default     = "USD"
+  validation {
+    condition     = can(regex("^[A-Z]{3}$", var.budget_currency))
+    error_message = "Budget currency must be an uppercase three-letter ISO currency code."
+  }
+}
+
+
 variable "alert_email" {
   description = "Alert recipient consumed by the foundation stack."
   type        = string

@@ -6,11 +6,15 @@ import 'package:reader/illustrations/api.dart';
 class _Identity implements IllustrationIdentity {
   int signIns = 0;
   @override
+  String? get email => null;
+  @override
+  Future<void> reauthenticate() async {}
+  @override
   bool get configured => true;
   @override
   Future<bool> hasSession() async => true;
   @override
-  Future<void> signInWithApple() async {
+  Future<void> signIn() async {
     signIns++;
   }
 
@@ -18,7 +22,7 @@ class _Identity implements IllustrationIdentity {
   Future<Map<String, String>> authorizationHeaders({
     bool interactive = true,
   }) async {
-    if (interactive) await signInWithApple();
+    if (interactive) await signIn();
     return {'authorization': 'Bearer test'};
   }
 

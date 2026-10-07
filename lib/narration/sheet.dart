@@ -33,7 +33,7 @@ Future<void> showNarrationSheet(
           title: const Text('Listen with AI narration?'),
           content: const SingleChildScrollView(
             child: Text(
-              'Selected passages from this book will be sent to OpenAI to generate AI speech. OpenAI may retain API data for up to 30 days for abuse monitoring. Our private cloud audio expires after 30 days; temporary prose is removed when generation finishes, with a 24-hour cleanup policy for abandoned requests.\n\nThe default allowance is 500,000 input characters per UTC month, subject to the service’s daily limit. Generation retries and voice changes use allowance. Cached listening is free and works offline. You can clear downloaded audio or delete the book and its cloud narration.\n\nContinue to sign in with Apple and consent for this book.',
+              'Selected passages from this book will be sent to OpenAI to generate AI speech. OpenAI may retain API data for up to 30 days for abuse monitoring. Our private cloud audio expires after 30 days; temporary prose is removed when generation finishes, with a 24-hour cleanup policy for abandoned requests.\n\nThe default allowance is 500,000 input characters per UTC month, subject to the service’s daily limit. Generation retries and voice changes use allowance. Cached listening is free and works offline. You can clear downloaded audio or delete the book and its cloud narration.\n\nContinue to sign in with Google and consent for this book.',
             ),
           ),
           actions: [
@@ -331,9 +331,9 @@ Future<void> _accountAction(
   }
   try {
     if (delete) {
-      await controller.deleteIllustrationAccount();
+      await controller.deleteCloudAccount();
     } else {
-      await controller.signOutOfIllustrations();
+      await controller.signOutOfCloud();
     }
     if (context.mounted) Navigator.pop(context);
   } on Object catch (error) {
