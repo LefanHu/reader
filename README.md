@@ -76,6 +76,15 @@ flutter test integration_test/reader_test.dart -d macos
 flutter test integration_test/reader_test.dart -d <ios-simulator-id>
 ```
 
+The native integration runner registers independent **Library**, **Reading**, **Reader controls**, and **Page flip** groups from `integration_test/scenarios/`. Each test creates its own temporary catalog through `integration_test/support/native_test_app.dart`; cleanup runs even on failure. Import parsing, file storage, and rendering are real; picker input, preferences, and cloud services use fakes. EPUB fixtures live in `test/fixtures/` instead of importing another test suite. Platform screenshots are written to the test app's temporary directory and their paths are printed.
+
+Run one group or scenario without changing the entry point:
+
+```sh
+flutter test integration_test/reader_test.dart -d macos --plain-name 'Reader controls'
+flutter test integration_test/reader_test.dart -d <ios-simulator-id> --plain-name 'nested EPUB contents'
+```
+
 Offline importing and reading work on iOS and macOS. Illustration authentication remains iOS-only. The iOS deployment target is 15.0 and macOS target is 12.0. No loopback web server or EPUB-specific App Transport Security exception is required.
 
 Validate every EPUB fixture separately with the official EPUBCheck release:

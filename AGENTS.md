@@ -9,6 +9,14 @@
 - Add short comments inside complex private flows where cleanup, ordering, recovery, accessibility, or responsive breakpoints would otherwise be easy to break.
 - Test names should state behavior. Add comments inside tests only when the fixture or assertion protects a non-obvious regression.
 
+## Integration test organization
+
+- Keep `integration_test/reader_test.dart` as the runner that registers feature groups. Put behavior-specific scenarios in `integration_test/scenarios/`.
+- Make each scenario independently runnable with a fresh catalog and preferences. Use `integration_test/support/native_test_app.dart` for shared setup, navigation, screenshots, and teardown; do not depend on another scenario's state or execution order.
+- Keep behavior-specific assertions in the scenarios. Put reusable document builders in `test/fixtures/`, rather than importing another `*_test.dart` file.
+- Register cleanup before initialization, unmount the app before its final serialized persistence flush, and delete only the fixture-owned temporary directory. Release active gestures and captured images even when assertions fail.
+- Keep native scenarios focused on complete user flows with real importing, storage, and rendering. Cover parsing and layout edge cases in unit or widget tests, and keep scenario names suitable for focused runs with `--plain-name`.
+
 ## Validation
 
 - Run `dart format lib test`, `flutter analyze`, and `flutter test` after Dart changes.
