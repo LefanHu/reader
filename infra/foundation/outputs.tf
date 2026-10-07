@@ -1,56 +1,25 @@
 output "project_id" {
-  value = module.foundation.project_id
+  description = "Shared environment project ID used by dependent infrastructure."
+  value       = module.foundation.project_id
 }
 
 output "project_number" {
-  value = module.foundation.project_number
+  description = "Numeric environment project identity for billing and IAM integrations."
+  value       = module.foundation.project_number
 }
 
 output "firebase_app_id" {
-  value = module.foundation.firebase_app_id
+  description = "Registered Apple app identity used by Firebase and App Check."
+  value       = module.foundation.firebase_app_id
 }
 
 output "firebase_config" {
-  sensitive = true
-  value     = module.foundation.firebase_config
-}
-
-output "illustrations_bucket" {
-  value = module.foundation.illustrations_bucket
-}
-
-output "artifact_registry_repository" {
-  value = module.foundation.artifact_registry_repository
-}
-
-output "api_service_account" {
-  value = module.foundation.api_service_account
-}
-
-output "worker_service_account" {
-  value = module.foundation.worker_service_account
-}
-
-output "task_service_account" {
-  value = module.foundation.task_service_account
-}
-
-output "build_service_account" {
-  value = module.foundation.build_service_account
-}
-
-output "task_queue" {
-  value = module.foundation.task_queue
-}
-
-output "openai_secret_id" {
-  value = module.foundation.openai_secret_id
-}
-
-output "fingerprint_secret_id" {
-  value = module.foundation.fingerprint_secret_id
+  description = "Base64 Apple Firebase configuration used to generate private local Dart defines."
+  sensitive   = true
+  value       = module.foundation.firebase_config
 }
 
 output "notification_channel" {
-  value = module.foundation.notification_channel
+  description = "Shared operations email channel consumed by runtime alerts."
+  value       = module.foundation.notification_channel
 }

@@ -59,7 +59,7 @@ variable "openai_image_model" {
 }
 
 # The remaining declarations are foundation-only values intentionally accepted
-# here so a single environment tfvars file can configure both stacks.
+# here so a single environment tfvars file can configure all environment stacks.
 variable "project_name" {
   description = "Human-readable project name consumed by the foundation stack."
   type        = string
@@ -86,7 +86,7 @@ variable "apple_team_id" {
 }
 
 variable "illustrations_bucket" {
-  description = "Bucket name consumed by the foundation stack and read here from remote state."
+  description = "Bucket name consumed by the illustrations stack and read here from its remote state."
   type        = string
 }
 

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+# shellcheck source=tool/infra_common.sh
+. "$(dirname -- "$0")/infra_common.sh"
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "usage: $0 <environment> [--apply]"
+environment=$1
+apply_flag=
+if [ "$#" -eq 2 ]; then
+  [ "$2" = --apply ] || die "usage: $0 <environment> [--apply]"
+  apply_flag=--apply
+fi
+check_tools
+load_environment "$environment"
+gcloud auth application-default print-access-token >/dev/null 2>&1 || \
+  die "Terraform needs Application Default Credentials"
+terraform_init foundation "reader/$ENVIRONMENT/foundation"
+terraform_init illustrations "reader/$ENVIRONMENT/illustrations"
+# The Python runner never invokes plan/apply or receives provider credentials.
+if [ -n "$apply_flag" ]; then
+  python3 "$READER_ROOT/tool/migrate_illustration_state.py" "$INFRA_DIR" --apply
+else
+  python3 "$READER_ROOT/tool/migrate_illustration_state.py" "$INFRA_DIR"
+fi

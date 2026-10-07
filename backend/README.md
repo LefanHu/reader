@@ -53,5 +53,11 @@ truth:
 tool/deploy_backend dev
 ```
 
+Accounts/shared infrastructure can be deployed separately with
+`tool/deploy_backend dev --scope core`. The illustration path uses
+`--scope illustrations` after core exists; omitting scope preserves the full
+workflow. Existing foundation state must migrate before either path is applied.
+This split does not add Google sign-in or change backend routes.
+
 See [`../infra/README.md`](../infra/README.md) for state bootstrapping,
 migration safeguards, secrets, drift review, and new-environment setup.

@@ -28,6 +28,13 @@
 - Importing and reading remain offline and account-free on iOS and macOS. Illustration identity remains iOS-only; startup deletion retries use an existing session without prompting for sign-in. Keep illustration consent and the remote rollout flag intact.
 - Unknown or invalid illustration anchors remain locked. Unlock only after the leading committed position passes the complete ending paragraph, including the existing explicit end-of-book completion behavior. Cloud failures must not interrupt reading or prevent local deletion; retain failed deletion requests for retry and treat already-deleted books as success.
 
+## Backend infrastructure ownership
+
+- Keep one environment project, Firebase Auth service, and Firestore database. `foundation` owns core/auth/shared data and monitoring; `illustrations` owns feature infrastructure; `runtime` owns the existing API/worker deployments. Bootstrap remains separate.
+- Use `tool/deploy_backend <environment> --scope core|illustrations|all` and matching `tool/plan_infra` scopes; default is all. Core must work without OpenAI credentials or a Node toolchain. Scope selection never destroys an omitted stack and is independent of illustration rollout.
+- Each API enablement and cloud resource has one Terraform owner. Existing foundation feature ownership must migrate with `tool/migrate_backend_state` before split plans/applies. State migration requires a maintenance window, preserves complete instance records and generated secrets, commits destination first, and never uses forced pushes.
+- Run `python3 -m unittest discover -s tool/tests -v`, Terraform validation/mocked tests, formatting checks, and ShellCheck after infrastructure/tooling changes. Tests and validation must not apply cloud changes.
+
 ## Integration test organization
 
 - Keep `integration_test/reader_test.dart` as the runner that registers feature groups. Put behavior-specific scenarios in `integration_test/scenarios/`.

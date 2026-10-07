@@ -10,6 +10,7 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "7.45.0"
     }
+    # Retain the legacy provider pin until existing password state is migrated.
     random = {
       source  = "hashicorp/random"
       version = "3.7.2"

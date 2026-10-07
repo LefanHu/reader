@@ -1,3 +1,4 @@
+# Non-feature settings are accepted solely for the shared environment tfvars file.
 variable "environment" {
   description = "Short environment name used in labels and resource names."
   type        = string
@@ -38,18 +39,6 @@ variable "apple_team_id" {
   type        = string
 }
 
-variable "apple_client_id" {
-  description = "Sign in with Apple Services ID configured in Firebase Authentication."
-  type        = string
-  sensitive   = true
-}
-
-variable "apple_client_secret" {
-  description = "Rotating Sign in with Apple OAuth client secret; retained only in protected state."
-  type        = string
-  sensitive   = true
-}
-
 variable "illustrations_bucket" {
   description = "Globally unique private bucket for generated illustration assets."
   type        = string
@@ -72,7 +61,7 @@ variable "enable_existing_imports" {
 }
 
 variable "state_bucket" {
-  description = "Shared environment setting consumed by the runtime stack; accepted for the shared environment tfvars file."
+  description = "GCS bucket containing core and illustration remote state."
   type        = string
 }
 

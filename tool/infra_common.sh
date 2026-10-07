@@ -27,8 +27,7 @@ check_tools() {
   require_command terraform
   require_command gcloud
   require_command jq
-  require_command npm
-  require_command curl
+  require_command python3
 
   terraform_version=$(terraform version -json | jq -r '.terraform_version')
   terraform_major=$(printf '%s' "$terraform_version" | cut -d. -f1)
@@ -39,8 +38,16 @@ check_tools() {
 }
 
 load_environment() {
-  [ "$#" -eq 1 ] || die "usage: $0 <environment>"
+  [ "$#" -ge 1 ] || die "usage: $0 <environment> [--scope core|illustrations|all]"
   ENVIRONMENT=$1
+  shift
+  SCOPE=all
+  if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = "--scope" ] || die "usage: $0 <environment> [--scope core|illustrations|all]"
+    SCOPE=$2
+  fi
+  case "$SCOPE" in core|illustrations|all) ;; *) die "unknown scope: $SCOPE" ;; esac
+  case "$ENVIRONMENT" in ''|*[!a-zA-Z0-9_-]*) die "invalid environment name" ;; esac
   ENV_VARS="$INFRA_DIR/environments/$ENVIRONMENT.tfvars"
   [ -f "$ENV_VARS" ] || die "environment file not found: $ENV_VARS"
 
@@ -81,24 +88,26 @@ require_apple_credentials() {
   [ -n "$TF_VAR_apple_client_secret" ] || die "Apple client secret cannot be empty"
 }
 
-assert_safe_foundation_plan() {
-  plan_file=$1
-  plan_json=$(mktemp "${TMPDIR:-/tmp}/reader-foundation-plan.XXXXXX")
-  terraform -chdir="$INFRA_DIR/foundation" show -json "$plan_file" >"$plan_json"
+# Reject destructive changes to durable data in every infrastructure stack.
+assert_safe_plan() {
+  stack=$1
+  plan_file=$2
+  plan_json="$WORK_DIR/plan.json"
+  terraform -chdir="$INFRA_DIR/$stack" show -json "$plan_file" >"$plan_json"
 
   destructive=$(jq -r '
     [.resource_changes[]?
-      | select(.address == "module.foundation.google_project.environment"
-          or .address == "module.foundation.google_firestore_database.default"
-          or .type == "google_storage_bucket")
+      | select(.type == "google_project" or .type == "google_firestore_database"
+          or .type == "google_storage_bucket" or .type == "google_secret_manager_secret"
+          or .type == "google_secret_manager_secret_version")
       | select((.change.actions | index("delete")) != null)
       | .address] | unique | join(", ")' "$plan_json")
   rm -f "$plan_json"
-  [ -z "$destructive" ] || die "foundation plan would delete or replace protected infrastructure: $destructive"
+  [ -z "$destructive" ] || die "infrastructure plan would delete or replace protected resources: $destructive"
 }
 
 ensure_openai_secret() {
-  secret_id=$(terraform -chdir="$INFRA_DIR/foundation" output -raw openai_secret_id)
+  secret_id=$(terraform -chdir="$INFRA_DIR/illustrations" output -raw openai_secret_id)
   enabled_version=$(gcloud secrets versions list "$secret_id" \
     --project="$PROJECT_ID" --filter='state=ENABLED' --limit=1 --format='value(name)')
   [ -z "$enabled_version" ] || return 0
@@ -114,27 +123,42 @@ ensure_openai_secret() {
   unset openai_key
 }
 
+# Core configuration generation works before an illustration endpoint exists.
 generate_dart_defines() {
-  api_url=$1
-  config_file=$(mktemp "${TMPDIR:-/tmp}/reader-firebase-config.XXXXXX")
+  api_url=${1:-}
+  config_file="$WORK_DIR/firebase-config"
   terraform -chdir="$INFRA_DIR/foundation" output -raw firebase_config | base64 --decode >"$config_file"
 
-  api_key=$(/usr/libexec/PlistBuddy -c 'Print :API_KEY' "$config_file")
-  app_id=$(/usr/libexec/PlistBuddy -c 'Print :GOOGLE_APP_ID' "$config_file")
-  sender_id=$(/usr/libexec/PlistBuddy -c 'Print :GCM_SENDER_ID' "$config_file")
-  firebase_project=$(/usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "$config_file")
-  storage_bucket=$(/usr/libexec/PlistBuddy -c 'Print :STORAGE_BUCKET' "$config_file")
+  python3 "$READER_ROOT/tool/write_firebase_defines.py" "$config_file" \
+    "$READER_ROOT/.dart-defines/$ENVIRONMENT.json" "$api_url"
   rm -f "$config_file"
+}
 
-  mkdir -p "$READER_ROOT/.dart-defines"
-  jq -n \
-    --arg apiKey "$api_key" \
-    --arg appId "$app_id" \
-    --arg senderId "$sender_id" \
-    --arg projectId "$firebase_project" \
-    --arg storageBucket "$storage_bucket" \
-    --arg apiUrl "$api_url" \
-    '{FIREBASE_API_KEY:$apiKey,FIREBASE_APP_ID:$appId,FIREBASE_MESSAGING_SENDER_ID:$senderId,FIREBASE_PROJECT_ID:$projectId,FIREBASE_STORAGE_BUCKET:$storageBucket,ILLUSTRATION_API_BASE_URL:$apiUrl}' \
-    >"$READER_ROOT/.dart-defines/$ENVIRONMENT.json"
-  chmod 600 "$READER_ROOT/.dart-defines/$ENVIRONMENT.json"
+# All callers share cleanup for saved plans/config; none are left in the checkout.
+prepare_workspace() {
+  umask 077
+  WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/reader-infra.XXXXXX")
+  export WORK_DIR
+  trap 'rm -rf "$WORK_DIR"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+# Never apply the split configuration while feature resources still belong to core.
+assert_migrated() {
+  python3 "$READER_ROOT/tool/migrate_illustration_state.py" --check-state "$INFRA_DIR" || \
+    die "run tool/migrate_backend_state $ENVIRONMENT before deploying or planning"
+}
+
+require_core() {
+  terraform -chdir="$INFRA_DIR/foundation" output -raw project_id >/dev/null || \
+    die "core is not initialized; run tool/deploy_backend $ENVIRONMENT --scope core"
+}
+
+plan_apply_infrastructure() {
+  stack=$1
+  plan="$WORK_DIR/$stack.tfplan"
+  terraform -chdir="$INFRA_DIR/$stack" plan -var-file="$ENV_VARS" -out="$plan"
+  assert_safe_plan "$stack" "$plan"
+  terraform -chdir="$INFRA_DIR/$stack" apply "$plan"
 }

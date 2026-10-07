@@ -23,11 +23,6 @@ variable "firestore_location" {
   type        = string
 }
 
-variable "runtime_region" {
-  description = "Region shared by Cloud Run, Artifact Registry, and Cloud Tasks."
-  type        = string
-}
-
 variable "apple_bundle_id" {
   description = "Canonical bundle ID for the Firebase Apple application."
   type        = string
@@ -50,11 +45,6 @@ variable "apple_client_secret" {
   sensitive   = true
 }
 
-variable "illustrations_bucket" {
-  description = "Private bucket for generated illustration assets."
-  type        = string
-}
-
 variable "budget_amount_usd" {
   description = "Monthly budget amount in USD."
   type        = number
@@ -65,18 +55,7 @@ variable "alert_email" {
   type        = string
 }
 
-variable "firestore_indexes_json" {
-  description = "Contents of the Firebase CLI index specification."
-  type        = string
-}
-
 variable "firestore_rules" {
   description = "Complete deny-all Firestore rules source."
   type        = string
 }
-
-variable "storage_rules" {
-  description = "Complete deny-all Storage rules source."
-  type        = string
-}
-
