@@ -8,6 +8,7 @@ override_data {
 }
 
 variables {
+  narration_task_queue            = "reader-narration"
   environment                     = "test"
   project_id                      = "reader-test-12345"
   region                          = "us-east1"

@@ -42,3 +42,8 @@ output "fingerprint_secret_id" {
   description = "Secret Manager container ID referenced by the API; contains no secret value."
   value       = module.illustrations.fingerprint_secret_id
 }
+
+output "narration_task_queue" {
+  description = "Dedicated narration queue in the existing feature stack."
+  value       = module.narration.task_queue
+}

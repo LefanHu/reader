@@ -108,3 +108,37 @@ java -jar /path/to/epubcheck.jar path/to/book.epub
   moderation, credit reservations, private delivery, and deletion endpoints.
 
 Lora and DM Sans are bundled under the SIL Open Font License. Remaining dependency and Unicode data notices are recorded in `THIRD_PARTY_NOTICES.md`.
+
+## Listening to books
+
+The Listen toolbar action opens per-book consent before Apple sign-in or prose
+upload. Narration supports Marin/Cedar voices, 0.75–2× speed, chapter selection,
+play/pause, ±15-second audio seeking, remaining allowance and local cache clearing.
+One audio handler continues playback in the library and while the device is
+locked; the library includes a mini-player. Opening another book or navigating
+manually pauses narration and invalidates the old audio offset.
+The narration sheet's Cloud account menu supports signing out and deleting cloud
+data on either platform. Account deletion clears downloaded narration while
+preserving local books and reading positions.
+
+Listening uses the same committed logical reading position as visual reading.
+Only naturally completed chunks advance prose or unlock illustrations. Downloads,
+prefetch and audio seeking never advance progress. After seeking, replay from the
+committed passage to grant completion. Pausing restores the committed listening
+anchor without continuous scrolling or word highlighting. Interrupted chunks
+retain the complete text position, chunk identity and audio offset. Cached replay
+works offline and consumes no generation allowance; a 250 MiB LRU cache bounds
+local audio. Changing speed reuses audio; changing voice generates new speech.
+
+Narration remains remotely disabled by default. See [backend configuration](backend/README.md#ai-narration-disabled-by-default)
+and the guarantees in [AGENTS.md](AGENTS.md#narration-guarantees). Generated Firebase
+Dart defines include separate iOS/macOS app identifiers and API keys under one
+project; cloud narration on macOS requires signed Apple sign-in, Keychain and
+App Attest capabilities on macOS 14 or later. Existing offline reading remains
+available on supported older systems.
+
+The **Narration** native test group uses real imports, local audio files, native
+audio decoding, storage and rendering, with fake cloud generation. Run it with
+`flutter test integration_test/reader_test.dart -d <device> --plain-name Narration`.
+Signed-device background/media actions and representative multilingual narration
+still require listening checks before enabling rollout.

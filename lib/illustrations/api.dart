@@ -1,12 +1,10 @@
+import '../cloud_identity.dart';
 // DTO fields mirror the documented REST contract in this file.
 // ignore_for_file: public_member_api_docs
 
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:firebase_app_check/firebase_app_check.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -83,110 +81,11 @@ abstract interface class IllustrationIdentity {
   Future<void> deleteAccount();
 }
 
-/// Firebase identity initialized entirely from build-time environment values.
-///
-/// Keeping initialization lazy preserves account-free, offline reading when a
-/// build has no Firebase project or the reader never enables illustrations.
-class FirebaseIllustrationIdentity implements IllustrationIdentity {
-  FirebaseIllustrationIdentity();
-
-  static const _apiKey = String.fromEnvironment('FIREBASE_API_KEY');
-  static const _appId = String.fromEnvironment('FIREBASE_APP_ID');
-  static const _messagingSenderId = String.fromEnvironment(
-    'FIREBASE_MESSAGING_SENDER_ID',
-  );
-  static const _projectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
-  static const _storageBucket = String.fromEnvironment(
-    'FIREBASE_STORAGE_BUCKET',
-  );
-  static const _appCheckDebug = bool.fromEnvironment(
-    'FIREBASE_APP_CHECK_DEBUG',
-  );
-
-  Future<void>? _initializing;
-
+/// Illustration identity stays iOS-only while sharing lazy cloud initialization.
+class FirebaseIllustrationIdentity extends FirebaseCloudIdentity {
   @override
   bool get configured =>
-      !kIsWeb &&
-      defaultTargetPlatform == TargetPlatform.iOS &&
-      _apiKey.isNotEmpty &&
-      _appId.isNotEmpty &&
-      _messagingSenderId.isNotEmpty &&
-      _projectId.isNotEmpty;
-
-  @override
-  Future<bool> hasSession() async {
-    if (!configured) return false;
-    await _initialize();
-    return FirebaseAuth.instance.currentUser != null;
-  }
-
-  Future<void> _initialize() {
-    if (!configured) {
-      throw const IllustrationException(
-        'Illustrations are not configured in this build.',
-      );
-    }
-    return _initializing ??= () async {
-      if (Firebase.apps.isEmpty) {
-        await Firebase.initializeApp(
-          options: FirebaseOptions(
-            apiKey: _apiKey,
-            appId: _appId,
-            messagingSenderId: _messagingSenderId,
-            projectId: _projectId,
-            storageBucket: _storageBucket.isEmpty ? null : _storageBucket,
-          ),
-        );
-        await FirebaseAppCheck.instance.activate(
-          providerApple: kDebugMode && _appCheckDebug
-              ? const AppleDebugProvider()
-              : const AppleAppAttestWithDeviceCheckFallbackProvider(),
-        );
-      }
-    }();
-  }
-
-  @override
-  Future<void> signInWithApple() async {
-    await _initialize();
-    if (FirebaseAuth.instance.currentUser == null) {
-      await FirebaseAuth.instance.signInWithProvider(AppleAuthProvider());
-    }
-  }
-
-  @override
-  Future<Map<String, String>> authorizationHeaders({
-    bool interactive = true,
-  }) async {
-    if (interactive) {
-      await signInWithApple();
-    } else {
-      await _initialize();
-    }
-    final user = FirebaseAuth.instance.currentUser;
-    final idToken = await user?.getIdToken();
-    final appCheck = await FirebaseAppCheck.instance.getToken();
-    if (idToken == null || idToken.isEmpty || appCheck == null) {
-      throw const IllustrationException('Could not authorize illustrations.');
-    }
-    return {
-      'authorization': 'Bearer $idToken',
-      'x-firebase-appcheck': appCheck,
-      'content-type': 'application/json',
-    };
-  }
-
-  @override
-  Future<void> signOut() async {
-    if (Firebase.apps.isNotEmpty) await FirebaseAuth.instance.signOut();
-  }
-
-  @override
-  Future<void> deleteAccount() async {
-    await _initialize();
-    await FirebaseAuth.instance.currentUser?.delete();
-  }
+      defaultTargetPlatform == TargetPlatform.iOS && super.configured;
 }
 
 /// Authenticated API used by the reader; implementations never receive EPUBs.

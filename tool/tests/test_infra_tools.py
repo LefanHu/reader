@@ -183,6 +183,27 @@ class MigrationTests(unittest.TestCase):
 
 class ConfigurationTests(unittest.TestCase):
     """Verify persisted configuration and disjoint Terraform ownership."""
+    def test_apple_platform_defines_share_project_and_keep_distinct_app_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ios = root / "ios.plist"
+            macos = root / "macos.plist"
+            output = root / "defines.json"
+            base = {"API_KEY": "ios-key", "GOOGLE_APP_ID": "ios-app", "GCM_SENDER_ID": "sender", "PROJECT_ID": "project"}
+            ios.write_bytes(plistlib.dumps(base))
+            macos.write_bytes(plistlib.dumps({**base, "API_KEY": "macos-key", "GOOGLE_APP_ID": "macos-app"}))
+            defines.write_defines(ios, output, "https://api.test", macos)
+            values = json.loads(output.read_text())
+            self.assertEqual(values["FIREBASE_MACOS_APP_ID"], "macos-app")
+            self.assertEqual(values["FIREBASE_MACOS_API_KEY"], "macos-key")
+            self.assertEqual(values["FIREBASE_APP_ID"], "ios-app")
+            self.assertEqual(values["NARRATION_API_BASE_URL"], "https://api.test")
+            defines.write_defines(ios, output)
+            self.assertEqual(json.loads(output.read_text())["FIREBASE_MACOS_APP_ID"], "macos-app")
+            macos.write_bytes(plistlib.dumps({**base, "PROJECT_ID": "other"}))
+            with self.assertRaises(ValueError):
+                defines.write_defines(ios, output, "", macos)
+
     def test_core_only_defines_omit_endpoint_then_preserve_existing_endpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "firebase.plist"
@@ -226,7 +247,7 @@ if name=='terraform':
     if 'output' in args:
         key=args[-1]
         if key=='project_id' and os.environ.get('MISSING_CORE')=='1': sys.exit(1)
-        if key=='firebase_config':
+        if key in ('firebase_config', 'firebase_macos_config'):
             print(base64.b64encode(plistlib.dumps({'API_KEY':'key','GOOGLE_APP_ID':'app','GCM_SENDER_ID':'sender','PROJECT_ID':'project'})).decode())
         else: print({'project_id':'reader-test','build_service_account':'build@example.test','openai_secret_id':'openai','api_url':'https://api.test','worker_url':'https://worker.test','image':'test@sha256:'+'a'*64}.get(key,''))
     if 'list' in args: print('google_project.state\ngoogle_storage_bucket.state')

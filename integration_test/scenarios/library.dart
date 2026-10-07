@@ -17,8 +17,7 @@ void registerLibraryTests() {
     tester,
   ) async {
     final app = await NativeTestApp.launch(tester, importBooks: false);
-    await tester.tap(find.text('Import books').first);
-    await tester.pumpAndSettle();
+    await app.importThroughLibrary();
     expect(app.controller.books, hasLength(2));
     expect(find.text('Import results'), findsOneWidget);
     await tester.tap(find.text('Done'));

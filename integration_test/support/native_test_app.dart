@@ -9,7 +9,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/book_service.dart';
 import 'package:reader/controller.dart';
 import 'package:reader/main.dart';
+import 'package:reader/library.dart';
 import 'package:reader/models.dart';
+import 'package:reader/narration/player.dart';
+import 'package:reader/narration/store.dart';
+
+import '../../test/support/narration_fakes.dart';
+
 import 'package:reader/storage.dart';
 import 'package:reader/text/viewport.dart';
 
@@ -42,6 +48,7 @@ class NativeTestApp {
   static Future<NativeTestApp> launch(
     WidgetTester tester, {
     bool importBooks = true,
+    bool narration = false,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
     final app = NativeTestApp._(tester, root);
@@ -55,6 +62,9 @@ class NativeTestApp {
     );
     final epub = epubFixture();
     app.controller = ReaderController(
+      narrationApi: narration ? FakeNarrationApi() : null,
+      narrationPlayer: narration ? await NativeNarrationPlayer.create() : null,
+      narrationStore: narration ? FileNarrationStore(root) : null,
       catalogStore: app.store,
       settingsStore: MemorySettingsStore(),
       importer: BookImporter(root: root),
@@ -112,6 +122,24 @@ class NativeTestApp {
     await tester.ensureVisible(entry);
     await tester.pumpAndSettle();
     await tester.tap(entry);
+    // Opening first persists recency, then loads document/section sidecars.
+    // pumpAndSettle can finish between those I/O stages with no frame scheduled.
+    await _waitFor(textPaints, 'the imported document to render');
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> _waitFor(Finder target, String description) async {
+    for (var frame = 0; frame < 200; frame++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      if (target.evaluate().isNotEmpty) return;
+    }
+    fail('Timed out waiting for $description.');
+  }
+
+  /// Waits through off-isolate parsing and atomic disk commits before returning.
+  Future<void> importThroughLibrary() async {
+    await tester.tap(find.text('Import books').first);
+    await _waitFor(find.text('Import results'), 'validated imports to commit');
     await tester.pumpAndSettle();
   }
 
@@ -124,6 +152,7 @@ class NativeTestApp {
   /// Exercises reader exit, including its position flush, without replacing routes.
   Future<void> closeReader() async {
     await tester.tap(find.byTooltip('Back to library'));
+    await _waitFor(find.byType(LibraryScreen), 'the flushed reader to close');
     await tester.pumpAndSettle();
   }
 

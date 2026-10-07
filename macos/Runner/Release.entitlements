@@ -6,5 +6,14 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
+	<!-- Cloud narration needs outbound HTTPS, Apple identity and persisted auth. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.developer.applesignin</key>
+	<array><string>Default</string></array>
+	<key>keychain-access-groups</key>
+	<array><string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string></array>
+	<key>com.apple.developer.devicecheck.appattest-environment</key>
+	<string>production</string>
 </dict>
 </plist>

@@ -37,10 +37,10 @@ abstract interface class IllustrationDeletionOutbox {
 
 /// Atomic JSON outbox stored outside per-book directories.
 class FileIllustrationDeletionOutbox implements IllustrationDeletionOutbox {
-  FileIllustrationDeletionOutbox(Directory catalogRoot)
-    : _file = AtomicJsonFile(
-        File('${catalogRoot.path}/illustration-deletions.json'),
-      );
+  FileIllustrationDeletionOutbox(
+    Directory catalogRoot, {
+    String fileName = 'illustration-deletions.json',
+  }) : _file = AtomicJsonFile(File('${catalogRoot.path}/$fileName'));
 
   final AtomicJsonFile _file;
 

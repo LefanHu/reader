@@ -83,11 +83,20 @@ void main() {
           'books': [book.toJson()],
         }),
       );
+      final narration = Directory('${directory.path}/narration');
+      await narration.create();
+      await File('${narration.path}/manifest.json.tmp')
+          .writeAsString(jsonEncode({'cloudBookId': 'c' * 64}));
+      final narrationOutbox = FileIllustrationDeletionOutbox(
+        root,
+        fileName: 'narration-deletions.json',
+      );
       final outbox = FileIllustrationDeletionOutbox(root);
       await outbox.enqueue('already-pending');
       final store = FileCatalogStore(root);
       expect(await store.load(), isEmpty);
       expect(await directory.exists(), isFalse);
+      expect((await narrationOutbox.load()).single.cloudBookId, 'c' * 64);
       expect(
         (await outbox.load()).map((item) => item.cloudBookId),
         containsAll(['old-cloud', 'already-pending']),

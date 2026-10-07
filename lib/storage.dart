@@ -133,6 +133,35 @@ class FileCatalogStore implements CatalogStore {
         }
       }
     }
+    // Narration sidecars are additive, but their cloud privacy receipts must
+    // survive a legacy reset just like illustration receipts.
+    final narrationOutbox = FileIllustrationDeletionOutbox(
+      root,
+      fileName: 'narration-deletions.json',
+    );
+    for (final hash in hashes) {
+      final path = '${root.path}/books/$hash/narration';
+      if (await FileSystemEntity.type(path, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        continue;
+      }
+      for (final suffix in ['', '.tmp', '.bak']) {
+        final file = File('$path/manifest.json$suffix');
+        if (await FileSystemEntity.type(file.path, followLinks: false) !=
+            FileSystemEntityType.file) {
+          continue;
+        }
+        try {
+          final id =
+              (jsonDecode(await file.readAsString()) as Map)['cloudBookId'];
+          if (id is String && RegExp(r'^[a-f0-9]{64}$').hasMatch(id)) {
+            await narrationOutbox.enqueue(id);
+          }
+        } on Object {
+          /* Corrupt generations cannot authorize external deletion. */
+        }
+      }
+    }
     await save([]);
     for (final hash in hashes) {
       final directory = Directory('${root.path}/books/$hash');

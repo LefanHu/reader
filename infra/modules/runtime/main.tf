@@ -7,6 +7,10 @@ locals {
     managed_by  = "terraform"
   }
   common_environment = {
+    NARRATION_ENABLED               = tostring(var.narration_enabled)
+    NARRATION_MONTHLY_CHARACTERS    = tostring(var.narration_monthly_characters)
+    NARRATION_DAILY_CHARACTERS      = tostring(var.narration_daily_characters)
+    NARRATION_TASK_QUEUE            = var.narration_task_queue
     GOOGLE_CLOUD_PROJECT            = var.project_id
     ILLUSTRATION_BUCKET             = var.illustrations_bucket
     TASK_LOCATION                   = var.region

@@ -83,3 +83,32 @@ variable "openai_image_model" {
   type        = string
 }
 
+
+variable "narration_enabled" {
+  description = "Independent narration rollout; remains off until signed-device and listening checks pass."
+  type        = bool
+  default     = false
+}
+variable "narration_monthly_characters" {
+  description = "Per-user UTC-month UTF-16 input allowance, including provider retries."
+  type        = number
+  default     = 500000
+  validation {
+    condition     = var.narration_monthly_characters >= 0 && floor(var.narration_monthly_characters) == var.narration_monthly_characters
+    error_message = "Narration allowance must be a nonnegative integer."
+  }
+}
+variable "narration_daily_characters" {
+  description = "Environment-wide daily UTF-16 input cap."
+  type        = number
+  default     = 200000
+  validation {
+    condition     = var.narration_daily_characters >= 0 && floor(var.narration_daily_characters) == var.narration_daily_characters
+    error_message = "Narration allowance must be a nonnegative integer."
+  }
+}
+
+variable "narration_task_queue" {
+  description = "Dedicated queue owned by the narration feature module."
+  type        = string
+}

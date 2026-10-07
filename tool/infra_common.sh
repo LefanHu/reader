@@ -129,9 +129,11 @@ generate_dart_defines() {
   config_file="$WORK_DIR/firebase-config"
   terraform -chdir="$INFRA_DIR/foundation" output -raw firebase_config | base64 --decode >"$config_file"
 
+  macos_config_file="$WORK_DIR/firebase-macos-config"
+  terraform -chdir="$INFRA_DIR/foundation" output -raw firebase_macos_config | base64 --decode >"$macos_config_file"
   python3 "$READER_ROOT/tool/write_firebase_defines.py" "$config_file" \
-    "$READER_ROOT/.dart-defines/$ENVIRONMENT.json" "$api_url"
-  rm -f "$config_file"
+    "$READER_ROOT/.dart-defines/$ENVIRONMENT.json" "$api_url" "$macos_config_file"
+  rm -f "$config_file" "$macos_config_file"
 }
 
 # All callers share cleanup for saved plans/config; none are left in the checkout.

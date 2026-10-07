@@ -59,3 +59,9 @@ variable "firestore_rules" {
   description = "Complete deny-all Firestore rules source."
   type        = string
 }
+
+variable "apple_macos_bundle_id" {
+  description = "Separate macOS Firebase app in the same environment project and Auth service."
+  type        = string
+  default     = "com.leafmealone.reader.macos"
+}

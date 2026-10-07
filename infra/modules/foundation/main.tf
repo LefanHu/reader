@@ -192,3 +192,37 @@ resource "google_billing_budget" "monthly" {
 
   depends_on = [google_project_service.required]
 }
+
+# Apple platform registrations share one Firebase project, Auth and database.
+resource "google_firebase_apple_app" "macos" {
+  provider        = google-beta
+  project         = google_project.environment.project_id
+  display_name    = "Reader macOS ${title(var.environment)}"
+  bundle_id       = var.apple_macos_bundle_id
+  team_id         = var.apple_team_id
+  deletion_policy = "PREVENT"
+  depends_on      = [google_firebase_project.environment]
+}
+resource "time_sleep" "macos_app_propagation" {
+  create_duration = "30s"
+  depends_on      = [google_firebase_apple_app.macos]
+}
+resource "google_firebase_app_check_app_attest_config" "macos" {
+  provider  = google-beta
+  project   = google_project.environment.project_id
+  app_id    = google_firebase_apple_app.macos.app_id
+  token_ttl = "3600s"
+  lifecycle {
+    prevent_destroy = true
+    precondition {
+      condition     = google_firebase_apple_app.macos.team_id != ""
+      error_message = "macOS App Attest requires an Apple Developer Team ID."
+    }
+  }
+  depends_on = [time_sleep.macos_app_propagation]
+}
+data "google_firebase_apple_app_config" "macos" {
+  provider = google-beta
+  project  = google_project.environment.project_id
+  app_id   = google_firebase_apple_app.macos.app_id
+}

@@ -17,7 +17,11 @@ data "terraform_remote_state" "illustrations" {
 }
 
 module "runtime" {
-  source = "../modules/runtime"
+  source                       = "../modules/runtime"
+  narration_enabled            = var.narration_enabled
+  narration_monthly_characters = var.narration_monthly_characters
+  narration_daily_characters   = var.narration_daily_characters
+  narration_task_queue         = data.terraform_remote_state.illustrations.outputs.narration_task_queue
 
   project_id                      = var.project_id
   region                          = var.runtime_region

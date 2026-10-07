@@ -23,3 +23,9 @@ output "notification_channel" {
   description = "Shared operations email channel consumed by runtime alerts."
   value       = module.foundation.notification_channel
 }
+
+output "firebase_macos_config" {
+  description = "Base64 macOS Firebase configuration from the shared core owner."
+  sensitive   = true
+  value       = module.foundation.firebase_macos_config
+}

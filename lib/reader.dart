@@ -7,6 +7,7 @@ import 'text/document.dart' as text;
 import 'text/viewport.dart';
 
 import 'controller.dart';
+import 'narration/sheet.dart';
 import 'illustrations/api.dart';
 import 'illustrations/models.dart';
 import 'models.dart';
@@ -50,11 +51,36 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.initState();
     publication = _open();
     widget.controller.addListener(_controllerChanged);
+    widget.controller.narration?.restoreViewport = _restoreNarrationViewport;
   }
 
   Future<text.TextDocument> _open() => store.load(widget.book.path);
 
-  void _controllerChanged() => _queueIllustrationReveal();
+  Future<void> _restoreNarrationViewport(
+    CatalogBook book,
+    text.TextPosition anchor,
+  ) async {
+    if (!mounted || book.hash != widget.book.hash) return;
+    await navigation.restore(anchor);
+  }
+
+  int _narrationRevision = 0;
+  bool _listening = false;
+  void _controllerChanged() {
+    final listening =
+        widget.controller.narration?.ownsPosition(widget.book) == true;
+    if ((!_listening && listening) ||
+        _narrationRevision != widget.controller.narrationNavigationRevision) {
+      final anchor = widget.controller.books
+          .where((item) => item.hash == widget.book.hash)
+          .firstOrNull
+          ?.lastPosition;
+      if (anchor != null) unawaited(navigation.restore(anchor));
+    }
+    _narrationRevision = widget.controller.narrationNavigationRevision;
+    _listening = listening;
+    _queueIllustrationReveal();
+  }
 
   void _queueIllustrationReveal() {
     if (!mounted ||
@@ -328,6 +354,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void dispose() {
     revealTimer?.cancel();
+    if (widget.controller.narration?.restoreViewport ==
+        _restoreNarrationViewport) {
+      widget.controller.narration?.restoreViewport = null;
+    }
     widget.controller.removeListener(_controllerChanged);
     widget.controller.flush();
     super.dispose();
@@ -378,6 +408,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             onBack: _close,
                             onToc: () => _showToc(pub),
                             onIllustrations: _showIllustrations,
+                            onListen: () => showNarrationSheet(
+                              context,
+                              widget.controller,
+                              widget.book,
+                            ),
                             onSettings: _showSettings,
                             onHide: () => setState(() => controls = false),
                           ),
@@ -453,7 +488,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
     settings: widget.controller.settings,
     foreground: _foreground,
     background: _background,
-    initialPosition: widget.book.lastPosition,
+    initialPosition:
+        widget.controller.books
+            .where((item) => item.hash == widget.book.hash)
+            .firstOrNull
+            ?.lastPosition ??
+        widget.book.lastPosition,
+    onRestored: (title) {
+      if (mounted && chapterTitle != title) {
+        setState(() => chapterTitle = title);
+      }
+    },
+    onManualNavigation: () {
+      unawaited(widget.controller.narration?.navigate(widget.book));
+    },
     onTap: () => setState(() => controls = !controls),
     onPosition: (position, progress, title) {
       widget.controller.savePosition(widget.book, position, progress);
@@ -516,13 +564,19 @@ class _Toolbar extends StatelessWidget {
     required this.onBack,
     required this.onToc,
     required this.onIllustrations,
+    required this.onListen,
     required this.onSettings,
     required this.onHide,
   });
   final String title;
   final Color foreground;
   final int illustrationCount;
-  final VoidCallback onBack, onToc, onIllustrations, onSettings, onHide;
+  final VoidCallback onBack,
+      onToc,
+      onIllustrations,
+      onListen,
+      onSettings,
+      onHide;
   @override
   Widget build(BuildContext context) => IconTheme(
     data: IconThemeData(color: foreground),
@@ -532,7 +586,7 @@ class _Toolbar extends StatelessWidget {
         builder: (context, constraints) => Stack(
           alignment: Alignment.center,
           children: [
-            // Balance the four-button group on both sides. The title stays
+            // Balance the wider four-button group on both sides. The title stays
             // centered on the viewport and truncates before reaching buttons.
             Padding(
               padding: EdgeInsets.symmetric(
@@ -559,6 +613,11 @@ class _Toolbar extends StatelessWidget {
                   tooltip: 'Back to library',
                   onPressed: onBack,
                   icon: const Icon(Icons.arrow_back),
+                ),
+                IconButton(
+                  tooltip: 'Listen',
+                  onPressed: onListen,
+                  icon: const Icon(Icons.headphones_outlined),
                 ),
                 const Spacer(),
                 IconButton(

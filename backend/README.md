@@ -61,3 +61,53 @@ This split does not add Google sign-in or change backend routes.
 
 See [`../infra/README.md`](../infra/README.md) for state bootstrapping,
 migration safeguards, secrets, drift review, and new-environment setup.
+
+## AI narration (disabled by default)
+
+Narration uses the same API and private worker deployments, Firebase Auth, App Check,
+Firestore database, Secret Manager key and private asset bucket as the existing
+feature stack. It does not initialize or spend illustration credits.
+
+Set `narration_enabled`, `narration_monthly_characters` and
+`narration_daily_characters` in the environment Terraform configuration. Runtime
+injects `NARRATION_ENABLED` (default false), `NARRATION_MONTHLY_CHARACTERS`
+(default 500000), `NARRATION_DAILY_CHARACTERS` (default 200000) and
+`NARRATION_TASK_QUEUE` (`reader-narration`). Foundation owns both Apple Firebase
+registrations; the feature stack owns the dedicated queue, input TTL and job
+indexes. Existing deployment scopes remain `core|illustrations|all`.
+
+Authenticated routes:
+
+- `GET /v1/narration/config`: rollout, model/voices and remaining UTC-month allowance.
+- `POST /v1/narration/books`: explicit consent version and account-scoped fingerprint.
+- `POST /v1/narration/books/:bookId/jobs`: exact prose, SHA-256 digest, chunk ID,
+  document/chunk versions and Marin/Cedar voice. Requests are idempotent.
+- `GET /v1/narration/jobs/:jobId`: status and a ten-minute private download URL
+  only for live, unexpired audio owned by the caller.
+- `DELETE /v1/narration/books/:bookId`: tombstone and purge; usable with rollout off.
+- `DELETE /v1/account`: also tombstones and purges narration before deleting identity.
+
+The private `/internal/narration/:jobId` worker transaction claims each job with a
+four-minute lease and unique claim token. Its OpenAI Realtime response uses
+`gpt-realtime-2.1-mini`, fixed narration instructions, no tools, isolated input,
+24 kHz mono PCM and a three-minute timeout. Refusal, incomplete output, invalid
+PCM and transcript mismatch produce no published asset. Transcript comparison
+removes punctuation and collapses whitespace while retaining word boundaries,
+case and order. This safeguard cannot establish the accuracy of the audio itself.
+See [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations)
+and [the TTS migration notice](https://developers.openai.com/api/docs/deprecations).
+
+Quota transactions reserve UTF-16 input characters against both the user's UTC
+month and the environment's UTC day. Submission is durably recorded before the
+provider request. Pre-submission failures release the reservation; submitted
+failures remain charged. A user retry gets a new reservation and task identity,
+with at most two provider attempts. Crash recovery cannot publish for a stale
+claim, deleted book or deleted account. Cached local replay is free. Audio expires
+after 30 days through bucket lifecycle plus checked delivery expiration. Raw
+prose is removed at terminal completion; abandoned inputs have a 24-hour Firestore
+TTL policy. Firestore cleanup is asynchronous. Allowance reads reclaim expired
+unsubmitted reservations in batches of up to 100.
+
+Do not enable rollout until signed iOS and macOS authentication/App Check,
+background playback, media controls and listening quality are verified. No live
+provider calls or cloud applies are part of the automated tests.

@@ -18,6 +18,12 @@ import 'illustrations/outbox.dart';
 import 'illustrations/store.dart';
 import 'models.dart';
 import 'storage.dart';
+import 'cloud_identity.dart';
+import 'narration/api.dart';
+import 'narration/player.dart';
+import 'narration/session.dart';
+import 'narration/store.dart';
+import 'narration/models.dart';
 
 /// Owns session state and coordinates UI, persistence, normalized text, and art jobs.
 ///
@@ -34,6 +40,11 @@ class ReaderController extends ChangeNotifier {
     BookWordCounter? wordCounter,
     IllustrationApi? illustrationApi,
     IllustrationDeletionOutbox? illustrationDeletionOutbox,
+    NarrationApi? narrationApi,
+    NarrationPlayer? narrationPlayer,
+    NarrationStore? narrationStore,
+    TextDocumentStore? narrationDocuments,
+    IllustrationDeletionOutbox? narrationDeletionOutbox,
     this.illustrationGate = const IllustrationGate(),
   }) : illustrationStore = illustrationStore ?? FileIllustrationStore(),
        textIndexer = textIndexer ?? DocumentTextIndexer(),
@@ -42,7 +53,39 @@ class ReaderController extends ChangeNotifier {
            illustrationApi ??
            HttpIllustrationApi(identity: FirebaseIllustrationIdentity()),
        illustrationDeletionOutbox =
-           illustrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox();
+           illustrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox(),
+       narrationDeletionOutbox =
+           narrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox() {
+    if (narrationApi != null &&
+        narrationPlayer != null &&
+        narrationStore != null) {
+      narration = NarrationSession(
+        api: narrationApi,
+        player: narrationPlayer,
+        store: narrationStore,
+        documents: narrationDocuments,
+        abandonRegistration: (id) async {
+          await this.narrationDeletionOutbox.enqueue(id);
+          unawaited(drainNarrationDeletions());
+        },
+        changed: () {
+          if (!_disposed) notifyListeners();
+        },
+        commit: (book, position, progress) =>
+            savePosition(book, position, progress, fromNarration: true),
+        currentPosition: (book) => books
+            .where((item) => item.hash == book.hash)
+            .firstOrNull
+            ?.lastPosition,
+      );
+    }
+  }
+
+  /// App-lifetime narration; absent in offline/test dependency graphs.
+  NarrationSession? narration;
+
+  /// Narration deletion retries stay outside book directories and never sign in.
+  final IllustrationDeletionOutbox narrationDeletionOutbox;
 
   final CatalogStore catalogStore;
   final SettingsStore settingsStore;
@@ -75,6 +118,13 @@ class ReaderController extends ChangeNotifier {
   static Future<ReaderController> create() async {
     final store = await FileCatalogStore.create();
     final controller = ReaderController(
+      narrationApi: HttpNarrationApi(identity: FirebaseCloudIdentity()),
+      narrationPlayer: await NativeNarrationPlayer.create(),
+      narrationStore: FileNarrationStore(store.root),
+      narrationDeletionOutbox: FileIllustrationDeletionOutbox(
+        store.root,
+        fileName: 'narration-deletions.json',
+      ),
       catalogStore: store,
       settingsStore: PreferenceSettingsStore(),
       importer: BookImporter(root: store.root),
@@ -102,6 +152,7 @@ class ReaderController extends ChangeNotifier {
         manifests.map((manifest) => MapEntry(manifest.bookHash, manifest)),
       );
     unawaited(_drainDeletionOutbox());
+    unawaited(drainNarrationDeletions());
     unawaited(_backfillWordCounts());
     notifyListeners();
   }
@@ -180,6 +231,9 @@ class ReaderController extends ChangeNotifier {
 
   /// Records recent activity before navigation enters the reader.
   Future<void> markOpened(CatalogBook book) async {
+    if (narration != null && narration!.book?.hash != book.hash) {
+      await narration!.pause();
+    }
     final current = books.where((item) => item.hash == book.hash).firstOrNull;
     if (current == null) return;
     _replace(current.copyWith(lastOpenedAt: DateTime.now()));
@@ -248,8 +302,11 @@ class ReaderController extends ChangeNotifier {
   Future<void> savePosition(
     CatalogBook book,
     TextPosition position,
-    double progress,
-  ) async {
+    double progress, {
+    bool fromNarration = false,
+  }) async {
+    if (!fromNarration && narration?.ownsPosition(book) == true) return;
+    if (_disposed || !books.any((item) => item.hash == book.hash)) return;
     final current = books.firstWhere(
       (item) => item.hash == book.hash,
       orElse: () => book,
@@ -262,14 +319,21 @@ class ReaderController extends ChangeNotifier {
       ),
     );
     _positionSave?.cancel();
-    _positionSave = Timer(const Duration(milliseconds: 500), () {
-      catalogStore.save(books);
-    });
+    if (fromNarration) {
+      // Chunk completion must survive suspension before the next audio load;
+      // a debounced catalog write could otherwise invalidate an accurate resume.
+      await catalogStore.save(books);
+    } else {
+      _positionSave = Timer(const Duration(milliseconds: 500), () {
+        catalogStore.save(books);
+      });
+    }
     unawaited(_advanceIllustrations(book, position));
   }
 
   /// First downloaded scene that has not yet interrupted the reader.
   IllustrationScene? pendingRevealFor(CatalogBook book) {
+    if (narration?.ownsPosition(book) == true) return null;
     for (final scene in manifestFor(book).scenes) {
       if (scene.state == IllustrationSceneState.unlocked &&
           !scene.automaticRevealDismissed &&
@@ -339,14 +403,27 @@ class ReaderController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Forces pending reading state to disk during lifecycle transitions.
+  Future<void>? _narrationShutdown;
+
+  /// Forces reading and audio resume state to disk; awaits shutdown before cleanup.
   Future<void> flush() async {
+    await _narrationShutdown;
+    await narration?.flush();
     _positionSave?.cancel();
     await catalogStore.save(books);
   }
 
   /// Removes the catalog row, source directory, and generated cloud data.
   Future<void> delete(CatalogBook book) async {
+    final audio = narration;
+    if (audio != null) {
+      await audio.detach(book);
+      final profile = await audio.store.load(book);
+      if (profile.cloudBookId != null) {
+        await narrationDeletionOutbox.enqueue(profile.cloudBookId!);
+        unawaited(drainNarrationDeletions());
+      }
+    }
     final cloudBookId = illustrationManifests[book.hash]?.profile?.cloudBookId;
     if (cloudBookId != null && cloudBookId.isNotEmpty) {
       try {
@@ -393,12 +470,69 @@ class ReaderController extends ChangeNotifier {
     }
   }
 
-  /// Ends only the illustration identity session; offline reading is unchanged.
-  Future<void> signOutOfIllustrations() => illustrationApi.signOut();
+  /// External narration chapter changes request a viewport restore without writes.
+  int narrationNavigationRevision = 0;
 
-  /// Purges server-side illustration data and then removes the Firebase user.
+  /// Signals a committed narration chapter selection or allowance refresh.
+  void notifyNarrationNavigation() {
+    narrationNavigationRevision++;
+    notifyListeners();
+  }
+
+  /// Retries durable narration privacy requests using only an existing session.
+  Future<void> drainNarrationDeletions() async {
+    final api = narration?.api;
+    try {
+      if (api == null || !api.configured || !await api.hasSession()) return;
+      for (final item in await narrationDeletionOutbox.load()) {
+        try {
+          await api.deleteBook(item.cloudBookId);
+          await narrationDeletionOutbox.remove(item.cloudBookId);
+        } on Object {
+          /* Keep failed requests durable. */
+        }
+      }
+    } on Object {
+      /* Startup retries must never prevent offline reading. */
+    }
+  }
+
+  /// Consent and cleanup complete before creating a new cloud registration.
+  Future<void> consentToNarration(CatalogBook book) async {
+    await drainNarrationDeletions();
+    if ((await narrationDeletionOutbox.load()).isNotEmpty) {
+      throw StateError('Cloud cleanup is pending. Retry when connected.');
+    }
+    await narration?.consent(book);
+  }
+
+  /// Ends the shared cloud identity session; offline reading is unchanged.
+  Future<void> signOutOfIllustrations() async {
+    await narration?.stop();
+    if (narration?.api.configured == true) {
+      await narration!.api.signOut();
+    } else {
+      await illustrationApi.signOut();
+    }
+  }
+
+  /// Purges both cloud features before removing the Firebase user. Narration's
+  /// shared identity boundary supports macOS without enabling illustrations.
   Future<void> deleteIllustrationAccount() async {
-    await illustrationApi.deleteAccount();
+    final active = narration?.book;
+    if (active != null) await narration!.detach(active);
+    if (narration?.api.configured == true) {
+      await narration!.api.deleteAccount();
+    } else {
+      await illustrationApi.deleteAccount();
+    }
+    if (narration != null) {
+      for (final book in books) {
+        await narration!.store.clear(book);
+        await narration!.store.save(book, const NarrationManifest());
+      }
+      if (active != null) await narration!.attach(active);
+    }
     for (final book in books) {
       for (final scene in manifestFor(book).scenes) {
         await illustrationStore.deleteSceneFiles(book, scene.id);
@@ -577,6 +711,8 @@ class ReaderController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _narrationShutdown ??= narration?.dispose();
+    unawaited(_narrationShutdown);
     _disposed = true;
     _positionSave?.cancel();
     super.dispose();

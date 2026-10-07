@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -43,7 +45,10 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
     // Persist the latest debounced text position before the process is suspended.
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
-      widget.controller.flush();
+      unawaited(widget.controller.flush());
+    }
+    if (state == AppLifecycleState.detached) {
+      unawaited(widget.controller.narration?.stop(restore: false));
     }
   }
 

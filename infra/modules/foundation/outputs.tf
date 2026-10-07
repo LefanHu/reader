@@ -23,3 +23,9 @@ output "notification_channel" {
   description = "Monitoring email channel shared by runtime alert policies."
   value       = google_monitoring_notification_channel.email.name
 }
+
+output "firebase_macos_config" {
+  description = "Separate macOS Apple configuration for the shared project."
+  sensitive   = true
+  value       = data.google_firebase_apple_app_config.macos.config_file_contents
+}

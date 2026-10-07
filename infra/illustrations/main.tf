@@ -16,3 +16,12 @@ module "illustrations" {
   firestore_indexes_json = file("${path.root}/../../backend/firestore.indexes.json")
   storage_rules          = file("${path.root}/../../backend/storage.rules")
 }
+
+# Narration shares the feature stack and core|illustrations|all lifecycle, even
+# while either rollout flag is disabled. Existing resource addresses stay intact.
+module "narration" {
+  source     = "../modules/narration"
+  project_id = data.terraform_remote_state.foundation.outputs.project_id
+  region     = var.runtime_region
+  depends_on = [module.illustrations]
+}

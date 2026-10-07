@@ -15,6 +15,9 @@ import {
   moderateText,
   resolveWorldSnapshot,
 } from "./openai.js";
+import { NarrationBackend, NarrationError } from "./narration.js";
+import { RealtimeNarrationProvider } from "./narration-provider.js";
+import { workerTaskRequest } from "./task-request.js";
 import type {
   ChapterInput,
   Paragraph,
@@ -150,25 +153,15 @@ async function loadWorldSnapshot(
   return { revisions, snapshot };
 }
 
-async function enqueue(path: string, payload: Record<string, unknown>, taskId: string) {
+async function enqueue(path: string, payload: Record<string, unknown>, taskId: string, queue = taskQueue) {
   if (!projectId || !workerUrl || !taskServiceAccount) {
     throw new HttpError(503, "The illustration worker is not configured.");
   }
-  const parent = tasks.queuePath(projectId, taskLocation, taskQueue);
   try {
-    await tasks.createTask({
-      parent,
-      task: {
-        name: tasks.taskPath(projectId, taskLocation, taskQueue, taskId),
-        httpRequest: {
-          httpMethod: "POST",
-          url: `${workerUrl}${path}`,
-          headers: { "content-type": "application/json" },
-          body: Buffer.from(JSON.stringify(payload)).toString("base64"),
-          oidcToken: { serviceAccountEmail: taskServiceAccount },
-        },
-      },
-    });
+    await tasks.createTask(workerTaskRequest(tasks, {
+      project: projectId, location: taskLocation, queue, taskId,
+      workerUrl, serviceAccount: taskServiceAccount, path, payload,
+    }));
   } catch (error) {
     // ALREADY_EXISTS makes retries idempotent.
     if ((error as { code?: number }).code !== 6) throw error;
@@ -177,6 +170,11 @@ async function enqueue(path: string, payload: Record<string, unknown>, taskId: s
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 app.use("/v1", authenticate);
+const narration = new NarrationBackend({ db, storage, bucket: bucketName,
+  provider: new RealtimeNarrationProvider(), enabled: process.env.NARRATION_ENABLED === "true",
+  enqueue: (path, payload, id) => enqueue(path, payload, id, process.env.NARRATION_TASK_QUEUE ?? "reader-narration"),
+});
+app.use("/v1/narration", narration.api());
 function requireFeature(_req: Request, res: Response, next: NextFunction) {
   if (!illustrationsEnabled) {
     res.status(503).json({ error: "Illustrations are temporarily unavailable." });
@@ -437,6 +435,7 @@ app.delete("/v1/books/:bookId", asyncRoute(async (req, res) => {
 
 app.delete("/v1/account", asyncRoute(async (req, res) => {
   const uid = req.uid!;
+  await narration.deleteAccount(uid);
   const [scenes, jobs, inputs, reservations, revisions, references] = await Promise.all([
     db.collection("illustrationScenes").where("uid", "==", uid).get(),
     db.collection("illustrationJobs").where("uid", "==", uid).get(),
@@ -463,13 +462,14 @@ function requireTask(req: Request, res: Response, next: NextFunction) {
     res.status(404).end();
     return;
   }
-  if (!req.header("x-cloudtasks-taskname") && req.header("x-worker-token") !== process.env.WORKER_TOKEN) {
+  if (!req.header("x-cloudtasks-taskname") && (!process.env.WORKER_TOKEN || req.header("x-worker-token") !== process.env.WORKER_TOKEN)) {
     res.status(403).json({ error: "Cloud Tasks invocation required." });
     return;
   }
   next();
 }
 app.use("/internal", requireTask);
+app.use("/internal/narration", narration.worker());
 app.use("/internal", (_req, res, next) => {
   if (!illustrationsEnabled) {
     res.status(503).json({ error: "Illustration generation is disabled." });
@@ -900,8 +900,8 @@ app.post("/internal/scenes/:sceneId/regenerate", asyncRoute(async (req, res) => 
 }));
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  const status = error instanceof HttpError ? error.status : 500;
-  const message = error instanceof HttpError ? error.message : "Illustration service failed.";
+  const status = (error instanceof HttpError || error instanceof NarrationError) ? error.status : 500;
+  const message = (error instanceof HttpError || error instanceof NarrationError) ? error.message : "Illustration service failed.";
   // Log only category and stack; request bodies and provider responses are excluded.
   console.error(JSON.stringify({ category: error instanceof HttpError ? "http" : "internal", status }));
   res.status(status).json({ error: message });

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -46,7 +47,16 @@ class TextReaderNavigation {
   void previousSection() => _state?._changeSection(-1);
 
   /// Navigates to a resolved nested contents entry.
-  void goTo(text.TextPosition position) => _state?._goTo(position);
+  void goTo(text.TextPosition position) {
+    _state?._manualNavigation();
+    _state?._goTo(position);
+  }
+
+  /// Restores an external committed anchor through layout and its first frame.
+  /// Restoration never writes viewport progress back over narration commits.
+  Future<void> restore(text.TextPosition position) async {
+    await _state?._goTo(position, restoration: true);
+  }
 }
 
 /// Measured native Flutter text viewport shared by scroll and page modes.
@@ -65,6 +75,8 @@ class TextViewport extends StatefulWidget {
     required this.onPosition,
     required this.onTap,
     this.initialPosition,
+    this.onManualNavigation,
+    this.onRestored,
   });
 
   /// Immutable manifest used for navigation and source progress.
@@ -95,6 +107,12 @@ class TextViewport extends StatefulWidget {
   /// never report: only completed turns may persist or unlock illustrations.
   final void Function(text.TextPosition position, double progress, String title)
   onPosition;
+
+  /// Silent restore updates chapter labels without writing reading progress.
+  final void Function(String title)? onRestored;
+
+  /// Pauses narration before a user page, chapter, gesture, or scroll can commit.
+  final VoidCallback? onManualNavigation;
 
   /// Toggles reading chrome without intercepting drag navigation.
   final VoidCallback onTap;
@@ -130,6 +148,13 @@ class _TextViewportState extends State<TextViewport>
   int _request = 0;
   int _page = 0;
   bool _restoring = false;
+  bool _restorationOnly = false;
+  Completer<void>? _restored;
+
+  void _manualNavigation() {
+    _restorationOnly = false;
+    widget.onManualNavigation?.call();
+  }
 
   @override
   void initState() {
@@ -164,7 +189,14 @@ class _TextViewportState extends State<TextViewport>
     }
   }
 
-  Future<void> _goTo(text.TextPosition requested) async {
+  Future<void> _goTo(
+    text.TextPosition requested, {
+    bool restoration = false,
+  }) async {
+    if (_restored?.isCompleted == false) _restored!.complete();
+    _restored = restoration ? Completer<void>() : null;
+    final restored = _restored;
+    _restorationOnly = restoration;
     final hadTurn = _turnBusy;
     _cancelTurn();
     if (hadTurn && mounted) setState(() {});
@@ -191,10 +223,13 @@ class _TextViewportState extends State<TextViewport>
       });
     } on Object catch (error) {
       if (mounted && generation == _request) setState(() => _error = error);
+      if (restored != null && !restored.isCompleted) restored.complete();
     }
+    if (restored != null) await restored.future;
   }
 
   void _changeSection(int delta) {
+    _manualNavigation();
     final target = _ordinal + delta;
     if (target < 0 || target >= widget.document.sections.length) return;
     _goTo(
@@ -206,6 +241,7 @@ class _TextViewportState extends State<TextViewport>
   }
 
   void _step(int delta) {
+    _manualNavigation();
     final layout = _layout;
     if (layout == null || _restoring) return;
     if (widget.settings.mode != ReadingMode.scroll) {
@@ -438,6 +474,7 @@ class _TextViewportState extends State<TextViewport>
   }
 
   void _dragStart(DragStartDetails details) {
+    _manualNavigation();
     _dragAccepted = !_turnBusy && !_restoring;
     if (!_dragAccepted) return;
     _dragging = true;
@@ -519,6 +556,10 @@ class _TextViewportState extends State<TextViewport>
 
   void _report(text.TextPosition position) {
     _position = position;
+    if (_restorationOnly) {
+      widget.onRestored?.call(widget.document.sections[_ordinal].title);
+      return;
+    }
     widget.onPosition(
       position,
       widget.document.progress(_section!, position),
@@ -533,6 +574,7 @@ class _TextViewportState extends State<TextViewport>
         widget.settings.mode != ReadingMode.scroll) {
       return;
     }
+    _manualNavigation();
     final y = _scroll.offset;
     final lines = _layout!.lines;
     if (y >= lines.last.globalTop + lines.last.height) {
@@ -636,11 +678,16 @@ class _TextViewportState extends State<TextViewport>
       // Keep the requested logical anchor during reflow. Reporting the page
       // start here would repeatedly drift backwards as typography changes.
       _report(position);
+      _restorationOnly = false;
+      final restored = _restored;
+      _restored = null;
+      if (restored != null && !restored.isCompleted) restored.complete();
     });
   }
 
   @override
   void dispose() {
+    if (_restored?.isCompleted == false) _restored!.complete();
     if (widget.navigation._state == this) widget.navigation._state = null;
     WidgetsBinding.instance.removeObserver(this);
     _cancelTurn();

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import 'controller.dart';
 import 'models.dart';
+import 'narration/sheet.dart';
 import 'reader.dart';
 import 'text/word_count.dart';
 
@@ -143,6 +144,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
         // Use actual window width so iPad split view gets the compact layout.
         final wide = constraints.maxWidth >= 700;
         return Scaffold(
+          bottomNavigationBar: widget.controller.narration?.book == null
+              ? null
+              : NarrationMiniPlayer(controller: widget.controller),
           body: SafeArea(
             child: Stack(
               children: [
