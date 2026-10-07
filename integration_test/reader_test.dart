@@ -115,11 +115,31 @@ void main() {
     await tester.pumpAndSettle();
     expect(viewport.navigation.leadingPosition, anchor);
     expect(viewport.navigation.retainedTextureCount, 0);
-    await tester.tap(find.byTooltip('Hide reading controls'));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('Show reading controls'), findsOneWidget);
-    await tester.tap(find.byTooltip('Show reading controls'));
-    await tester.pumpAndSettle();
+    for (final mode in ReadingMode.values) {
+      await controller.configure(mode: mode);
+      await tester.pumpAndSettle();
+      final stationaryViewport = tester.getRect(find.byType(TextViewport));
+      final textPaints = find.descendant(
+        of: find.byType(TextViewport),
+        matching: find.byType(CustomPaint),
+      );
+      final stationaryText = tester.getRect(textPaints.first);
+      await tester.tapAt(stationaryViewport.center);
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(tester.getRect(find.byType(TextViewport)), stationaryViewport);
+      expect(tester.getRect(textPaints.first), stationaryText);
+      expect(viewport.navigation.leadingPosition, anchor);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Show reading controls'), findsOneWidget);
+      expect(tester.getRect(find.byType(TextViewport)), stationaryViewport);
+      await tester.tap(find.byTooltip('Show reading controls'));
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(tester.getRect(find.byType(TextViewport)), stationaryViewport);
+      expect(tester.getRect(textPaints.first), stationaryText);
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.byType(TextViewport)), stationaryViewport);
+      expect(viewport.navigation.leadingPosition, anchor);
+    }
     debugPrint(
       'Before closing reader: ${viewport.navigation.leadingPosition}; expected $anchor',
     );

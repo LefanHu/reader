@@ -366,33 +366,50 @@ class _ReaderScreenState extends State<ReaderScreen> {
               }
               return Column(
                 children: [
-                  if (controls)
-                    _Toolbar(
-                      title: chapterTitle ?? widget.book.title,
-                      foreground: _foreground,
-                      illustrationCount: widget.controller
-                          .manifestFor(widget.book)
-                          .unlockedScenes
-                          .length,
-                      onBack: _close,
-                      onToc: () => _showToc(pub),
-                      onIllustrations: _showIllustrations,
-                      onSettings: _showSettings,
-                      onHide: () => setState(() => controls = false),
-                    )
-                  else
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: IconButton(
-                        tooltip: 'Show reading controls',
-                        color: _foreground,
-                        onPressed: () => setState(() => controls = true),
-                        icon: const Icon(Icons.visibility_outlined),
-                      ),
+                  // Both control areas remain reserved. Changing these heights
+                  // would reflow text and interrupt a page curl when chrome toggles.
+                  SizedBox(
+                    height: 60,
+                    child: Stack(
+                      children: [
+                        _ControlsTransition(
+                          visible: controls,
+                          hiddenOffset: const Offset(0, -.15),
+                          child: _Toolbar(
+                            title: chapterTitle ?? widget.book.title,
+                            foreground: _foreground,
+                            illustrationCount: widget.controller
+                                .manifestFor(widget.book)
+                                .unlockedScenes
+                                .length,
+                            onBack: _close,
+                            onToc: () => _showToc(pub),
+                            onIllustrations: _showIllustrations,
+                            onSettings: _showSettings,
+                            onHide: () => setState(() => controls = false),
+                          ),
+                        ),
+                        _ControlsTransition(
+                          visible: !controls,
+                          child: SizedBox(
+                            height: 60,
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: IconButton(
+                                tooltip: 'Show reading controls',
+                                color: _foreground,
+                                onPressed: () =>
+                                    setState(() => controls = true),
+                                icon: const Icon(Icons.visibility_outlined),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
+                  ),
                   Expanded(
-                    // A stable key preserves viewport state when conditional
-                    // chrome changes Flutter's sibling reconciliation order.
+                    // Keep the same viewport element through control transitions.
                     key: const ValueKey('reading-content'),
                     child: Center(
                       child: ConstrainedBox(
@@ -402,23 +419,30 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       ),
                     ),
                   ),
-                  if (controls)
-                    _NavigationBar(
-                      progress:
-                          widget.controller.books
-                              .where((book) => book.hash == widget.book.hash)
-                              .firstOrNull
-                              ?.progress ??
-                          widget.book.progress,
-                      foreground: _foreground,
-                      pages:
-                          widget.controller.settings.mode != ReadingMode.scroll,
-                      rightToLeft: navigation.rightToLeft,
-                      onPrevious: navigation.previous,
-                      onNext: navigation.next,
-                      onPreviousChapter: navigation.previousSection,
-                      onNextChapter: navigation.nextSection,
+                  SizedBox(
+                    height: 62,
+                    child: _ControlsTransition(
+                      visible: controls,
+                      hiddenOffset: const Offset(0, .15),
+                      child: _NavigationBar(
+                        progress:
+                            widget.controller.books
+                                .where((book) => book.hash == widget.book.hash)
+                                .firstOrNull
+                                ?.progress ??
+                            widget.book.progress,
+                        foreground: _foreground,
+                        pages:
+                            widget.controller.settings.mode !=
+                            ReadingMode.scroll,
+                        rightToLeft: navigation.rightToLeft,
+                        onPrevious: navigation.previous,
+                        onNext: navigation.next,
+                        onPreviousChapter: navigation.previousSection,
+                        onNextChapter: navigation.nextSection,
+                      ),
                     ),
+                  ),
                 ],
               );
             },
@@ -445,6 +469,49 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
     },
   );
+}
+
+/// Animates chrome inside fixed slots without changing viewport constraints.
+/// Hidden controls stop accepting input, focus, and semantics immediately,
+/// even while their last visible pixels are still fading out.
+class _ControlsTransition extends StatelessWidget {
+  const _ControlsTransition({
+    required this.visible,
+    required this.child,
+    this.hiddenOffset = Offset.zero,
+  });
+  final bool visible;
+  final Widget child;
+  final Offset hiddenOffset;
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 200);
+    return ClipRect(
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: ExcludeSemantics(
+          excluding: !visible,
+          child: ExcludeFocus(
+            excluding: !visible,
+            child: AnimatedSlide(
+              offset: visible ? Offset.zero : hiddenOffset,
+              duration: duration,
+              curve: Curves.easeOut,
+              child: AnimatedOpacity(
+                opacity: visible ? 1 : 0,
+                duration: duration,
+                curve: Curves.easeOut,
+                child: child,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Top reader controls for leaving, navigating, configuring, and hiding chrome.
