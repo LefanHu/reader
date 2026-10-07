@@ -535,51 +535,67 @@ class _Toolbar extends StatelessWidget {
     data: IconThemeData(color: foreground),
     child: SizedBox(
       height: 60,
-      child: Row(
-        children: [
-          IconButton(
-            tooltip: 'Back to library',
-            onPressed: onBack,
-            icon: const Icon(Icons.arrow_back),
-          ),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: foreground,
-                fontFamily: 'Lora',
-                fontWeight: FontWeight.w600,
+      child: LayoutBuilder(
+        builder: (context, constraints) => Stack(
+          alignment: Alignment.center,
+          children: [
+            // Balance the four-button group on both sides. The title stays
+            // centered on the viewport and truncates before reaching buttons.
+            Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: (constraints.maxWidth / 2).clamp(0.0, 192.0),
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: foreground,
+                    fontFamily: 'Lora',
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ),
-          ),
-          IconButton(
-            tooltip: 'Choose chapter',
-            onPressed: onToc,
-            icon: const Icon(Icons.list_alt),
-          ),
-          Badge(
-            isLabelVisible: illustrationCount > 0,
-            label: Text('$illustrationCount'),
-            child: IconButton(
-              tooltip: 'AI illustrations',
-              onPressed: onIllustrations,
-              icon: const Icon(Icons.auto_awesome_outlined),
+            Row(
+              children: [
+                IconButton(
+                  tooltip: 'Back to library',
+                  onPressed: onBack,
+                  icon: const Icon(Icons.arrow_back),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Choose chapter',
+                  onPressed: onToc,
+                  icon: const Icon(Icons.list_alt),
+                ),
+                Badge(
+                  isLabelVisible: illustrationCount > 0,
+                  label: Text('$illustrationCount'),
+                  child: IconButton(
+                    tooltip: 'AI illustrations',
+                    onPressed: onIllustrations,
+                    icon: const Icon(Icons.auto_awesome_outlined),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Reading settings',
+                  onPressed: onSettings,
+                  icon: const Icon(Icons.text_fields),
+                ),
+                IconButton(
+                  tooltip: 'Hide reading controls',
+                  onPressed: onHide,
+                  icon: const Icon(Icons.visibility_off_outlined),
+                ),
+              ],
             ),
-          ),
-          IconButton(
-            tooltip: 'Reading settings',
-            onPressed: onSettings,
-            icon: const Icon(Icons.text_fields),
-          ),
-          IconButton(
-            tooltip: 'Hide reading controls',
-            onPressed: onHide,
-            icon: const Icon(Icons.visibility_off_outlined),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -904,6 +920,7 @@ class _SettingsPanel extends StatelessWidget {
             const Text('Reading mode'),
             const SizedBox(height: 8),
             SegmentedButton<ReadingMode>(
+              showSelectedIcon: false,
               segments: const [
                 ButtonSegment(value: ReadingMode.pages, label: Text('Pages')),
                 ButtonSegment(
@@ -927,6 +944,7 @@ class _SettingsPanel extends StatelessWidget {
                   controller.configure(fontSize: value.round()),
             ),
             SegmentedButton<bool>(
+              showSelectedIcon: false,
               segments: const [
                 ButtonSegment(value: true, label: Text('Serif')),
                 ButtonSegment(value: false, label: Text('Sans serif')),
@@ -939,6 +957,7 @@ class _SettingsPanel extends StatelessWidget {
             const Text('Theme'),
             const SizedBox(height: 8),
             SegmentedButton<ReadingTheme>(
+              showSelectedIcon: false,
               segments: const [
                 ButtonSegment(value: ReadingTheme.paper, label: Text('Paper')),
                 ButtonSegment(value: ReadingTheme.sepia, label: Text('Sepia')),

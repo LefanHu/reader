@@ -117,11 +117,33 @@ void main() {
     expect(viewport.navigation.retainedTextureCount, 0);
     for (final mode in ReadingMode.values) {
       await controller.configure(mode: mode);
+      await tester.pump();
+      final initialPaints = find.descendant(
+        of: find.byType(TextViewport),
+        matching: find.byWidgetPredicate(
+          (widget) => widget is CustomPaint && widget.painter != null,
+        ),
+      );
+      final firstFrameText = tester.getRect(initialPaints.first);
       await tester.pumpAndSettle();
+      expect(tester.getRect(initialPaints.first), firstFrameText);
+      expect(viewport.navigation.leadingPosition, anchor);
+      final chapterTitle = tester
+          .widget<TextViewport>(find.byType(TextViewport))
+          .document
+          .sections
+          .first
+          .title;
+      expect(
+        tester.getCenter(find.text(chapterTitle)).dx,
+        closeTo(tester.getCenter(find.byType(TextViewport)).dx, .01),
+      );
       final stationaryViewport = tester.getRect(find.byType(TextViewport));
       final textPaints = find.descendant(
         of: find.byType(TextViewport),
-        matching: find.byType(CustomPaint),
+        matching: find.byWidgetPredicate(
+          (widget) => widget is CustomPaint && widget.painter != null,
+        ),
       );
       final stationaryText = tester.getRect(textPaints.first);
       await tester.tapAt(stationaryViewport.center);

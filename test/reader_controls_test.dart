@@ -1,3 +1,5 @@
+import 'dart:ui' show Tristate;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -76,6 +78,98 @@ bool _hasControlSemantics(WidgetTester tester, String description) {
 }
 
 void main() {
+  testWidgets('toolbar chapter title is centered on the reading viewport', (
+    tester,
+  ) async {
+    await _mount(tester);
+    final title = find.text('Section 1');
+    final viewport = find.byType(TextViewport);
+    for (final width in [390.0, 599.0, 600.0, 800.0, 1354.0]) {
+      await tester.binding.setSurfaceSize(Size(width, 900));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getCenter(title).dx,
+        closeTo(tester.getCenter(viewport).dx, .01),
+      );
+      expect(find.byTooltip('Choose chapter'), findsOneWidget);
+      expect(find.byTooltip('AI illustrations'), findsOneWidget);
+      expect(find.byTooltip('Hide reading controls'), findsOneWidget);
+      final chapter = tester.getRect(find.byTooltip('Choose chapter'));
+      expect(tester.getRect(title).right, lessThanOrEqualTo(chapter.left));
+    }
+    await tester.binding.setSurfaceSize(null);
+  });
+
+  testWidgets(
+    'reading settings keep button bounds without selection checkmarks',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      final controller = await _mount(tester);
+      await tester.tap(find.byTooltip('Reading settings'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<SegmentedButton<ReadingMode>>(
+              find.byType(SegmentedButton<ReadingMode>),
+            )
+            .showSelectedIcon,
+        isFalse,
+      );
+      expect(
+        tester
+            .widget<SegmentedButton<bool>>(find.byType(SegmentedButton<bool>))
+            .showSelectedIcon,
+        isFalse,
+      );
+      expect(
+        tester
+            .widget<SegmentedButton<ReadingTheme>>(
+              find.byType(SegmentedButton<ReadingTheme>),
+            )
+            .showSelectedIcon,
+        isFalse,
+      );
+      for (final labels in [
+        ['Pages', 'Page flip', 'Scroll'],
+        ['Serif', 'Sans serif'],
+        ['Paper', 'Sepia', 'Dark'],
+      ]) {
+        await tester.ensureVisible(find.text(labels.first));
+        await tester.pumpAndSettle();
+        Rect buttonRect(String label) => tester.getRect(
+          find
+              .ancestor(of: find.text(label), matching: find.byType(TextButton))
+              .first,
+        );
+        final bounds = {for (final label in labels) label: buttonRect(label)};
+        for (final label in labels) {
+          await tester.tap(find.text(label));
+          await tester.pumpAndSettle();
+          for (final entry in bounds.entries) {
+            expect(buttonRect(entry.key), entry.value);
+          }
+          final node = tester.getSemantics(
+            find
+                .ancestor(
+                  of: find.text(label),
+                  matching: find.byType(TextButton),
+                )
+                .first,
+          );
+          expect(
+            node.getSemanticsData().flagsCollection.isSelected,
+            Tristate.isTrue,
+          );
+        }
+      }
+      expect(controller.settings.mode, ReadingMode.scroll);
+      expect(controller.settings.serif, isFalse);
+      expect(controller.settings.theme, ReadingTheme.dark);
+      expect(find.byIcon(Icons.check), findsNothing);
+      semantics.dispose();
+    },
+  );
+
   for (final mode in ReadingMode.values) {
     testWidgets(
       '${mode.name} controls animate without moving text or changing position',

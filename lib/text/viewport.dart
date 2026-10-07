@@ -118,7 +118,8 @@ class _TextViewportState extends State<TextViewport>
   double _width = 1, _height = 1;
   TextScaler _scaler = TextScaler.noScaling;
   bool _reduceMotion = false;
-  final _scroll = ScrollController();
+  ScrollController _scroll = ScrollController(keepScrollOffset: false);
+  int _restoreGeneration = 0;
   final _cache = <String, _SectionLayout>{};
   text.TextSection? _section;
   text.TextPosition? _position;
@@ -174,6 +175,7 @@ class _TextViewportState extends State<TextViewport>
         ? ordinal
         : 0;
     final generation = ++_request;
+    ++_restoreGeneration;
     try {
       final section = await widget.store.loadSection(
         widget.sourcePath,
@@ -615,13 +617,21 @@ class _TextViewportState extends State<TextViewport>
     _page = layout.pages.indexWhere((page) => page.contains(line));
     if (_page < 0) _page = 0;
     _restoring = true;
+    final generation = ++_restoreGeneration;
+    if (widget.settings.mode == ReadingMode.scroll) {
+      // Seed a fresh scroll position before layout so its first painted frame
+      // shows the anchor. PageStorage pixel offsets cannot override text anchors.
+      final previous = _scroll;
+      previous.removeListener(_scrolled);
+      _scroll = ScrollController(
+        initialScrollOffset: line.globalTop,
+        keepScrollOffset: false,
+      )..addListener(_scrolled);
+      // The old scrollable detaches during this build; dispose only afterwards.
+      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _layout != layout) return;
-      if (widget.settings.mode == ReadingMode.scroll && _scroll.hasClients) {
-        _scroll.jumpTo(
-          line.globalTop.clamp(0.0, _scroll.position.maxScrollExtent),
-        );
-      }
+      if (!mounted || generation != _restoreGeneration) return;
       _restoring = false;
       // Keep the requested logical anchor during reflow. Reporting the page
       // start here would repeatedly drift backwards as typography changes.
@@ -671,6 +681,7 @@ class _TextViewportState extends State<TextViewport>
                   return false;
                 },
                 child: SingleChildScrollView(
+                  key: ObjectKey(_scroll),
                   controller: _scroll,
                   physics: const ClampingScrollPhysics(
                     parent: AlwaysScrollableScrollPhysics(),
