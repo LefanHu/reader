@@ -4,12 +4,15 @@ import 'package:archive/archive.dart';
 
 /// Minimal EPUB with RTL prose and nested navigation shared by parser and native tests.
 /// Optional overrides exercise import trust boundaries without external files.
+/// [timestamp] fixes archive creation/modification times (Unix seconds) when a
+/// fixture needs a stable source hash across independently launched runs.
 Uint8List epubFixture({
   String? body,
   String extra = '',
   String? metadata,
   String manifestExtra = '',
   String? navigation,
+  int? timestamp,
 }) {
   final archive = Archive()
     ..addFile(
@@ -37,5 +40,11 @@ Uint8List epubFixture({
       ),
     );
   if (extra.isNotEmpty) archive.addFile(ArchiveFile.string(extra, 'unsafe'));
+  if (timestamp != null) {
+    for (final file in archive.files) {
+      file.creationTime = timestamp;
+      file.lastModTime = timestamp;
+    }
+  }
   return Uint8List.fromList(ZipEncoder().encode(archive));
 }

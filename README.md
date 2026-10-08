@@ -30,6 +30,39 @@ flutter run -d <ios-device-id>
 
 Library themes have desktop, hover-overlay, and compact iOS-list visual baselines in `test/goldens/`. After intentional design changes, regenerate them with `flutter test test/library_theme_test.dart --update-goldens` and inspect all nine images before committing.
 
+For manual UI performance work, follow [Flutter's profiling guidance](https://docs.flutter.dev/perf/ui-performance): run `flutter run --profile -d macos` or `flutter run --profile -d <physical-ios-device-id>`, open the printed DevTools URL, and record the Performance view while opening a book, scrolling, turning pages, and navigating chapters. Diagnose UI and raster times separately against the display's frame budget. Debug builds and iOS simulators are not performance evidence.
+
+Prefer removing redundant work over adding caches or custom infrastructure. Only optimize measured paths causing missed frames or accounting for at least 10% of frame time or allocations. Preserve complete narration/reading anchors, first-frame restoration, paragraph semantics, and explicit end-of-book completion before accepting an optimization.
+
+The reusable native profiler imports a fixed 300-paragraph mixed-script EPUB into a fresh temporary catalog. Each of two repetitions resets to the same complete logical anchor, then measures library → open → twelve 450-pixel scroll gestures → eight page turns → contents navigation. The first and second repetitions remain separate: first-use and warmed costs must not be pooled. Import, mode changes, setup, screenshot readback, and artifact writing are outside the measured phases. Picker input, preferences, and cloud services are fake; parsing, storage, routes, and rendering are real and offline.
+
+The runner uses Flutter's `benchmarkLive` frame policy: app/engine frame requests run normally, while artificial pump frames and extra pointer-fade debugging frames do not contaminate measurement. This also avoids artificial frame waits during timed gestures. Delayed raster timings are joined by engine frame number to frames observed during the action; frames from the two-second buffer flush are excluded from statistics. The policy is recorded in capture metadata; compare only matching policies. Each gesture/turn must advance its logical anchor, so skipped input cannot appear as a performance gain.
+
+```sh
+PROFILE_LABEL=baseline flutter drive --profile -d macos --no-dds \
+  --target integration_test/performance_test.dart \
+  --driver test_driver/performance_test.dart
+
+# Use a new label after a code change, with the same device/window/settings.
+PROFILE_LABEL=candidate flutter drive --profile -d macos --no-dds \
+  --target integration_test/performance_test.dart \
+  --driver test_driver/performance_test.dart
+```
+
+Replace `macos` with a physical iOS device ID for device measurements. Keep the macOS app frontmost; if Flutter reports that foregrounding failed, activate its window manually. `--no-dds` permits the in-app VM service connection. The dedicated runner rejects debug/release mode and is deliberately not registered in `reader_test.dart` or the normal unit suite. `vm_service` is an explicit development dependency, already supplied transitively by Flutter's integration-test tooling; it does not change app behavior.
+
+The host driver writes `build/performance/<label>/` (Git-ignored). Omit `PROFILE_LABEL` for a timestamped label; labels cannot contain path separators, and existing captures are never overwritten.
+
+- `raw.json`: versioned workload/device/settings metadata, a completion flag, and each phase's VM timeline, CPU samples, and raw engine frame timings in microseconds. Unreferenced CPU symbols are removed and stack indices remapped; every sample and stack frame is preserved.
+- `summary.json`: the same metadata and completion flag, plus per-phase frame count; UI, raster, and total-span median/p95/maximum in milliseconds; and UI/raster/either-thread over-budget counts. p95 uses nearest rank. A frame exceeding both thread budgets counts once in `either_over_budget`; total-span scheduling latency is not treated as thread work.
+- `<phase>_<repetition>_timeline.json`: individual raw VM timelines for trace inspection. CPU function/stack tables remain in `raw.json` for attribution; these are VM-service JSON, not DevTools session exports.
+
+The budget uses the recorded display refresh rate, or an explicitly flagged 60 Hz reference if unknown. These are instrumented samples, not proof of physical presentation/dropped frames or release performance. There is no timing pass/fail threshold: correctness assertions and missing measurement data fail the run, while performance values are reported for comparison. Available data from a failed test is saved with `complete: false`; never compare it as a completed capture. A host-side timeout bounds connection, measurement, and export at three minutes (excluding build time); VM disconnections/timeouts fail and may prevent artifact export. Phase progress is printed so a stalled run can be located. CPU samples are time samples, not allocation counts.
+
+Compare matching phase/repetition names only when fixture/source hash, normalization version, device, OS/Flutter version, actual window dimensions, scale, refresh rate, and settings match. Metadata records platform, OS/Dart versions, window/display properties, fixture identity, and settings; save the device model/ID and `flutter --version` alongside it. The fixed archive timestamp keeps fixture hashes stable across launches. On the second repetition, scroll/chapter PNG paths are printed; iOS screenshots reside in the device's app container. Fixture teardown unmounts, flushes serialized persistence, and deletes only its own temporary catalog. Keep captures while investigating; delete only the chosen `build/performance/<label>/` directory when finished.
+
+The earlier experimental lazy list was rolled back because narration-anchor verification failed despite faster scrolling. That optimization is not shipped, and its old `profile_baseline.json`/`profile_lazy.json` captures are not directly comparable with this runner's reset-to-start repetitions.
+
 AI illustrations are inert unless the build supplies Firebase and API values:
 
 ```sh

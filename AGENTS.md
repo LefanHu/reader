@@ -46,6 +46,7 @@
 - Register cleanup before initialization, unmount the app before its final serialized persistence flush, and delete only the fixture-owned temporary directory. Release active gestures and captured images even when assertions fail.
 - Use `NativeTestApp.runWithFrames` for native actions that await logical viewport restoration; an awaited `runAsync` action alone cannot drive the required test frames. Keep the macOS test app frontmost for UI checks, and use iOS `--no-uninstall` when retaining emitted screenshots for inspection.
 - Keep native scenarios focused on complete user flows with real importing, storage, and rendering. Cover parsing and layout edge cases in unit or widget tests, and keep scenario names suitable for focused runs with `--plain-name`.
+- Keep performance measurements opt-in through `integration_test/performance_test.dart` and `test_driver/performance_test.dart`, not the debug correctness runner. Run with `flutter drive --profile --no-dds` on macOS or physical iOS; compare matching fixture/device/window/settings metadata and phase/repetition names. Preserve reset-to-start anchors, exclude setup/artifact I/O from phases, and keep failed captures explicitly incomplete. CPU compaction must preserve every sampled stack's function attribution.
 
 ## Validation
 
