@@ -111,12 +111,11 @@ java -jar /path/to/epubcheck.jar path/to/book.epub
 - `lib/storage.dart` contains serialized atomic catalog writes, restartable legacy reset, and preferences persistence.
 - `lib/book_service.dart` contains selection, isolated parsing, hashing, and atomic import staging.
 - `lib/text/` contains normalized documents, EPUB/TXT parsing, Unicode direction detection, lazy section loading, measured scroll/page layout, and logical navigation.
-- `lib/controller.dart` is the single shared `ChangeNotifier`.
+- `lib/controller.dart` is the single shared `ChangeNotifier` and coordinates catalog, identity, and feature lifecycles. `lib/account/usage_coordinator.dart` owns usage snapshots and request fencing across account changes and disposal; `lib/account/api.dart` owns authenticated transport and response validation.
 - `lib/illustrations/` contains normalized text indexing, spoiler gating,
   authenticated REST, atomic sidecars, local assets, and deletion retries.
 - `lib/theme.dart` defines the shared app-wide palettes; `lib/library.dart` and `lib/reader.dart` contain the adaptive library and reader shell.
-- `backend/` contains the Cloud Run API/worker, scene planning, image provider,
-  moderation, credit reservations, private delivery, and deletion endpoints.
+- `backend/src/index.ts` composes the API and worker, authentication, rollout gates, and task delivery. `backend/src/illustration-worker.ts` owns illustration execution, world-history loading, credit reservations, moderation, and private asset publication/cleanup. Provider logic remains in `backend/src/openai.ts`; narration and account services remain separate feature boundaries.
 
 Lora and DM Sans are bundled under the SIL Open Font License. Remaining dependency and Unicode data notices are recorded in `THIRD_PARTY_NOTICES.md`.
 

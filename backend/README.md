@@ -5,6 +5,24 @@ routes. Deploy it as two Cloud Run services: a public API service and a private
 worker service. Set `WORKER_URL` to the worker and require Cloud Run IAM
 authentication for that service.
 
+## Runtime ownership
+
+- `src/index.ts` composes deployments, public illustration routes, verified identity,
+  task authorization, feature rollout gates, and shared error translation.
+- `src/illustration-worker.ts` owns illustration execution: job/regeneration leases,
+  world-history reads, credit settlement, moderation, and asset publication/cleanup.
+  Its injected resources and provider boundary allow local execution without cloud calls.
+- `src/illustration-http.ts` shares bounded request validation and expected HTTP
+  errors between public routes and the worker, preserving status translation.
+- `src/openai.ts`, `src/narration.ts`, and `src/account.ts` retain provider,
+  narration lifecycle, and account responsibilities respectively.
+
+Worker lifecycle regressions run in `src/illustration-worker.test.ts` through local
+HTTP with isolated in-memory storage and deterministic image generation. Run
+`npm run build` and `npm test`; these commands never apply cloud changes.
+
+## Configuration
+
 Required configuration:
 
 - `OPENAI_API_KEY`, `FINGERPRINT_SECRET`

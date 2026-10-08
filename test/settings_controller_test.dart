@@ -48,6 +48,7 @@ Future<ReaderController> _controller({
   NarrationPlayer? narrationPlayer,
   NarrationStore? narrationStore,
   TextDocumentStore? narrationDocuments,
+  bool disposeOnTeardown = true,
 }) async {
   final controller = ReaderController(
     accountApi: api,
@@ -67,7 +68,7 @@ Future<ReaderController> _controller({
   await controller.initialize();
   await controller.refreshCloudAccount();
   addTearDown(() async {
-    controller.dispose();
+    if (disposeOnTeardown) controller.dispose();
     await controller.flush();
   });
   return controller;
@@ -222,6 +223,31 @@ void main() {
     expect(api.requests, 0);
     expect(identity.signIns, 0);
   });
+
+  test(
+    'disposal rejects pending usage and prevents further requests',
+    () async {
+      final pending = Completer<AccountUsage>();
+      final api = FakeAccountApi()..response = () => pending.future;
+      final identity = FakeCloudIdentity()..email = 'reader@example.test';
+      final controller = await _controller(
+        api: api,
+        identity: identity,
+        disposeOnTeardown: false,
+      );
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+      final refresh = controller.refreshAccountUsage();
+      final beforeDispose = notifications;
+      controller.dispose();
+      pending.complete(testAccountUsage());
+      await refresh;
+      expect(controller.accountUsage, isNull);
+      expect(notifications, beforeDispose);
+      await controller.refreshAccountUsage();
+      expect(api.requests, 1);
+    },
+  );
 
   test(
     'sign-out fences a pending usage response and prevents duplicate refreshes',

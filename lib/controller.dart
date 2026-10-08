@@ -5,6 +5,7 @@
 import 'dart:async';
 
 import 'account/api.dart';
+import 'account/usage_coordinator.dart';
 
 import 'package:flutter/material.dart';
 
@@ -31,6 +32,8 @@ import 'narration/models.dart';
 ///
 /// This remains the app's only shared [ChangeNotifier]. Illustration services
 /// are injected boundaries so reading and tests never depend on cloud plugins.
+/// Account usage owns its request lifecycle separately; the mutable usage
+/// accessors preserve the controller's existing presentation-state contract.
 class ReaderController extends ChangeNotifier {
   ReaderController({
     required this.catalogStore,
@@ -60,6 +63,12 @@ class ReaderController extends ChangeNotifier {
            illustrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox(),
        narrationDeletionOutbox =
            narrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox() {
+    _usage = AccountUsageCoordinator(
+      api: accountApi,
+      currentEmail: () => cloudEmail,
+      accountBusy: () => cloudAccountBusy,
+      changed: notifyListeners,
+    );
     if (narrationApi != null &&
         narrationPlayer != null &&
         narrationStore != null) {
@@ -102,18 +111,22 @@ class ReaderController extends ChangeNotifier {
   final AccountApi? accountApi;
 
   /// Latest server snapshot belongs only to the currently displayed account.
-  AccountUsage? accountUsage;
+  AccountUsage? get accountUsage => _usage.usage;
+  set accountUsage(AccountUsage? value) => _usage.usage = value;
 
   /// Prevents duplicate refresh actions without blocking local preferences.
-  bool usageLoading = false;
+  bool get usageLoading => _usage.loading;
+  set usageLoading(bool value) => _usage.loading = value;
 
   /// Safe display message; failed refreshes never substitute invented balances.
-  String? usageError;
+  String? get usageError => _usage.error;
+  set usageError(String? value) => _usage.error = value;
 
   /// Distinguishes offline, attestation, and service failures in Settings.
-  AccountUsageFailureKind? usageFailure;
+  AccountUsageFailureKind? get usageFailure => _usage.failure;
+  set usageFailure(AccountUsageFailureKind? value) => _usage.failure = value;
 
-  int _usageEpoch = 0;
+  late final AccountUsageCoordinator _usage;
   Future<void> _preferenceTail = Future.value();
   int _pendingPreferences = 0;
 
@@ -559,7 +572,7 @@ class ReaderController extends ChangeNotifier {
     try {
       final email = await identity.hasSession() ? identity.email : null;
       if (_disposed) return;
-      if (email != cloudEmail) _invalidateUsage();
+      if (email != cloudEmail) _usage.invalidate();
       cloudEmail = email;
       if (!_disposed) notifyListeners();
     } on Object {
@@ -577,7 +590,7 @@ class ReaderController extends ChangeNotifier {
       );
     }
     cloudAccountBusy = true;
-    _invalidateUsage();
+    _usage.invalidate();
     notifyListeners();
     try {
       await identity.signIn();
@@ -594,7 +607,7 @@ class ReaderController extends ChangeNotifier {
   Future<void> signOutOfCloud() async {
     if (cloudAccountBusy) return;
     cloudAccountBusy = true;
-    _invalidateUsage();
+    _usage.invalidate();
     notifyListeners();
     try {
       await narration?.stop();
@@ -624,7 +637,7 @@ class ReaderController extends ChangeNotifier {
       );
     }
     cloudAccountBusy = true;
-    _invalidateUsage();
+    _usage.invalidate();
     notifyListeners();
     try {
       final active = narration?.book;
@@ -658,46 +671,8 @@ class ReaderController extends ChangeNotifier {
     }
   }
 
-  void _invalidateUsage() {
-    _usageEpoch++;
-    accountUsage = null;
-    usageLoading = false;
-    usageError = null;
-    usageFailure = null;
-  }
-
   /// Refreshes owned usage without prompting for sign-in or granting consent.
-  Future<void> refreshAccountUsage() async {
-    if (_disposed || usageLoading || cloudAccountBusy) return;
-    _invalidateUsage();
-    final api = accountApi;
-    if (cloudEmail == null || api?.configured != true) {
-      notifyListeners();
-      return;
-    }
-    final epoch = _usageEpoch;
-    final email = cloudEmail;
-    usageLoading = true;
-    notifyListeners();
-    try {
-      final result = await api!.usage();
-      if (_disposed || epoch != _usageEpoch || email != cloudEmail) return;
-      accountUsage = result;
-    } on AccountUsageException catch (error) {
-      if (_disposed || epoch != _usageEpoch || email != cloudEmail) return;
-      usageError = error.message;
-      usageFailure = error.kind;
-    } on Object {
-      if (_disposed || epoch != _usageEpoch || email != cloudEmail) return;
-      usageError = 'Usage information could not be refreshed. Try again.';
-      usageFailure = AccountUsageFailureKind.service;
-    } finally {
-      if (!_disposed && epoch == _usageEpoch && email == cloudEmail) {
-        usageLoading = false;
-        notifyListeners();
-      }
-    }
-  }
+  Future<void> refreshAccountUsage() => _usage.refresh();
 
   /// Counts validated downloaded audio; source books and manifests are excluded.
   Future<int> narrationCacheBytes() async =>
@@ -942,7 +917,7 @@ class ReaderController extends ChangeNotifier {
     }
     unawaited(_narrationShutdown);
     _disposed = true;
-    _usageEpoch++;
+    _usage.dispose();
     _positionSave?.cancel();
     super.dispose();
   }
