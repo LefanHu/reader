@@ -15,7 +15,7 @@
     "@google-cloud/tasks": "^7.1.1",
     "express": "^5.2.1",
     "firebase-admin": "^14.4.0",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "ws": "^8.22.0"
   },
   "devDependencies": {

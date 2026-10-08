@@ -232,7 +232,7 @@ export function resolveWorldSnapshot(
       summary: revision.summary || previous?.summary || "",
       visualDescription: revision.visualDescription || previous?.visualDescription || "",
       stateFacts: revision.stateFacts.length > 0 ? revision.stateFacts : previous?.stateFacts ?? [],
-      referenceObject: previous?.referenceObject,
+      ...(previous?.referenceObject ? { referenceObject: previous.referenceObject } : {}),
     });
   }
   return [...snapshots.values()];

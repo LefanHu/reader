@@ -91,7 +91,7 @@ export function accountDeletionRouter(dependencies: {
       }
       const uid = req.uid;
       const { db, storage, bucket, narration } = dependencies;
-      // Fence delayed narration workers before removing shared account assets.
+      // The narration account tombstone fences both workers before shared assets are purged.
       await narration.deleteAccount(uid);
       const [scenes, jobs, inputs, reservations, revisions, references] = await Promise.all([
         db.collection("illustrationScenes").where("uid", "==", uid).get(),

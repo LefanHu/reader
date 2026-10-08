@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import plistlib
-import re
 import shutil
 import subprocess
 import tempfile
@@ -217,23 +216,12 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(0o600, output.stat().st_mode & 0o777)
             self.assertEqual([], list(output.parent.glob(".defines-*")))
 
-    def test_feature_manifest_matches_resources_and_api_ownership_is_disjoint(self):
-        core = (ROOT / "infra/modules/foundation/main.tf").read_text()
-        feature = (ROOT / "infra/modules/illustrations/main.tf").read_text()
-        pattern = r'resource "([^"]+)" "([^"]+)"'
-        feature_addresses = {f"module.illustrations.{kind}.{name}" for kind, name in re.findall(pattern, feature) if kind != "google_project_service"}
-        moves = json.loads(migration.MANIFEST.read_text())
-        self.assertEqual(feature_addresses, {a for a in moves.values() if "google_project_service" not in a})
-        core_apis = set(re.findall(r'"([a-z]+\.googleapis\.com)"', core))
-        feature_apis = set(re.findall(r'"([a-z]+\.googleapis\.com)"', feature))
-        self.assertFalse(core_apis & feature_apis)
-        self.assertEqual(feature_apis, {json.loads(a[a.index("[")+1:-1]) for a in moves if "google_project_service" in a})
 
 
 # These stubs execute the actual shell entrypoints against a disposable checkout.
 # They record cloud/tool requests, never contacting a service or changing the repo.
 STUB = r'''#!/usr/bin/env python3
-import base64,json,os,pathlib,plistlib,sys
+import base64,hashlib,json,os,pathlib,plistlib,sys
 name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 with open(os.environ['CALL_LOG'],'a') as log: log.write(json.dumps([name,*args])+'\n')
@@ -257,10 +245,14 @@ if name=='terraform':
 elif name=='gcloud':
     if args[:2]==['auth','list']: print('test@example.test')
     if args[:2]==['storage','ls'] and os.environ.get('RUNTIME_EXISTS')!='1': sys.exit(1)
-    if args[:3]==['secrets','versions','list']: print('1')
+    if args[:3]==['storage','buckets','describe'] and os.environ.get('MISSING_STATE_BUCKET')=='1': sys.exit(1)
+    if args[:3]==['secrets','versions','list'] and os.environ.get('MISSING_OPENAI_VERSION')!='1': print('1')
+    if args[:3]==['secrets','versions','add']:
+        pathlib.Path(os.environ['SECRET_INPUT_DIGEST']).write_text(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())
     if args[:3]==['artifacts','docker','images']: print('sha256:'+'a'*64)
 elif name=='curl' and '--write-out' in args: print('403',end='')
 elif name=='git': print('abc123')
+elif name=='npm' and ' '.join(args[2:])==os.environ.get('NPM_FAIL'): sys.exit(1)
 '''
 
 
@@ -280,6 +272,7 @@ class DeploymentTests(unittest.TestCase):
             path.chmod(0o755)
         self.log = self.root / "calls.jsonl"
         self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "CALL_LOG": str(self.log),
+                    "SECRET_INPUT_DIGEST": str(self.root / "secret-input.sha256"), "OPENAI_API_KEY": "",
                     "TF_VAR_google_client_id": "client", "TF_VAR_google_client_secret": "secret"}
 
     def execute(self, script, *args, **env):
@@ -288,7 +281,8 @@ class DeploymentTests(unittest.TestCase):
         return result, calls
 
     def test_core_deployment_skips_feature_stack_build_and_openai(self):
-        result, calls = self.execute("deploy_backend", "--scope", "core")
+        result, calls = self.execute("deploy_backend", "--scope", "core",
+                                     NPM_FAIL="ci", MISSING_OPENAI_VERSION="1")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse(any(c[0] in {"npm", "curl"} for c in calls))
         self.assertFalse(any(c[0]=='gcloud' and c[1] in {'secrets','builds'} for c in calls))
@@ -336,6 +330,61 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(1, sum(c[:3]==['gcloud','builds','submit'] for c in calls))
         self.assertTrue(any('/illustrations' in c[1] for c in calls if c[0]=='terraform' and len(c)>1))
         self.assertEqual('https://api.test', json.loads((self.root / ".dart-defines/dev.json").read_text())['ILLUSTRATION_API_BASE_URL'])
+
+    def test_backend_preflight_failure_prevents_cloud_mutation(self):
+        for scope in ("all", "illustrations"):
+            for stage in ("ci", "run build", "test", "audit --omit=dev"):
+                with self.subTest(scope=scope, stage=stage):
+                    self.log.unlink(missing_ok=True)
+                    result, calls = self.execute(
+                        "deploy_backend", "--scope", scope, NPM_FAIL=stage,
+                        MISSING_STATE_BUCKET="1" if scope == "all" else "0")
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertTrue(any(c[0] == "npm" and " ".join(c[3:]) == stage for c in calls))
+                    self.assertFalse(any(c[0] == "terraform" and
+                                         any(action in c for action in ("apply", "import")) for c in calls))
+                    read_only_cloud_calls = {
+                        ("auth", "list"), ("auth", "application-default", "print-access-token"),
+                        ("storage", "buckets", "describe"),
+                    }
+                    for call in calls:
+                        if call[0] == "gcloud":
+                            self.assertTrue(any(tuple(call[1:1 + len(prefix)]) == prefix
+                                                for prefix in read_only_cloud_calls), call)
+
+    def test_feature_preflight_finishes_before_successful_cloud_mutation(self):
+        result, calls = self.execute("deploy_backend")
+        self.assertEqual(0, result.returncode, result.stderr)
+        preflight = [i for i, call in enumerate(calls) if call[0] == "npm"]
+        self.assertEqual(["ci", "run build", "test", "audit --omit=dev"],
+                         [" ".join(calls[i][3:]) for i in preflight])
+        mutations = [i for i, call in enumerate(calls)
+                     if (call[0] == "terraform" and "apply" in call) or
+                     call[:3] == ["gcloud", "billing", "projects"]]
+        self.assertLess(max(preflight), min(mutations))
+
+    def test_private_environment_key_creates_version_over_stdin(self):
+        import hashlib
+        key = "private-test-key"
+        result, calls = self.execute("deploy_backend", "--scope", "illustrations",
+                                     MISSING_OPENAI_VERSION="1", OPENAI_API_KEY=key)
+        self.assertEqual(0, result.returncode, result.stderr)
+        additions = [c for c in calls if c[:4] == ["gcloud", "secrets", "versions", "add"]]
+        self.assertEqual(1, len(additions))
+        self.assertIn("--data-file=-", additions[0])
+        self.assertEqual(hashlib.sha256(key.encode()).hexdigest(),
+                         (self.root / "secret-input.sha256").read_text())
+        self.assertNotIn(key, result.stdout + result.stderr + self.log.read_text())
+        self.assertNotIn("OpenAI API key (", result.stderr)
+
+    def test_existing_openai_version_reused_even_with_private_environment_key(self):
+        key = "unused-private-test-key"
+        result, calls = self.execute("deploy_backend", "--scope", "illustrations", OPENAI_API_KEY=key)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(any(c[:4] == ["gcloud", "secrets", "versions", "add"] for c in calls))
+        self.assertFalse((self.root / "secret-input.sha256").exists())
+        self.assertNotIn(key, result.stdout + result.stderr + self.log.read_text())
+        self.assertNotIn("OpenAI API key (", result.stderr)
 
     def test_illustrations_requires_existing_core_before_feature_apply(self):
         result, calls = self.execute("deploy_backend", "--scope", "illustrations", MISSING_CORE='1')

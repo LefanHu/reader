@@ -231,6 +231,20 @@ resource "google_project_iam_member" "build_logs" {
   member  = "serviceAccount:${google_service_account.build.email}"
 }
 
+# Cloud Build owns its default staging bucket; Terraform owns only this grant.
+# The custom builder can read uploaded source, never reader assets or other objects.
+resource "google_project_iam_member" "build_source" {
+  project = var.project_id
+  role    = "roles/storage.objectViewer"
+  member  = "serviceAccount:${google_service_account.build.email}"
+
+  condition {
+    title       = "ReaderBuildSourceOnly"
+    description = "Read only backend source archives in Cloud Build's staging prefix."
+    expression  = "resource.type == 'storage.googleapis.com/Object' && resource.name.startsWith('projects/_/buckets/${var.project_id}_cloudbuild/objects/source/')"
+  }
+}
+
 resource "google_cloud_tasks_queue" "illustrations" {
   project  = var.project_id
   location = var.runtime_region

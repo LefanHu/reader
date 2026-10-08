@@ -58,4 +58,8 @@ run "illustrations_preserves_privacy_retention_and_capacity" {
     condition     = google_secret_manager_secret.openai.deletion_protection && google_secret_manager_secret.openai.deletion_policy == "PREVENT" && google_secret_manager_secret.fingerprint.deletion_protection
     error_message = "Secret containers must reject accidental deletion."
   }
+  assert {
+    condition     = google_project_iam_member.build_source.role == "roles/storage.objectViewer" && google_project_iam_member.build_source.condition[0].expression == "resource.type == 'storage.googleapis.com/Object' && resource.name.startsWith('projects/_/buckets/reader-test-12345_cloudbuild/objects/source/')"
+    error_message = "The custom builder may read only source archives, not reader assets or unrelated storage."
+  }
 }

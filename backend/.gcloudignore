@@ -1,0 +1,6 @@
+# Cloud Build reconstructs dependencies and compiled output from checked-in sources.
+.gcloudignore
+.git
+.gitignore
+node_modules/
+dist/

@@ -69,6 +69,7 @@ test("world snapshots exclude revisions established after the scene anchor", () 
   const early = resolveWorldSnapshot(revisions, 1, 3);
   assert.equal(early[0]?.name, "The traveler");
   assert.equal(early[0]?.visualDescription, "Dark hair");
+  assert(!Object.hasOwn(early[0]!, "referenceObject"));
   const later = resolveWorldSnapshot(revisions, 2, 4);
   assert.equal(later[0]?.name, "Emperor Jian");
   assert.deepEqual(later[0]?.aliases, ["The traveler"]);

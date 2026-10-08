@@ -11,6 +11,9 @@ Four independently stateful stacks share one environment project and database:
   rules, queue, service identities/IAM, container registry, and secrets.
 - `runtime` owns the existing public API, private worker, service IAM, and alerts.
   Both services use one immutable image; Firebase Auth handles accounts directly.
+  Both services explicitly use request-based billing (`cpu_idle = true`) and
+  zero minimum instances; task workers complete generation inside their HTTP
+  request rather than depending on CPU after a response.
 
 Core owns shared APIs; illustrations owns feature-specific APIs. Neither stack
 creates another project, database, auth service, or notification channel.
@@ -48,10 +51,27 @@ Configure branding as Reader Development,
 External/Testing audience, and basic identity scopes in the existing environment
 project. Native OAuth clients must match the existing iOS/macOS bundle IDs; adopt
 matching clients instead of duplicating them. The illustration path never requests
-OAuth credentials; it requests
-an OpenAI key only when the secret has no enabled version. It additionally needs
-npm and curl, runs backend build/tests/production audit, builds through Cloud
+OAuth credentials. Feature deployments (`illustrations` or `all`) require npm and
+curl and complete local `npm ci`, backend build, tests, and production dependency
+audit before any bootstrap, infrastructure apply, secret creation, or image build.
+A failed local preflight leaves cloud resources unchanged; core-only deployments
+skip this preflight and require neither Node nor an OpenAI key. Ownership/migration
+guards still run before any infrastructure apply.
+
+An OpenAI key is needed only when Secret Manager has no enabled version. Supply
+`OPENAI_API_KEY` privately in the deployment process environment for noninteractive
+deployment, or use the hidden interactive prompt when it is unset or empty. An
+existing enabled version is reused even when the environment contains a key.
+The key is sent directly to Secret Manager over stdin, never as a command argument,
+Terraform input, or Flutter define; do not place it in tfvars or shell command
+history. After infrastructure and secret setup, deployment builds through Cloud
 Build, resolves an immutable digest, deploys runtime, and smoke-tests endpoints.
+
+Cloud Build owns its default `${project_id}_cloudbuild` staging bucket. The feature
+stack owns a conditional, read-only grant for the dedicated builder restricted to
+that bucket's `source/` objects; it cannot read reader assets or unrelated storage.
+`backend/.gcloudignore` excludes installed dependencies and compiled output from
+source uploads. Cloud Build installs dependencies from the lockfile inside Docker.
 
 Every deployment generates `.dart-defines/dev.json` atomically with private file
 permissions. A fresh core-only installation omits the illustration API URL. Later
@@ -166,6 +186,12 @@ secret has no enabled version.
 Keep `illustrations_enabled = false` until an authenticated mobile request has
 completed successfully. Enabling it is an explicit tfvars change followed by a
 normal deployment.
+
+The checked-in `dev` configuration enables both generation flags under an explicit
+dev-only exception for authenticated backend smoke testing. This is not approval
+for production rollout: signed-device attestation, playback/media behavior and
+listening-quality checks remain required. Copying dev settings to another
+environment must reset `illustrations_enabled` and `narration_enabled` to false.
 
 ## Manual validation
 

@@ -52,6 +52,11 @@ run "runtime_keeps_worker_private_and_injects_only_secret_references" {
   }
 
   assert {
+    condition     = google_cloud_run_v2_service.api.template[0].containers[0].resources[0].cpu_idle && google_cloud_run_v2_service.worker.template[0].containers[0].resources[0].cpu_idle && google_cloud_run_v2_service.api.template[0].scaling[0].min_instance_count == 0 && google_cloud_run_v2_service.worker.template[0].scaling[0].min_instance_count == 0
+    error_message = "Both services must use request-based billing and allow scale to zero."
+  }
+
+  assert {
     condition = one([
       for env in google_cloud_run_v2_service.worker.template[0].containers[0].env : env.value_source[0].secret_key_ref[0].secret
       if env.name == "OPENAI_API_KEY"

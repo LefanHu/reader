@@ -32,6 +32,14 @@ elif [ "$SCOPE" = illustrations ]; then
   die "core is not initialized; run tool/deploy_backend $ENVIRONMENT --scope core"
 fi
 
+# Fail local feature prerequisites before any cloud resources or state mutate.
+if [ "$SCOPE" != core ]; then
+  npm --prefix "$READER_ROOT/backend" ci
+  npm --prefix "$READER_ROOT/backend" run build
+  npm --prefix "$READER_ROOT/backend" test
+  npm --prefix "$READER_ROOT/backend" audit --omit=dev
+fi
+
 plan_apply_bootstrap() {
   plan="$WORK_DIR/bootstrap.tfplan"
   terraform -chdir="$INFRA_DIR/bootstrap" plan -var-file="$STATE_VARS" -out="$plan"
@@ -97,11 +105,6 @@ terraform_init illustrations "reader/$ENVIRONMENT/illustrations"
 plan_apply_infrastructure illustrations
 ensure_openai_secret
 
-npm --prefix "$READER_ROOT/backend" ci
-npm --prefix "$READER_ROOT/backend" run build
-npm --prefix "$READER_ROOT/backend" test
-npm --prefix "$READER_ROOT/backend" audit --omit=dev
-
 commit=$(git -C "$READER_ROOT" rev-parse --short=12 HEAD)
 repository="$REGION-docker.pkg.dev/$PROJECT_ID/reader-backend/backend"
 tagged_image="$repository:$commit"
@@ -128,8 +131,8 @@ api_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw api_url)
 worker_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw worker_url)
 generate_dart_defines "$api_url"
 
-curl --fail --silent --show-error "$api_url/healthz" >/dev/null
-worker_status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$worker_url/healthz")
+curl --fail --silent --show-error "$api_url/health" >/dev/null
+worker_status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$worker_url/health")
 [ "$worker_status" = "403" ] || die "expected anonymous worker request to return 403, got $worker_status"
 
 printf '%s\n' \

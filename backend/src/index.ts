@@ -19,6 +19,8 @@ import { workerTaskRequest } from "./task-request.js";
 import { accountDeletionRouter, accountUsageRouter, authenticateAccount } from "./account.js";
 import { asyncRoute, HttpError, requireString, routeParam } from "./illustration-http.js";
 import { illustrationWorkerRouter } from "./illustration-worker.js";
+import { illustrationBookDeletion, illustrationBookRegistration } from "./illustration-books.js";
+import { illustrationSceneRouter } from "./illustration-scenes.js";
 import type { ChapterInput, Paragraph } from "./types.js";
 
 if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
@@ -51,19 +53,6 @@ function userBook(uid: string, bookId: string) {
 }
 
 
-function stylesFor(title: string): string[] {
-  const normalized = title.toLowerCase();
-  if (/cultivat|xianxia|wuxia|immortal|dao/.test(normalized)) {
-    return ["Cinematic mythic ink fantasy", "Luminous eastern epic", "Painterly martial fantasy"];
-  }
-  if (/diary|school|kid|comic/.test(normalized)) {
-    return ["Expressive monochrome diary sketch", "Loose graphic novel ink", "Playful editorial cartoon"];
-  }
-  if (/space|star|planet|sci-fi|science fiction/.test(normalized)) {
-    return ["Cinematic science-fiction concept art", "Retro-futurist painted illustration", "Graphic cosmic noir"];
-  }
-  return ["Cinematic painterly book illustration", "Atmospheric graphic novel", "Textured monochrome ink"];
-}
 
 
 async function enqueue(path: string, payload: Record<string, unknown>, taskId: string, queue = taskQueue) {
@@ -81,7 +70,8 @@ async function enqueue(path: string, payload: Record<string, unknown>, taskId: s
   }
 }
 
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+// Cloud Run reserves some paths ending in "z"; health must reach this container.
+app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use("/v1", authenticate);
 app.use("/v1/account", accountUsageRouter({
   db, narrationEnabled: process.env.NARRATION_ENABLED === "true", illustrationsEnabled,
@@ -108,49 +98,27 @@ app.get("/v1/fingerprint-key", asyncRoute(async (req, res) => {
   res.json({ key });
 }));
 
-app.post("/v1/books", requireFeature, asyncRoute(async (req, res) => {
-  const uid = req.uid!;
-  const fingerprint = requireString(req.body.fingerprint, "fingerprint", 128);
-  const title = requireString(req.body.title, "title", 500);
-  const chapterCount = Math.max(1, Math.min(10000, Number(req.body.chapterCount) || 1));
-  const bookId = createHash("sha256").update(`${uid}:${fingerprint}`).digest("hex").slice(0, 40);
-  const styles = stylesFor(title);
-  await userBook(uid, bookId).set({
-    uid,
-    fingerprint,
-    title,
-    authors: Array.isArray(req.body.authors) ? req.body.authors.slice(0, 20) : [],
-    language: typeof req.body.language === "string" ? req.body.language : null,
-    chapterCount,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  }, { merge: true });
-  await db.collection("users").doc(uid).set({
-    creditsRemaining: pilotCredits,
-    updatedAt: FieldValue.serverTimestamp(),
-  }, { merge: true });
-  res.json({
-    id: bookId,
-    suggestedStyle: styles[0],
-    alternativeStyles: styles.slice(1),
-    estimatedCredits: chapterCount * 3,
-  });
-}));
+app.post("/v1/books", requireFeature, illustrationBookRegistration({ db, pilotCredits }));
 
 app.put("/v1/books/:bookId/profile", requireFeature, asyncRoute(async (req, res) => {
   const reference = userBook(req.uid!, routeParam(req, "bookId"));
-  if (!(await reference.get()).exists) throw new HttpError(404, "Book not found.");
   const style = requireString(req.body.style, "style", 300);
   const density = Math.max(1, Math.min(3, Number(req.body.density) || 3));
-  await reference.set({
-    profile: {
-      style,
-      density,
-      styleVersion: Number(req.body.styleVersion) || 1,
-      analysisVersion: Math.max(1, Number(req.body.analysisVersion) || 2),
-    },
-    updatedAt: FieldValue.serverTimestamp(),
-  }, { merge: true });
+  await db.runTransaction(async (transaction) => {
+    const [book, account] = await Promise.all([
+      transaction.get(reference),
+      transaction.get(db.collection("narrationAccountTombstones").doc(req.uid!)),
+    ]);
+    if (!book.exists) throw new HttpError(404, "Book not found.");
+    if (book.data()?.deleted || account.exists) throw new HttpError(410, "Book was deleted.");
+    transaction.update(reference, {
+      profile: {
+        style, density, styleVersion: Number(req.body.styleVersion) || 1,
+        analysisVersion: Math.max(1, Number(req.body.analysisVersion) || 2),
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
   res.status(204).end();
 }));
 
@@ -159,6 +127,7 @@ app.post("/v1/books/:bookId/chapters/:ordinal/jobs", requireFeature, asyncRoute(
   const bookId = routeParam(req, "bookId");
   const book = await userBook(uid, bookId).get();
   if (!book.exists) throw new HttpError(404, "Book not found.");
+  if (book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
   const ordinal = Number.parseInt(routeParam(req, "ordinal"), 10);
   if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= 10000) {
     throw new HttpError(400, "Chapter ordinal is invalid.");
@@ -193,8 +162,8 @@ app.post("/v1/books/:bookId/chapters/:ordinal/jobs", requireFeature, asyncRoute(
   if (totalCharacters > 400000) throw new HttpError(413, "Chapter text is too large.");
   const input: ChapterInput = {
     href: requireString(req.body.href, "href", 2000),
-    title: typeof req.body.title === "string" ? req.body.title.slice(0, 500) : undefined,
-    language: typeof req.body.language === "string" ? req.body.language.slice(0, 100) : undefined,
+    ...(typeof req.body.title === "string" ? { title: req.body.title.slice(0, 500) } : {}),
+    ...(typeof req.body.language === "string" ? { language: req.body.language.slice(0, 100) } : {}),
     styleVersion: Number(req.body.styleVersion) || 1,
     analysisVersion: Math.max(1, Number(req.body.analysisVersion) || 2),
     density: Math.max(1, Math.min(3, Number(req.body.density) || 3)),
@@ -207,7 +176,13 @@ app.post("/v1/books/:bookId/chapters/:ordinal/jobs", requireFeature, asyncRoute(
   const jobRef = db.collection("illustrationJobs").doc(jobId);
   const inputRef = db.collection("illustrationJobInputs").doc(jobId);
   await db.runTransaction(async (transaction) => {
-    if ((await transaction.get(jobRef)).exists) return;
+    const [existing, currentBook, account] = await Promise.all([
+      transaction.get(jobRef), transaction.get(userBook(uid, bookId)),
+      transaction.get(db.collection("narrationAccountTombstones").doc(uid)),
+    ]);
+    if (!currentBook.exists) throw new HttpError(404, "Book not found.");
+    if (currentBook.data()?.deleted || account.exists) throw new HttpError(410, "Book was deleted.");
+    if (existing.exists) return;
     transaction.create(jobRef, {
       uid, bookId, chapterOrdinal: ordinal, status: "queued",
       createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
@@ -230,7 +205,7 @@ app.get("/v1/jobs/:jobId", asyncRoute(async (req, res) => {
     id: job.id,
     status: job.data()?.status,
     failureCategory: job.data()?.failureCategory,
-    scenes: scenes.docs.map((scene) => ({
+    scenes: scenes.docs.filter((scene) => !scene.data().deleted).map((scene) => ({
       id: scene.id,
       status: scene.data().status,
       anchor: scene.data().anchor,
@@ -239,116 +214,10 @@ app.get("/v1/jobs/:jobId", asyncRoute(async (req, res) => {
   });
 }));
 
-app.post("/v1/scenes/:sceneId/unlock", requireFeature, asyncRoute(async (req, res) => {
-  const reference = db.collection("illustrationScenes").doc(routeParam(req, "sceneId"));
-  const scene = await reference.get();
-  if (!scene.exists || scene.data()?.uid !== req.uid) throw new HttpError(404, "Scene not found.");
-  if (!["ready_locked", "unlocked"].includes(scene.data()?.status)) {
-    throw new HttpError(409, "Scene is not ready.");
-  }
-  const assetExpiresAt = scene.data()?.assetExpiresAt as Timestamp | undefined;
-  if (!assetExpiresAt || assetExpiresAt.toMillis() < Date.now() + 24 * 60 * 60 * 1000) {
-    const targetGeneration = Number(scene.data()?.generationVersion ?? 1) + 1;
-    await reference.set({
-      status: "regenerating",
-      regenerationTarget: targetGeneration,
-      updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    await enqueue(
-      `/internal/scenes/${scene.id}/regenerate`,
-      { sceneId: scene.id, targetGeneration, refresh: true },
-      `refresh-${scene.id}-${targetGeneration}`,
-    );
-    throw new HttpError(409, "Scene asset is being refreshed.");
-  }
-  const bucket = storage.bucket(bucketName);
-  const expires = Date.now() + 10 * 60 * 1000;
-  const [imageUrl] = await bucket.file(scene.data()?.imageObject).getSignedUrl({ action: "read", expires });
-  const [thumbnailUrl] = await bucket.file(scene.data()?.thumbnailObject).getSignedUrl({ action: "read", expires });
-  await reference.set({ status: "unlocked", unlockedAt: FieldValue.serverTimestamp() }, { merge: true });
-  res.json({
-    imageUrl, thumbnailUrl,
-    altText: scene.data()?.altText,
-    caption: scene.data()?.caption,
-    generationVersion: scene.data()?.generationVersion ?? 1,
-  });
+app.use("/v1", illustrationSceneRouter({
+  db, storage, bucket: bucketName, requireFeature, enqueue,
 }));
-
-app.post("/v1/scenes/:sceneId/regenerate", requireFeature, asyncRoute(async (req, res) => {
-  const reference = db.collection("illustrationScenes").doc(routeParam(req, "sceneId"));
-  const targetGeneration = await db.runTransaction(async (transaction) => {
-    const scene = await transaction.get(reference);
-    if (!scene.exists || scene.data()?.uid !== req.uid) {
-      throw new HttpError(404, "Scene not found.");
-    }
-    if (scene.data()?.status === "regenerating") return null;
-    const target = Number(scene.data()?.generationVersion ?? 1) + 1;
-    transaction.set(reference, {
-      status: "regenerating",
-      regenerationTarget: target,
-      updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    return target;
-  });
-  if (targetGeneration != null) {
-    await enqueue(
-      `/internal/scenes/${reference.id}/regenerate`,
-      { sceneId: reference.id, targetGeneration },
-      `regen-${reference.id}-${targetGeneration}`,
-    );
-  }
-  res.status(202).end();
-}));
-
-app.delete("/v1/scenes/:sceneId", asyncRoute(async (req, res) => {
-  const reference = db.collection("illustrationScenes").doc(routeParam(req, "sceneId"));
-  const scene = await reference.get();
-  if (!scene.exists || scene.data()?.uid !== req.uid) throw new HttpError(404, "Scene not found.");
-  const bucket = storage.bucket(bucketName);
-  await Promise.all([
-    bucket.file(scene.data()?.imageObject).delete({ ignoreNotFound: true }),
-    bucket.file(scene.data()?.thumbnailObject).delete({ ignoreNotFound: true }),
-  ]);
-  await Promise.all([
-    reference.delete(),
-    db.collection("worldReferences").doc(reference.id).delete(),
-  ]);
-  res.status(204).end();
-}));
-
-app.delete("/v1/books/:bookId", asyncRoute(async (req, res) => {
-  const bookId = routeParam(req, "bookId");
-  const reference = userBook(req.uid!, bookId);
-  if (!(await reference.get()).exists) throw new HttpError(404, "Book not found.");
-  const [scenes, jobs, reservations, revisions, references] = await Promise.all([
-    db.collection("illustrationScenes")
-      .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
-    db.collection("illustrationJobs")
-      .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
-    db.collection("creditReservations")
-      .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
-    db.collection("worldRevisions")
-      .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
-    db.collection("worldReferences")
-      .where("uid", "==", req.uid).where("bookId", "==", bookId).get(),
-  ]);
-  await storage.bucket(bucketName).deleteFiles({
-    prefix: `users/${req.uid}/books/${bookId}/`,
-    force: true,
-  });
-  const writer = db.bulkWriter();
-  for (const scene of scenes.docs) writer.delete(scene.ref);
-  for (const job of jobs.docs) {
-    writer.delete(job.ref);
-    writer.delete(db.collection("illustrationJobInputs").doc(job.id));
-  }
-  for (const reservation of reservations.docs) writer.delete(reservation.ref);
-  for (const revision of revisions.docs) writer.delete(revision.ref);
-  for (const worldReference of references.docs) writer.delete(worldReference.ref);
-  writer.delete(reference);
-  await writer.close();
-  res.status(204).end();
-}));
+app.delete("/v1/books/:bookId", illustrationBookDeletion({ db, storage, bucket: bucketName }));
 
 function requireTask(req: Request, res: Response, next: NextFunction) {
   if (serviceRole !== "worker") {
@@ -372,7 +241,7 @@ app.use("/internal", (_req, res, next) => {
 });
 
 app.use("/internal", illustrationWorkerRouter({
-  db, storage, bucket: bucketName, pilotCredits, assetRetentionMilliseconds,
+  db, storage, bucket: bucketName, assetRetentionMilliseconds,
   analyzeNarrative, composeImagePrompt, imageGenerationProvider, moderateImage, moderateText,
 }));
 

@@ -151,11 +151,15 @@ ensure_openai_secret() {
     --project="$PROJECT_ID" --filter='state=ENABLED' --limit=1 --format='value(name)')
   [ -z "$enabled_version" ] || return 0
 
-  printf 'OpenAI API key (stored directly in Secret Manager): ' >&2
-  stty -echo
-  IFS= read -r openai_key
-  stty echo
-  printf '\n' >&2
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    openai_key=$OPENAI_API_KEY
+  else
+    printf 'OpenAI API key (stored directly in Secret Manager): ' >&2
+    stty -echo
+    IFS= read -r openai_key
+    stty echo
+    printf '\n' >&2
+  fi
   [ -n "$openai_key" ] || die "OpenAI API key cannot be empty"
   printf '%s' "$openai_key" | gcloud secrets versions add "$secret_id" \
     --project="$PROJECT_ID" --data-file=- >/dev/null

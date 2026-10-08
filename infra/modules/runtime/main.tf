@@ -46,6 +46,8 @@ resource "google_cloud_run_v2_service" "worker" {
       image = var.image
 
       resources {
+        # Workers run within HTTP task requests; idle instances need no allocated CPU.
+        cpu_idle = true
         limits = {
           cpu    = "1"
           memory = "1Gi"
@@ -125,6 +127,8 @@ resource "google_cloud_run_v2_service" "api" {
       image = var.image
 
       resources {
+        # Keep this scale-to-zero API on request-based billing.
+        cpu_idle = true
         limits = {
           cpu    = "1"
           memory = "512Mi"
