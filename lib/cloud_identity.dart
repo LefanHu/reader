@@ -116,7 +116,8 @@ class NativeGoogleIdentityProvider implements GoogleIdentityProvider {
   }
 }
 
-/// Lazy Firebase identity shared by library, narration and iOS illustrations.
+/// Lazy Firebase identity shared by library, narration and illustrations on
+/// supported native Apple platforms.
 /// Firebase/Auth initialization is independent of App Check so core-only builds
 /// can authenticate without a feature endpoint or attestation network access.
 class FirebaseCloudIdentity implements CloudIdentity {

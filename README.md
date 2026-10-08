@@ -63,7 +63,9 @@ Compare matching phase/repetition names only when fixture/source hash, normaliza
 
 The earlier experimental lazy list was rolled back because narration-anchor verification failed despite faster scrolling. That optimization is not shipped, and its old `profile_baseline.json`/`profile_lazy.json` captures are not directly comparable with this runner's reset-to-start repetitions.
 
-AI illustrations are inert unless the build supplies Firebase and API values:
+AI illustrations are available on configured iOS and macOS builds. They remain
+inert unless the build supplies platform-specific Firebase/Google OAuth and API
+values:
 
 ```sh
 flutter run -d <ios-device-id> \
@@ -72,17 +74,26 @@ flutter run -d <ios-device-id> \
   --dart-define=FIREBASE_MESSAGING_SENDER_ID=... \
   --dart-define=FIREBASE_PROJECT_ID=... \
   --dart-define=FIREBASE_STORAGE_BUCKET=... \
+  --dart-define=FIREBASE_GOOGLE_CLIENT_ID=... \
+  --dart-define=FIREBASE_GOOGLE_SERVER_CLIENT_ID=... \
   --dart-define=ILLUSTRATION_API_BASE_URL=https://YOUR_API_HOST
 ```
 
-For a registered Firebase App Check debug token on an iOS simulator, add
-`--dart-define=FIREBASE_APP_CHECK_DEBUG=true`. Never set it in release builds.
+For a registered Firebase App Check debug token in development on an iOS
+simulator or macOS, add `--dart-define=FIREBASE_APP_CHECK_DEBUG=true`. Never set it
+in release builds. Production macOS protected generation requires macOS 14+ and
+a supported installation producing valid App Check tokens; OS version and
+signing alone do not establish App Attest support. Local reading remains
+available on older supported systems.
 
-The feature signs in with Apple only after the reader taps the illustration
-control. Importing and reading remain account-free and offline. Configure the
-Apple capability, Firebase Authentication provider, App Check/App Attest, and
-the services described in [`backend/README.md`](backend/README.md) before
-enabling the server-side rollout flag.
+The feature signs in with Google only after the reader taps the illustration
+control; per-book consent is required before chapter prose is uploaded.
+Importing and reading remain account-free and offline. Configure the selected
+platform's native Google OAuth client, Firebase Authentication, App Check/App
+Attest, and the services described in [`backend/README.md`](backend/README.md)
+before enabling the server-side rollout flag. macOS uses its separate Firebase
+registration and `FIREBASE_GOOGLE_MACOS_CLIENT_ID`; iOS still requires its own
+`FIREBASE_GOOGLE_CLIENT_ID`.
 
 Provision and deploy the complete Firebase/Google Cloud backend with
 `tool/deploy_backend dev`. Infrastructure is tracked in [`infra/`](infra/README.md);
@@ -91,6 +102,7 @@ generates the ignored `.dart-defines/dev.json` file used by:
 
 ```sh
 flutter run -d <ios-device-id> --dart-define-from-file=.dart-defines/dev.json
+flutter run -d macos --dart-define-from-file=.dart-defines/dev.json
 ```
 
 Check package updates with:
@@ -130,7 +142,7 @@ flutter test integration_test/reader_test.dart -d macos --plain-name 'Reader con
 flutter test integration_test/reader_test.dart -d <ios-simulator-id> --plain-name 'nested EPUB contents'
 ```
 
-Offline importing and reading work on iOS and macOS. Illustration authentication remains iOS-only. The iOS deployment target is 15.0 and macOS target is 12.0. No loopback web server or EPUB-specific App Transport Security exception is required.
+Offline importing and reading work on iOS and macOS. Illustration authentication uses the shared Google/Firebase identity on both platforms, while protected generation still requires valid App Check. The iOS deployment target is 15.0 and macOS target is 12.0. No loopback web server or EPUB-specific App Transport Security exception is required.
 
 Validate every EPUB fixture separately with the official EPUBCheck release:
 

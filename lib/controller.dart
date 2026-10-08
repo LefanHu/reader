@@ -58,7 +58,10 @@ class ReaderController extends ChangeNotifier {
        wordCounter = wordCounter ?? FileBookWordCounter(),
        illustrationApi =
            illustrationApi ??
-           HttpIllustrationApi(identity: FirebaseIllustrationIdentity()),
+           // Reuse the account/narration session on both native Apple platforms.
+           HttpIllustrationApi(
+             identity: cloudIdentity ?? FirebaseCloudIdentity(),
+           ),
        illustrationDeletionOutbox =
            illustrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox(),
        narrationDeletionOutbox =

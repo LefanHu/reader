@@ -1,13 +1,13 @@
-import '../cloud_identity.dart';
 // DTO fields mirror the documented REST contract in this file.
 // ignore_for_file: public_member_api_docs
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../cloud_identity.dart';
 import '../models.dart';
 import 'models.dart';
 
@@ -69,16 +69,6 @@ class UnlockedIllustration {
   final int generationVersion;
 }
 
-/// Compatibility name for the shared provider-neutral account boundary.
-typedef IllustrationIdentity = CloudIdentity;
-
-/// Illustration identity stays iOS-only while sharing lazy cloud initialization.
-class FirebaseIllustrationIdentity extends FirebaseCloudIdentity {
-  @override
-  bool get configured =>
-      defaultTargetPlatform == TargetPlatform.iOS && super.configured;
-}
-
 /// Authenticated API used by the reader; implementations never receive EPUBs.
 abstract interface class IllustrationApi {
   /// User-triggered identity preparation before retrying old privacy requests.
@@ -116,7 +106,8 @@ class HttpIllustrationApi implements IllustrationApi {
            baseUri ??
            Uri.parse(const String.fromEnvironment('ILLUSTRATION_API_BASE_URL'));
 
-  final IllustrationIdentity identity;
+  /// Shared native account session; protected calls still require attestation.
+  final CloudIdentity identity;
   final http.Client client;
   final Uri baseUri;
 

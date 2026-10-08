@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 
-import '../illustrations/api.dart';
+import '../cloud_identity.dart';
 import '../models.dart';
 import '../text/narration.dart';
 import 'models.dart';
@@ -56,7 +56,7 @@ class HttpNarrationApi implements NarrationApi {
           );
 
   /// Shared identity permits narration on both native Apple platforms.
-  final IllustrationIdentity identity;
+  final CloudIdentity identity;
 
   /// HTTP boundary, also used to download short-lived private asset URLs.
   final http.Client client;

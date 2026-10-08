@@ -1,9 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:reader/cloud_identity.dart';
 import 'package:reader/illustrations/api.dart';
 
-class _Identity implements IllustrationIdentity {
+class _Identity implements CloudIdentity {
   int signIns = 0;
   @override
   String? get email => null;
