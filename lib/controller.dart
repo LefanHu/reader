@@ -4,6 +4,8 @@
 
 import 'dart:async';
 
+import 'account/api.dart';
+
 import 'package:flutter/material.dart';
 
 import 'text/document.dart';
@@ -46,6 +48,7 @@ class ReaderController extends ChangeNotifier {
     TextDocumentStore? narrationDocuments,
     IllustrationDeletionOutbox? narrationDeletionOutbox,
     this.cloudIdentity,
+    this.accountApi,
     this.illustrationGate = const IllustrationGate(),
   }) : illustrationStore = illustrationStore ?? FileIllustrationStore(),
        textIndexer = textIndexer ?? DocumentTextIndexer(),
@@ -65,6 +68,13 @@ class ReaderController extends ChangeNotifier {
         player: narrationPlayer,
         store: narrationStore,
         documents: narrationDocuments,
+        preferences: () => settings,
+        isBookAvailable: (candidate) => books.any(
+          (book) =>
+              book.hash == candidate.hash &&
+              book.path == candidate.path &&
+              book.addedAt == candidate.addedAt,
+        ),
         abandonRegistration: (id) async {
           await this.narrationDeletionOutbox.enqueue(id);
           unawaited(drainNarrationDeletions());
@@ -87,6 +97,25 @@ class ReaderController extends ChangeNotifier {
 
   /// Shared account boundary works with core-only configuration and no API URL.
   final CloudIdentity? cloudIdentity;
+
+  /// Read-only usage service; absent in offline or core-only dependency graphs.
+  final AccountApi? accountApi;
+
+  /// Latest server snapshot belongs only to the currently displayed account.
+  AccountUsage? accountUsage;
+
+  /// Prevents duplicate refresh actions without blocking local preferences.
+  bool usageLoading = false;
+
+  /// Safe display message; failed refreshes never substitute invented balances.
+  String? usageError;
+
+  /// Distinguishes offline, attestation, and service failures in Settings.
+  AccountUsageFailureKind? usageFailure;
+
+  int _usageEpoch = 0;
+  Future<void> _preferenceTail = Future.value();
+  int _pendingPreferences = 0;
 
   /// Restored account label; it is not used to authorize requests or gate reading.
   String? cloudEmail;
@@ -130,6 +159,7 @@ class ReaderController extends ChangeNotifier {
     final identity = FirebaseCloudIdentity();
     final controller = ReaderController(
       cloudIdentity: identity,
+      accountApi: HttpAccountApi(identity: identity),
       narrationApi: HttpNarrationApi(identity: identity),
       narrationPlayer: await NativeNarrationPlayer.create(),
       narrationStore: FileNarrationStore(store.root),
@@ -421,6 +451,7 @@ class ReaderController extends ChangeNotifier {
 
   /// Forces reading and audio resume state to disk; awaits shutdown before cleanup.
   Future<void> flush() async {
+    if (_pendingPreferences > 0) await _preferenceTail;
     await _narrationShutdown;
     await narration?.flush();
     _positionSave?.cancel();
@@ -526,7 +557,10 @@ class ReaderController extends ChangeNotifier {
     final identity = cloudIdentity;
     if (identity == null || !identity.configured) return;
     try {
-      cloudEmail = await identity.hasSession() ? identity.email : null;
+      final email = await identity.hasSession() ? identity.email : null;
+      if (_disposed) return;
+      if (email != cloudEmail) _invalidateUsage();
+      cloudEmail = email;
       if (!_disposed) notifyListeners();
     } on Object {
       // Offline startup never blocks local reading or forces authentication.
@@ -543,6 +577,7 @@ class ReaderController extends ChangeNotifier {
       );
     }
     cloudAccountBusy = true;
+    _invalidateUsage();
     notifyListeners();
     try {
       await identity.signIn();
@@ -557,8 +592,12 @@ class ReaderController extends ChangeNotifier {
 
   /// Ends the shared cloud identity session; offline reading is unchanged.
   Future<void> signOutOfCloud() async {
-    await narration?.stop();
+    if (cloudAccountBusy) return;
+    cloudAccountBusy = true;
+    _invalidateUsage();
+    notifyListeners();
     try {
+      await narration?.stop();
       if (cloudIdentity != null) {
         await cloudIdentity!.signOut();
       } else if (narration?.api.configured == true) {
@@ -570,6 +609,7 @@ class ReaderController extends ChangeNotifier {
       // Native selector cleanup can fail after Firebase successfully signs out.
       // Reflect the actual Firebase account rather than a stale UI label.
       cloudEmail = cloudIdentity?.email;
+      cloudAccountBusy = false;
       if (!_disposed) notifyListeners();
     }
   }
@@ -577,30 +617,96 @@ class ReaderController extends ChangeNotifier {
   /// Purges both cloud features before removing the Firebase user. Narration's
   /// shared identity boundary supports macOS without enabling illustrations.
   Future<void> deleteCloudAccount() async {
-    final active = narration?.book;
-    if (active != null) await narration!.detach(active);
-    if (narration?.api.configured == true) {
-      await narration!.api.deleteAccount();
-    } else {
-      await illustrationApi.deleteAccount();
+    if (cloudAccountBusy) return;
+    if (narration?.api.configured != true && !illustrationApi.configured) {
+      throw const CloudIdentityException(
+        'Connect to the cloud service before deleting your account.',
+      );
     }
-    if (narration != null) {
-      for (final book in books) {
-        await narration!.store.clear(book);
-        await narration!.store.save(book, const NarrationManifest());
-      }
-      if (active != null) await narration!.attach(active);
-    }
-    for (final book in books) {
-      for (final scene in manifestFor(book).scenes) {
-        await illustrationStore.deleteSceneFiles(book, scene.id);
-      }
-      final manifest = IllustrationManifest(bookHash: book.hash);
-      illustrationManifests[book.hash] = manifest;
-      await illustrationStore.saveManifest(book, manifest);
-    }
-    cloudEmail = null;
+    cloudAccountBusy = true;
+    _invalidateUsage();
     notifyListeners();
+    try {
+      final active = narration?.book;
+      if (active != null) await narration!.detach(active);
+      if (narration?.api.configured == true) {
+        await narration!.api.deleteAccount();
+      } else {
+        await illustrationApi.deleteAccount();
+      }
+      if (narration != null) {
+        for (final book in books) {
+          await narration!.store.clear(book);
+          await narration!.store.save(book, const NarrationManifest());
+        }
+        if (active != null) await narration!.attach(active);
+      }
+      for (final book in books) {
+        for (final scene in manifestFor(book).scenes) {
+          await illustrationStore.deleteSceneFiles(book, scene.id);
+        }
+        final manifest = IllustrationManifest(bookHash: book.hash);
+        illustrationManifests[book.hash] = manifest;
+        await illustrationStore.saveManifest(book, manifest);
+      }
+      cloudEmail = null;
+    } finally {
+      // Local cleanup can fail after Firebase deletion; show the actual identity.
+      if (cloudIdentity != null) cloudEmail = cloudIdentity!.email;
+      cloudAccountBusy = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  void _invalidateUsage() {
+    _usageEpoch++;
+    accountUsage = null;
+    usageLoading = false;
+    usageError = null;
+    usageFailure = null;
+  }
+
+  /// Refreshes owned usage without prompting for sign-in or granting consent.
+  Future<void> refreshAccountUsage() async {
+    if (_disposed || usageLoading || cloudAccountBusy) return;
+    _invalidateUsage();
+    final api = accountApi;
+    if (cloudEmail == null || api?.configured != true) {
+      notifyListeners();
+      return;
+    }
+    final epoch = _usageEpoch;
+    final email = cloudEmail;
+    usageLoading = true;
+    notifyListeners();
+    try {
+      final result = await api!.usage();
+      if (_disposed || epoch != _usageEpoch || email != cloudEmail) return;
+      accountUsage = result;
+    } on AccountUsageException catch (error) {
+      if (_disposed || epoch != _usageEpoch || email != cloudEmail) return;
+      usageError = error.message;
+      usageFailure = error.kind;
+    } on Object {
+      if (_disposed || epoch != _usageEpoch || email != cloudEmail) return;
+      usageError = 'Usage information could not be refreshed. Try again.';
+      usageFailure = AccountUsageFailureKind.service;
+    } finally {
+      if (!_disposed && epoch == _usageEpoch && email == cloudEmail) {
+        usageLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Counts validated downloaded audio; source books and manifests are excluded.
+  Future<int> narrationCacheBytes() async =>
+      await narration?.cachedBytes(List.of(books)) ?? 0;
+
+  /// Fences playback/downloads before deleting audio and obsolete resume offsets.
+  Future<void> clearNarrationCache() async {
+    await narration?.clearAllCache(List.of(books));
+    if (!_disposed) notifyListeners();
   }
 
   /// Applies and persists any supplied reader-wide preference values.
@@ -609,15 +715,69 @@ class ReaderController extends ChangeNotifier {
     ReadingTheme? theme,
     int? fontSize,
     bool? serif,
-  }) async {
-    settings = settings.copyWith(
-      mode: mode,
-      theme: theme,
-      fontSize: fontSize,
-      serif: serif,
+    String? narrationVoice,
+    double? narrationSpeed,
+    LibraryFilter? libraryFilter,
+    LibrarySort? librarySort,
+  }) {
+    if (narrationVoice != null &&
+        !['marin', 'cedar'].contains(narrationVoice)) {
+      return Future.error(
+        ArgumentError.value(narrationVoice, 'narrationVoice'),
+      );
+    }
+    if (narrationSpeed != null &&
+        (!narrationSpeed.isFinite ||
+            narrationSpeed < .75 ||
+            narrationSpeed > 2)) {
+      return Future.error(
+        ArgumentError.value(narrationSpeed, 'narrationSpeed'),
+      );
+    }
+    return _updatePreferences(
+      (current) => current.copyWith(
+        mode: mode,
+        theme: theme,
+        fontSize: fontSize,
+        serif: serif,
+        narrationVoice: narrationVoice,
+        narrationSpeed: narrationSpeed,
+        libraryFilter: libraryFilter,
+        librarySort: librarySort,
+      ),
     );
-    notifyListeners();
-    await settingsStore.save(settings);
+  }
+
+  /// Resets global preferences without removing books, consent, or cached audio.
+  Future<void> resetPreferences() =>
+      _updatePreferences((_) => const ReaderSettings());
+
+  Future<void> _updatePreferences(
+    ReaderSettings Function(ReaderSettings) update,
+  ) {
+    if (_disposed) return Future.value();
+    _pendingPreferences++;
+    // Serialize complete preference snapshots and native playback updates so
+    // rapid controls cannot persist older values after a later selection.
+    final operation = _preferenceTail.then((_) async {
+      try {
+        final next = update(settings);
+        settings = next;
+        if (!_disposed) notifyListeners();
+        try {
+          await narration?.applyPreferences(next);
+        } finally {
+          await settingsStore.save(next);
+        }
+      } finally {
+        _pendingPreferences--;
+      }
+    });
+    _preferenceTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
   }
 
   void _replace(CatalogBook updated) {
@@ -770,9 +930,19 @@ class ReaderController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _narrationShutdown ??= narration?.dispose();
+    // Start idle shutdown immediately; only unfinished preference work needs a
+    // barrier before native disposal. Offline graphs need no shutdown future.
+    if (narration != null) {
+      _narrationShutdown ??= _pendingPreferences == 0
+          ? narration!.dispose()
+          : () async {
+              await _preferenceTail;
+              await narration!.dispose();
+            }();
+    }
     unawaited(_narrationShutdown);
     _disposed = true;
+    _usageEpoch++;
     _positionSave?.cancel();
     super.dispose();
   }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -131,12 +132,41 @@ class NativeTestApp {
     await tester.pumpAndSettle();
   }
 
-  Future<void> _waitFor(Finder target, String description) async {
+  Future<void> _waitFor(
+    Finder target,
+    String description, {
+    bool absent = false,
+  }) async {
     for (var frame = 0; frame < 200; frame++) {
       await tester.pump(const Duration(milliseconds: 50));
-      if (target.evaluate().isNotEmpty) return;
+      if (target.evaluate().isNotEmpty != absent) return;
     }
     fail('Timed out waiting for $description.');
+  }
+
+  /// Waits for I/O and native actions while allowing logical restoration to paint.
+  /// Awaiting a frame-dependent action inside runAsync alone can deadlock it.
+  Future<void> runWithFrames(Future<void> Function() action) async {
+    final operation = action();
+    var completed = false;
+    unawaited(
+      operation.then<void>(
+        (_) => completed = true,
+        onError: (Object _, StackTrace _) {
+          completed = true;
+        },
+      ),
+    );
+    for (var frame = 0; !completed && frame < 200; frame++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 25)),
+      );
+      await tester.pump(const Duration(milliseconds: 25));
+    }
+    if (!completed) {
+      fail('Timed out waiting for a frame-dependent native action.');
+    }
+    await operation;
   }
 
   /// Waits through off-isolate parsing and atomic disk commits before returning.
@@ -153,29 +183,38 @@ class NativeTestApp {
   }
 
   /// Exercises reader exit, including its position flush, without replacing routes.
+  /// Waits for viewport disposal so the next toolbar is not behind a transition.
   Future<void> closeReader() async {
     await tester.tap(find.byTooltip('Back to library'));
     await _waitFor(find.byType(LibraryScreen), 'the flushed reader to close');
     await tester.pumpAndSettle();
+    await _waitFor(
+      find.byType(TextViewport, skipOffstage: false),
+      'the outgoing reader route to dispose',
+      absent: true,
+    );
   }
 
   /// Captures platform rendering outside catalog storage, with a stable artifact
   /// name per scenario and platform. Image resources are always disposed.
+  /// PNG readback and disk I/O run outside the test's frame scheduler.
   Future<void> capture(String name) async {
-    final image =
-        await (_screenshotKey.currentContext!.findRenderObject()
-                as RenderRepaintBoundary)
-            .toImage(pixelRatio: 1);
-    try {
-      final pixels = await image.toByteData(format: ui.ImageByteFormat.png);
-      final screenshot = File(
-        '${Directory.systemTemp.path}/reader-$name-${Platform.operatingSystem}.png',
-      );
-      await screenshot.writeAsBytes(pixels!.buffer.asUint8List());
-      debugPrint('Reader native screenshot: ${screenshot.path}');
-    } finally {
-      image.dispose();
-    }
+    await tester.runAsync(() async {
+      final image =
+          await (_screenshotKey.currentContext!.findRenderObject()
+                  as RenderRepaintBoundary)
+              .toImage(pixelRatio: 1);
+      try {
+        final pixels = await image.toByteData(format: ui.ImageByteFormat.png);
+        final screenshot = File(
+          '${Directory.systemTemp.path}/reader-$name-${Platform.operatingSystem}.png',
+        );
+        await screenshot.writeAsBytes(pixels!.buffer.asUint8List());
+        debugPrint('Reader native screenshot: ${screenshot.path}');
+      } finally {
+        image.dispose();
+      }
+    });
   }
 
   Future<void> _dispose() async {
@@ -189,7 +228,7 @@ class NativeTestApp {
       } finally {
         // ReaderScreen.dispose queues its own flush. Unmount first, then await
         // a final serialized write so deleting files cannot race that flush.
-        await controller.flush();
+        await runWithFrames(controller.flush);
       }
     } finally {
       // Delete only the directory this fixture created, after readers detach.

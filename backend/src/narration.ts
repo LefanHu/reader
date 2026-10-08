@@ -86,6 +86,11 @@ export function narrationLimits(env: NodeJS.ProcessEnv = process.env) {
   return { monthly, daily };
 }
 
+/** Stable UTC-month identity shared by generation reservations and account reads. */
+export function narrationMonthCounterId(uid: string, now: Date): string {
+  return hash(`${uid}:${now.toISOString().slice(0, 7)}`);
+}
+
 /** Independent rollout; privacy deletes remain usable while generation is gated. */
 export interface NarrationDependencies {
   db: Firestore;
@@ -137,7 +142,7 @@ export class NarrationBackend {
     return {
       month: db
         .collection("narrationUsage")
-        .doc(hash(`${uid}:${day.slice(0, 7)}`)),
+        .doc(narrationMonthCounterId(uid, now)),
       day: db.collection("narrationDailyUsage").doc(day),
     };
   }
@@ -175,12 +180,27 @@ export class NarrationBackend {
   /** Account tombstones precede purging so delayed workers cannot recreate data. */
   async deleteAccount(uid: string): Promise<void> {
     await this.account(uid).set({ deletedAt: FieldValue.serverTimestamp() });
-    const books = await this.dependencies.db
+    const { db } = this.dependencies;
+    const books = await db
       .collection("users")
       .doc(uid)
       .collection("narrationBooks")
       .get();
     for (const book of books.docs) await this.deleteBook(uid, book.id);
+    const owned = await Promise.all([
+      db.collection("narrationJobs").where("uid", "==", uid).get(),
+      db.collection("narrationInputs").where("uid", "==", uid).get(),
+      db.collection("narrationUsage").where("uid", "==", uid).get(),
+    ]);
+    // Orphan jobs still own reservations. Release them before removing monthly
+    // counters so a failed release leaves accounting available for a safe retry.
+    for (const job of owned[0].docs) await this.release(job.id);
+    const writer = db.bulkWriter();
+    for (const records of owned)
+      for (const record of records.docs) writer.delete(record.ref);
+    await writer.close();
+    // Keep the account tombstone as a delayed-worker fence. Daily usage is shared:
+    // only unsubmitted reservations are refunded; submitted attempts stay charged.
   }
 
   /** Releases only reservations that never reached provider submission. */

@@ -215,18 +215,25 @@ class _NarrationSheet extends StatelessWidget {
                     ],
                   ),
                   DropdownButtonFormField<String>(
-                    initialValue: session.manifest.voice,
-                    decoration: const InputDecoration(labelText: 'Voice'),
+                    key: ValueKey(controller.settings.narrationVoice),
+                    initialValue: controller.settings.narrationVoice,
+                    decoration: const InputDecoration(
+                      labelText: 'Voice · all books',
+                    ),
                     items: const [
                       DropdownMenuItem(value: 'marin', child: Text('Marin')),
                       DropdownMenuItem(value: 'cedar', child: Text('Cedar')),
                     ],
-                    onChanged: (voice) => session.configure(voice: voice),
+                    onChanged: (voice) =>
+                        controller.configure(narrationVoice: voice),
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<double>(
-                    initialValue: session.manifest.speed,
-                    decoration: const InputDecoration(labelText: 'Speed'),
+                    key: ValueKey(controller.settings.narrationSpeed),
+                    initialValue: controller.settings.narrationSpeed,
+                    decoration: const InputDecoration(
+                      labelText: 'Speed · all books',
+                    ),
                     items: [.75, 1.0, 1.25, 1.5, 1.75, 2.0]
                         .map(
                           (speed) => DropdownMenuItem(
@@ -235,7 +242,8 @@ class _NarrationSheet extends StatelessWidget {
                           ),
                         )
                         .toList(),
-                    onChanged: (speed) => session.configure(speed: speed),
+                    onChanged: (speed) =>
+                        controller.configure(narrationSpeed: speed),
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String>(

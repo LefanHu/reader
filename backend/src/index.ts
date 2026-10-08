@@ -18,6 +18,7 @@ import {
 import { NarrationBackend, NarrationError } from "./narration.js";
 import { RealtimeNarrationProvider } from "./narration-provider.js";
 import { workerTaskRequest } from "./task-request.js";
+import { accountDeletionRouter, accountUsageRouter, authenticateAccount } from "./account.js";
 import type {
   ChapterInput,
   Paragraph,
@@ -55,21 +56,10 @@ function asyncRoute(
   };
 }
 
-async function authenticate(req: AuthedRequest, res: Response, next: NextFunction) {
-  try {
-    const bearer = req.header("authorization")?.replace(/^Bearer\s+/i, "");
-    const appCheck = req.header("x-firebase-appcheck");
-    if (!bearer || !appCheck) throw new Error("missing credentials");
-    const [decoded] = await Promise.all([
-      getAuth().verifyIdToken(bearer),
-      getAppCheck().verifyToken(appCheck),
-    ]);
-    req.uid = decoded.uid;
-    next();
-  } catch {
-    res.status(401).json({ error: "Authentication and App Check are required." });
-  }
-}
+const authenticate = authenticateAccount(
+  (token) => getAuth().verifyIdToken(token),
+  (token) => getAppCheck().verifyToken(token),
+);
 
 function userBook(uid: string, bookId: string) {
   return db.collection("users").doc(uid).collection("books").doc(bookId);
@@ -170,10 +160,14 @@ async function enqueue(path: string, payload: Record<string, unknown>, taskId: s
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 app.use("/v1", authenticate);
+app.use("/v1/account", accountUsageRouter({
+  db, narrationEnabled: process.env.NARRATION_ENABLED === "true", illustrationsEnabled,
+}));
 const narration = new NarrationBackend({ db, storage, bucket: bucketName,
   provider: new RealtimeNarrationProvider(), enabled: process.env.NARRATION_ENABLED === "true",
   enqueue: (path, payload, id) => enqueue(path, payload, id, process.env.NARRATION_TASK_QUEUE ?? "reader-narration"),
 });
+app.use("/v1/account", accountDeletionRouter({ db, storage, bucket: bucketName, narration }));
 app.use("/v1/narration", narration.api());
 function requireFeature(_req: Request, res: Response, next: NextFunction) {
   if (!illustrationsEnabled) {
@@ -430,30 +424,6 @@ app.delete("/v1/books/:bookId", asyncRoute(async (req, res) => {
   for (const worldReference of references.docs) writer.delete(worldReference.ref);
   writer.delete(reference);
   await writer.close();
-  res.status(204).end();
-}));
-
-app.delete("/v1/account", asyncRoute(async (req, res) => {
-  const uid = req.uid!;
-  await narration.deleteAccount(uid);
-  const [scenes, jobs, inputs, reservations, revisions, references] = await Promise.all([
-    db.collection("illustrationScenes").where("uid", "==", uid).get(),
-    db.collection("illustrationJobs").where("uid", "==", uid).get(),
-    db.collection("illustrationJobInputs").where("uid", "==", uid).get(),
-    db.collection("creditReservations").where("uid", "==", uid).get(),
-    db.collection("worldRevisions").where("uid", "==", uid).get(),
-    db.collection("worldReferences").where("uid", "==", uid).get(),
-  ]);
-  await storage.bucket(bucketName).deleteFiles({
-    prefix: `users/${uid}/`,
-    force: true,
-  });
-  const writer = db.bulkWriter();
-  for (const snapshot of [scenes, jobs, inputs, reservations, revisions, references]) {
-    for (const document of snapshot.docs) writer.delete(document.ref);
-  }
-  await writer.close();
-  await db.recursiveDelete(db.collection("users").doc(uid));
   res.status(204).end();
 }));
 

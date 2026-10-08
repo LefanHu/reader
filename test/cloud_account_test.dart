@@ -13,7 +13,7 @@ import 'support/cloud_identity_fake.dart';
 
 void main() {
   testWidgets(
-    'core-only library account menu restores, cancels, signs in and signs out without changing books',
+    'core-only Settings account page restores, cancels, signs in and signs out without changing books',
     (tester) async {
       final identity = FakeCloudIdentity()..email = 'restored@example.test';
       final book = testBook();
@@ -42,7 +42,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.cloudEmail, 'restored@example.test');
       expect(identity.signIns, 0);
-      await tester.tap(find.byTooltip('Account'));
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Account'));
       await tester.pumpAndSettle();
       expect(find.text('restored@example.test'), findsOneWidget);
       await tester.tap(find.text('Sign out'));
@@ -50,16 +52,12 @@ void main() {
       expect(identity.signOuts, 1);
       expect(controller.cloudEmail, isNull);
       identity.cancel = true;
-      await tester.tap(find.byTooltip('Account'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('Sign in with Google'));
       await tester.pumpAndSettle();
       expect(controller.cloudEmail, isNull);
       expect(find.byType(SnackBar), findsNothing);
       expect(controller.cloudAccountBusy, false);
       identity.cancel = false;
-      await tester.tap(find.byTooltip('Account'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('Sign in with Google'));
       await tester.pumpAndSettle();
       expect(controller.cloudEmail, 'reader@example.test');

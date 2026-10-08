@@ -3,36 +3,54 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reader/controller.dart';
 import 'package:reader/library.dart';
 import 'package:reader/models.dart';
 import 'package:reader/theme.dart';
 
 import 'fakes.dart';
 
-CatalogBook _book({bool long = false}) => CatalogBook(
-  hash: 'a' * 64,
+CatalogBook _book({
+  bool long = false,
+  String? hash,
+  String? title,
+  double progress = .3,
+  DateTime? addedAt,
+}) => CatalogBook(
+  hash: hash ?? 'a' * 64,
   fileName: 'book.txt',
   path: '/memory/book.txt',
-  title: long
-      ? '中文 العربية हिन्दी A very long multilingual title'
-      : 'A Quiet Book',
+  title:
+      title ??
+      (long
+          ? '中文 العربية हिन्दी A very long multilingual title'
+          : 'A Quiet Book'),
   authors: [long ? 'Long author 中文 العربية हिन्दी' : 'A Writer'],
   wordCount: 52430,
-  addedAt: DateTime.utc(2026),
-  progress: .3,
+  addedAt: addedAt ?? DateTime.utc(2026),
+  progress: progress,
 );
 
-Future<void> _mount(
+Future<ReaderController> _mount(
   WidgetTester tester,
   TargetPlatform platform, {
   double width = 1100,
   bool large = false,
   bool reduced = false,
+  List<CatalogBook>? books,
+  MemorySettingsStore? settingsStore,
 }) async {
   await tester.binding.setSurfaceSize(Size(width, 900));
   addTearDown(() => tester.binding.setSurfaceSize(null));
-  final controller = await testController(books: [_book(long: large)]);
-  addTearDown(controller.dispose);
+  final controller = await testController(
+    books: books ?? [_book(long: large)],
+    settingsStore: settingsStore,
+  );
+  addTearDown(() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await controller.flush();
+  });
   await tester.pumpWidget(
     MaterialApp(
       theme: buildReaderTheme(ReadingTheme.paper).copyWith(platform: platform),
@@ -47,9 +65,126 @@ Future<void> _mount(
     ),
   );
   await tester.pumpAndSettle();
+  return controller;
 }
 
 void main() {
+  testWidgets(
+    'saved library defaults replace temporary choices without clearing search',
+    (tester) async {
+      final settingsStore = MemorySettingsStore();
+      final controller = await _mount(
+        tester,
+        TargetPlatform.iOS,
+        width: 699,
+        settingsStore: settingsStore,
+        books: [
+          _book(
+            hash: 'a' * 64,
+            title: 'A Quiet Book',
+            progress: .3,
+            addedAt: DateTime.utc(2026, 10, 1),
+          ),
+          _book(
+            hash: 'b' * 64,
+            title: 'B Quiet Book',
+            progress: 1,
+            addedAt: DateTime.utc(2026, 10, 2),
+          ),
+          _book(
+            hash: 'c' * 64,
+            title: 'C Quiet Book',
+            progress: 0,
+            addedAt: DateTime.utc(2026, 10, 3),
+          ),
+        ],
+      );
+
+      void expectShelf(List<String> titles) {
+        expect(find.byType(SliverList), findsOneWidget);
+        expect(find.byType(SliverGrid), findsNothing);
+        for (final title in ['A Quiet Book', 'B Quiet Book', 'C Quiet Book']) {
+          expect(
+            find.text(title),
+            titles.contains(title) ? findsOneWidget : findsNothing,
+          );
+        }
+        for (var i = 1; i < titles.length; i++) {
+          expect(
+            tester.getTopLeft(find.text(titles[i - 1])).dy,
+            lessThan(tester.getTopLeft(find.text(titles[i])).dy),
+          );
+        }
+        expect(
+          tester
+              .widget<EditableText>(find.byType(EditableText))
+              .controller
+              .text,
+          'Quiet',
+        );
+      }
+
+      Future<void> openLibrarySettings() async {
+        await tester.tap(find.byTooltip('Settings'));
+        await tester.pumpAndSettle();
+        final library = find.widgetWithText(ListTile, 'Library');
+        await tester.ensureVisible(library);
+        await tester.tap(library);
+        await tester.pumpAndSettle();
+      }
+
+      Future<void> closeSettings() async {
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
+      }
+
+      await tester.enterText(find.byType(TextField), 'Quiet');
+      await tester.pumpAndSettle();
+      expectShelf(['C Quiet Book', 'B Quiet Book', 'A Quiet Book']);
+      await tester.tap(find.byType(DropdownButtonFormField<LibraryFilter>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Reading').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Sort books'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Title A–Z').last);
+      await tester.pumpAndSettle();
+      expectShelf(['A Quiet Book']);
+      expect(find.text('Title A–Z'), findsOneWidget);
+      expect(controller.settings.libraryFilter, LibraryFilter.all);
+      expect(controller.settings.librarySort, LibrarySort.recent);
+      expect(settingsStore.settings.libraryFilter, LibraryFilter.all);
+      expect(settingsStore.settings.librarySort, LibrarySort.recent);
+
+      await openLibrarySettings();
+      await tester.tap(find.text('Finished'));
+      await tester.pumpAndSettle();
+      await closeSettings();
+      expectShelf(['B Quiet Book']);
+      expect(find.text('Title A–Z'), findsOneWidget);
+      await controller.flush();
+      expect(controller.settings.libraryFilter, LibraryFilter.finished);
+      expect(settingsStore.settings.libraryFilter, LibraryFilter.finished);
+      expect(settingsStore.settings.librarySort, LibrarySort.recent);
+
+      await openLibrarySettings();
+      await tester.tap(find.text('All'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Title'));
+      await tester.pumpAndSettle();
+      await closeSettings();
+      expectShelf(['A Quiet Book', 'B Quiet Book', 'C Quiet Book']);
+      expect(find.text('Title A–Z'), findsOneWidget);
+      await controller.flush();
+      expect(settingsStore.settings.libraryFilter, LibraryFilter.all);
+      expect(settingsStore.settings.librarySort, LibrarySort.title);
+      expect(controller.settings.libraryFilter, LibraryFilter.all);
+      expect(controller.settings.librarySort, LibrarySort.title);
+    },
+  );
+
   testWidgets(
     'macOS reveal fades without moving covers and stays while a menu is open',
     (tester) async {

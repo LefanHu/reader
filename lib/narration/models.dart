@@ -19,10 +19,11 @@ class NarrationManifest {
   /// Registration receipt also records explicit per-book consent.
   final String? cloudBookId;
 
-  /// Provider voice; changing it invalidates audio offsets and cache identity.
+  /// Voice identifying cached audio and resume offsets, not a book preference.
   final String voice;
 
-  /// Local playback multiplier, independent of provider generation settings.
+  /// Legacy resume multiplier retained for sidecar compatibility; global
+  /// preferences are authoritative when attaching this book.
   final double speed;
 
   /// Complete committed logical position at the beginning of the resume chunk.

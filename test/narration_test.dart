@@ -86,6 +86,7 @@ void main() {
     late TextPosition anchor;
     late List<TextPosition> commits;
     late CatalogBook book;
+    late ReaderSettings preferences;
     double progress = 0;
     final sections = [
       const TextSection(
@@ -107,8 +108,10 @@ void main() {
       book = testBook();
       anchor = sections.first.start;
       commits = [];
+      preferences = const ReaderSettings();
       session = NarrationSession(
         api: api,
+        preferences: () => preferences,
         player: player,
         store: cache,
         documents: MemoryDocumentStore(sections: sections),
@@ -123,6 +126,247 @@ void main() {
       await session.consent(book);
     });
     tearDown(() => session.dispose());
+
+    test('global preferences override legacy book values and mismatched voice offsets', () async {
+      await session.detach(book);
+      cache.manifests[book.hash] = NarrationManifest(
+        account: 'account',
+        cloudBookId: 'cloud-book',
+        voice: 'cedar',
+        speed: 2,
+        anchor: anchor,
+        chunkId: narrationChunks(sections.first).first.id,
+        offsetMs: 7000,
+      );
+      preferences = const ReaderSettings(narrationSpeed: 1.5);
+      await session.attach(book);
+      await session.play();
+      expect(session.manifest.voice, 'marin');
+      expect(player.loadedOffset, Duration.zero);
+      expect(player.multiplier, 1.5);
+      expect(api.voices.first, 'marin');
+    });
+
+    test(
+      'matching global voice retains legacy offset while global speed wins',
+      () async {
+        await session.detach(book);
+        cache.manifests[book.hash] = NarrationManifest(
+          account: 'account',
+          cloudBookId: 'cloud-book',
+          voice: 'cedar',
+          speed: 2,
+          anchor: anchor,
+          chunkId: narrationChunks(sections.first).first.id,
+          offsetMs: 7000,
+        );
+        preferences = const ReaderSettings(
+          narrationVoice: 'cedar',
+          narrationSpeed: .75,
+        );
+        await session.attach(book);
+        await session.play();
+        expect(player.loadedOffset, const Duration(seconds: 7));
+        expect(player.multiplier, .75);
+      },
+    );
+
+    test('global speed changes preserve playback offset and never generate new audio', () async {
+      await session.play();
+      await settle();
+      player.position = const Duration(seconds: 8);
+      final requests = api.requests.length;
+      preferences = preferences.copyWith(narrationSpeed: 1.75);
+      await session.applyPreferences(preferences);
+      expect(player.playing, isTrue);
+      expect(player.position, const Duration(seconds: 8));
+      expect(player.multiplier, 1.75);
+      expect(api.requests.length, requests);
+      expect(commits, isEmpty);
+    });
+
+    test('voice switches while playing or paused discard old offsets and callbacks without generation', () async {
+      await session.play();
+      await settle();
+      final token = player.token;
+      final requests = api.requests.length;
+      player.position = const Duration(seconds: 8);
+      preferences = preferences.copyWith(narrationVoice: 'cedar');
+      await session.applyPreferences(preferences);
+      expect(player.playing, isFalse);
+      expect(session.manifest.anchor, anchor);
+      expect(session.manifest.chunkId, isNull);
+      expect(session.manifest.offsetMs, 0);
+      player.finish(token);
+      await settle();
+      expect(commits, isEmpty);
+      expect(api.requests.length, requests);
+      preferences = preferences.copyWith(narrationVoice: 'marin');
+      await session.applyPreferences(preferences);
+      expect(api.requests.length, requests);
+      await session.play();
+      expect(player.loadedOffset, Duration.zero);
+      expect(api.requests.length, requests);
+    });
+
+    test('global voice changes fence buffering callbacks without requesting more audio', () async {
+      api.gate = Completer<Uint8List>();
+      final playing = session.play();
+      await settle();
+      preferences = preferences.copyWith(narrationVoice: 'cedar');
+      await session.applyPreferences(preferences);
+      expect(api.requests.length, 1);
+      expect(session.status, NarrationStatus.paused);
+      expect(session.manifest.offsetMs, 0);
+      api.gate!.complete(testWav());
+      await playing;
+      expect(cache.files, isEmpty);
+      expect(player.playing, isFalse);
+      expect(commits, isEmpty);
+      api.gate = null;
+      await session.play();
+      expect(api.voices.last, 'cedar');
+    });
+
+    test(
+      'global voice defaults apply across books and reuse earlier voice cache',
+      () async {
+        await session.play();
+        await settle();
+        preferences = preferences.copyWith(
+          narrationVoice: 'cedar',
+          narrationSpeed: 1.5,
+        );
+        await session.applyPreferences(preferences);
+        final second = CatalogBook(
+          hash: 'b' * 64,
+          fileName: 'Second.txt',
+          path: '/Second.txt',
+          title: 'Second',
+          authors: const [],
+          addedAt: DateTime.utc(2026),
+        );
+        cache.manifests[second.hash] = const NarrationManifest(
+          account: 'account',
+          cloudBookId: 'second',
+          voice: 'marin',
+          speed: .75,
+        );
+        await session.attach(second);
+        expect(session.manifest.voice, 'cedar');
+        expect(session.manifest.speed, 1.5);
+        await session.attach(book);
+        preferences = preferences.copyWith(narrationVoice: 'marin');
+        await session.applyPreferences(preferences);
+        final requests = api.requests.length;
+        api.offline = true;
+        await session.play();
+        expect(session.status, NarrationStatus.playing);
+        expect(api.requests.length, requests);
+        expect(player.loadedOffset, Duration.zero);
+      },
+    );
+
+    test(
+      'clearing all caches fences downloads and retains consent and anchors',
+      () async {
+        api.gate = Completer<Uint8List>();
+        final playing = session.play();
+        await settle();
+        final other = CatalogBook(
+          hash: 'b' * 64,
+          fileName: 'Other.txt',
+          path: '/Other.txt',
+          title: 'Other',
+          authors: const [],
+          addedAt: DateTime.utc(2026),
+        );
+        cache.manifests[other.hash] = NarrationManifest(
+          account: 'account',
+          cloudBookId: 'other',
+          voice: 'cedar',
+          anchor: anchor,
+          chunkId: 'interrupted',
+          offsetMs: 4321,
+        );
+        final clearing = session.clearAllCache([book, other]);
+        await settle();
+        api.gate!.complete(testWav());
+        await playing;
+        await clearing;
+        expect(cache.files, isEmpty);
+        expect(cache.manifests[book.hash]!.cloudBookId, 'cloud-book');
+        expect(cache.manifests[book.hash]!.anchor, anchor);
+        expect(cache.manifests[book.hash]!.chunkId, isNull);
+        expect(cache.manifests[book.hash]!.offsetMs, 0);
+        expect(cache.manifests[other.hash]!.cloudBookId, 'other');
+        expect(cache.manifests[other.hash]!.voice, 'cedar');
+        expect(cache.manifests[other.hash]!.anchor, anchor);
+        expect(cache.manifests[other.hash]!.chunkId, isNull);
+        expect(cache.manifests[other.hash]!.offsetMs, 0);
+        expect(commits, isEmpty);
+      },
+    );
+
+    test('theme-only preferences do not mutate native playback or narration sidecars', () async {
+      await session.play();
+      await settle();
+      final saves = cache.saves;
+      player.multiplier = 1.5;
+      await session.applyPreferences(
+        preferences.copyWith(theme: ReadingTheme.dark),
+      );
+      expect(cache.saves, saves);
+      expect(player.multiplier, 1.5);
+      expect(player.playing, isTrue);
+    });
+
+    test(
+      'cache maintenance serializes voice changes and subsequent playback',
+      () async {
+        await session.play();
+        await settle();
+        cache.clearGate = Completer<void>();
+        final clearing = session.clearAllCache([book]);
+        await settle();
+        preferences = preferences.copyWith(narrationVoice: 'cedar');
+        final changing = session.applyPreferences(preferences);
+        final playing = session.play();
+        await settle();
+        expect(session.manifest.voice, 'marin');
+        expect(player.playing, isFalse);
+        cache.clearGate!.complete();
+        await clearing;
+        await changing;
+        await playing;
+        expect(session.manifest.voice, 'cedar');
+        expect(api.voices.last, 'cedar');
+        expect(player.loadedOffset, Duration.zero);
+      },
+    );
+
+    test(
+      'cache maintenance finishes before navigation and deletion detach',
+      () async {
+        await session.play();
+        await settle();
+        cache.clearGate = Completer<void>();
+        final clearing = session.clearAllCache([book]);
+        await settle();
+        var detached = false;
+        final navigating = session.navigate(book);
+        final deleting = session.detach(book).then((_) => detached = true);
+        await settle();
+        expect(detached, isFalse);
+        cache.clearGate!.complete();
+        await clearing;
+        await navigating;
+        await deleting;
+        expect(session.book, isNull);
+        expect(cache.files, isEmpty);
+        expect(cache.manifests[book.hash]!.offsetMs, 0);
+      },
+    );
 
     test('generation and prefetch never advance progress; completion crosses chapters and finishes book', () async {
       await session.play();
@@ -297,7 +541,9 @@ void main() {
         await store.put(book, 'c' * 64, testWav());
         expect(await store.cached(book, 'a' * 64), isNotNull);
         expect(await store.cached(book, 'b' * 64), isNull);
+        expect(await store.cachedBytes(book), testWav().length * 2);
         await store.clear(book);
+        expect(await store.cachedBytes(book), 0);
         expect(await store.cached(book, 'a' * 64), isNull);
         expect((await store.load(book)).cloudBookId, 'cloud-book');
       },
@@ -309,6 +555,7 @@ void main() {
         await directory.create();
         await Link('${directory.path}/${'a' * 64}.wav')
             .create('${root.path}/outside.wav');
+        expect(await store.cachedBytes(book), 0);
         await expectLater(
           store.put(book, 'a' * 64, testWav()),
           throwsFormatException,

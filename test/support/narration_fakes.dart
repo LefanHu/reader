@@ -141,11 +141,14 @@ class MemoryNarrationStore implements NarrationStore {
   final manifests = <String, NarrationManifest>{};
   final files = <String, String>{};
   Set<String> pins = {};
+  Completer<void>? clearGate;
+  int saves = 0;
   @override
   Future<NarrationManifest> load(CatalogBook book) async =>
       manifests[book.hash] ?? const NarrationManifest();
   @override
   Future<void> save(CatalogBook book, NarrationManifest manifest) async {
+    saves++;
     manifests[book.hash] = manifest;
   }
 
@@ -163,7 +166,12 @@ class MemoryNarrationStore implements NarrationStore {
   }
 
   @override
+  Future<int> cachedBytes(CatalogBook book) async =>
+      files.length * testWav().length;
+
+  @override
   Future<void> clear(CatalogBook book) async {
+    await clearGate?.future;
     files.clear();
   }
 }

@@ -190,6 +190,38 @@ void main() {
     expect(events, isNot(contains('delete-user')));
     expect(auth.currentUser, isNotNull);
   });
+  test(
+    'missing account deletion endpoint preserves the Firebase user',
+    () async {
+      auth.currentUser = _User(events);
+      final paths = <String>[];
+      final api = HttpNarrationApi(
+        identity: identity,
+        baseUri: Uri.parse('https://example.test'),
+        client: MockClient((request) async {
+          expect(request.method, 'DELETE');
+          paths.add(request.url.path);
+          return http.Response('', 404);
+        }),
+      );
+      await expectLater(
+        api.deleteAccount(),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'Narration service error (404).',
+          ),
+        ),
+      );
+      expect(events, isNot(contains('delete-user')));
+      expect(auth.currentUser, isNotNull);
+      final bookId = 'a' * 64;
+      await api.deleteBook(bookId);
+      expect(paths, ['/v1/account', '/v1/narration/books/$bookId']);
+      expect(events, isNot(contains('delete-user')));
+    },
+  );
   test('native selector failure cannot reverse completed Firebase account deletion', () async {
     auth.currentUser = _User(events);
     google.failLogout = true;

@@ -6,6 +6,7 @@ An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and T
 - Search by title or author; filter All / Reading / Finished; sort by recent activity or title. The macOS library uses cover tiles with details on hover or keyboard focus; iPhone and iPad use lists with metadata alongside cover thumbnails. Both retain a compact resume card.
 - Subtle approximate word counts use the same normalized text as the reader. New imports count immediately; older books backfill in the background without changing reading positions. Unicode letter/number runs and individual Han/kana graphemes form a deterministic estimate; unspaced Thai and similar scripts can undercount.
 - Choose Paper, Sepia, or Dark from the library Appearance menu or reading settings. One saved palette applies immediately to the whole app, including menus and dialogs; typography controls affect book text only.
+- Open Settings from the library gear or macOS Settings… (Command-comma) to manage account, appearance, reading, global narration preferences, library defaults, usage, storage, privacy, and app information. Preferences stay local and work without an account; payments and cross-device synchronization are not included.
 - Switch Page flip / Pages / Scroll, typography, themes, and window sizes while retaining a grapheme-safe text position.
 - Preserve EPUB chapter structure, nested tables of contents, headings, paragraphs, and explicit line breaks. Publisher CSS, inline images, interactive links, and rich styling are omitted; local covers remain in the library.
 - Read horizontal Unicode text, including RTL and mixed-direction passages, CJK, Indic scripts, Thai, combining marks, and emoji. Font coverage uses platform fallback. Vertical writing is not supported.
@@ -77,7 +78,17 @@ flutter test integration_test/reader_test.dart -d macos
 flutter test integration_test/reader_test.dart -d <ios-simulator-id>
 ```
 
-The native integration runner registers independent **Library**, **Reading**, **Reader controls**, and **Page flip** groups from `integration_test/scenarios/`. Each test creates its own temporary catalog through `integration_test/support/native_test_app.dart`; cleanup runs even on failure. Import parsing, file storage, and rendering are real; picker input, preferences, and cloud services use fakes. EPUB fixtures live in `test/fixtures/` instead of importing another test suite. Platform screenshots are written to the test app's temporary directory and their paths are printed.
+The native integration runner registers independent **Library**, **Reading**,
+**Reader controls**, **Page flip**, **Narration**, **Accounts**, and **Settings**
+groups from `integration_test/scenarios/`. Each test creates its own temporary
+catalog through `integration_test/support/native_test_app.dart`; cleanup runs even
+on failure. Import parsing, file storage, rendering, and narration playback are
+real; picker input, preferences, and cloud services use fakes. Settings flows cover
+global controls, playback reset, cache removal, and complete committed anchors.
+EPUB fixtures live in `test/fixtures/` instead of importing another test suite.
+Platform screenshots are written to the test app's temporary directory and their
+paths are printed. Add `--no-uninstall` on iOS when inspecting those PNGs after
+the command exits; the default uninstall removes their app container.
 
 Run one group or scenario without changing the entry point:
 
@@ -111,10 +122,15 @@ Lora and DM Sans are bundled under the SIL Open Font License. Remaining dependen
 
 ## Google accounts
 
-The library’s Account menu signs in with Google independently of cloud generation.
+Settings → Account signs in with Google independently of cloud generation.
 Signing in does not consent to uploading prose. Reading and importing remain
 account-free; only opted-in cloud features require authentication and App Check.
 Sign out clears both Google and Firebase sessions without changing local books.
+Account deletion reauthenticates the same Google user and requires a successful
+cloud purge before deleting Firebase identity or clearing local feature consent
+and audio. Missing or failed purge endpoints leave those local records intact.
+Local books and complete reading positions survive deletion; Settings reflects
+the actual identity even if post-purge local cleanup reports an error.
 
 Deploy authentication with `tool/deploy_backend dev --scope core` after configuring
 Google OAuth clients. It requires no OpenAI key or feature API deployment. Supply
@@ -125,6 +141,33 @@ matching iOS/macOS callback settings. Regenerate the selected environment before
 switching builds. Google sign-in replaces Apple authentication; native Firebase
 registrations and App Attest remain in place.
 
+## Settings and usage
+
+Settings stays single-pane on iOS, including tablet widths. macOS uses a sidebar
+at widths of at least 700 pixels when text scale is at most 1.5; narrower windows
+or larger type use compact navigation. Choices support keyboard activation and
+announce selection on the actionable control.
+
+Voice and listening speed are global across books. Settings and the listening
+sheet edit the same saved values. Speed changes immediately without regenerating
+audio. Changing voice pauses listening at the committed text position and waits
+for Play; uncached speech then consumes allowance. Existing per-book consent,
+cached audio, and text progress remain intact. Legacy narration sidecar voice
+values identify cached/resumable audio and do not override global preferences.
+
+Library filter/sort defaults are saved separately from temporary library choices.
+Reset preferences restores the app-wide defaults without deleting books, account,
+consent, or caches. Clearing downloaded narration stops playback and invalidates
+audio resume offsets while preserving books, consent, and complete text anchors.
+The displayed cache size refreshes after clearing finishes.
+
+Usage & allowance displays only server-reported balances, includes outstanding
+generation reservations, and shows unavailable/offline states when no snapshot
+can be obtained. The read-only `/v1/account/usage` endpoint requires Firebase Auth
+and App Check even while generation is disabled; viewing it neither initializes
+credits nor grants prose-upload consent. A core-only build can sign in and change
+local settings without an API deployment. Payments and subscriptions are deferred.
+
 ## Listening to books
 
 The Listen toolbar action opens per-book consent before Google sign-in or prose
@@ -133,6 +176,9 @@ play/pause, ±15-second audio seeking, remaining allowance and local cache clear
 One audio handler continues playback in the library and while the device is
 locked; the library includes a mini-player. Opening another book or navigating
 manually pauses narration and invalidates the old audio offset.
+The native service is initialized once per Flutter engine. Closing a controller
+stops its audio and unbinds callbacks without replacing the shared handler; a
+speed-only edit immediately updates native media state as well as playback.
 The narration sheet's Cloud account menu supports signing out and deleting cloud
 data on either platform. Account deletion clears downloaded narration while
 preserving local books and reading positions.

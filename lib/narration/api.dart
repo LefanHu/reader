@@ -70,22 +70,21 @@ class HttpNarrationApi implements NarrationApi {
 
   Future<Map<String, dynamic>> _json(
     String method,
-    String path, [
+    String path, {
     Map<String, dynamic>? body,
-    bool interactive = false,
-  ]) async {
+    bool missingIsSuccess = false,
+  }) async {
     if (!configured) {
       throw StateError('Narration is not configured in this build.');
     }
     final request = http.Request(method, baseUri.resolve(path))
-      ..headers.addAll(
-        await identity.authorizationHeaders(interactive: interactive),
-      );
+      ..headers.addAll(await identity.authorizationHeaders(interactive: false));
     if (body != null) request.body = jsonEncode(body);
     final response = await http.Response.fromStream(
       await client.send(request).timeout(const Duration(seconds: 30)),
     ).timeout(const Duration(seconds: 30));
-    if (response.statusCode == 404 && method == 'DELETE') return {};
+    // Missing book registrations are idempotent; an absent purge endpoint is not.
+    if (response.statusCode == 404 && missingIsSuccess) return {};
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw StateError('Narration service error (${response.statusCode}).');
     }
@@ -103,10 +102,11 @@ class HttpNarrationApi implements NarrationApi {
     final key = await _json('GET', '/v1/fingerprint-key');
     // Reuse the privacy-preserving account-specific fingerprint protocol.
     final fingerprint = narrationFingerprint(book.hash, key['key'] as String);
-    final json = await _json('POST', '/v1/narration/books', {
-      'fingerprint': fingerprint,
-      'consentVersion': 1,
-    });
+    final json = await _json(
+      'POST',
+      '/v1/narration/books',
+      body: {'fingerprint': fingerprint, 'consentVersion': 1},
+    );
     _bookId(json['id'] as String);
     return NarrationRegistration(
       json['account'] as String,
@@ -124,14 +124,18 @@ class HttpNarrationApi implements NarrationApi {
   }) async {
     _bookId(bookId);
     if (!isCurrent()) throw StateError('Narration session changed.');
-    final job = await _json('POST', '/v1/narration/books/$bookId/jobs', {
-      'text': chunk.text,
-      'digest': chunk.digest,
-      'chunkId': chunk.id,
-      'chunkVersion': narrationChunkVersion,
-      'documentVersion': chunk.start.version,
-      'voice': voice,
-    });
+    final job = await _json(
+      'POST',
+      '/v1/narration/books/$bookId/jobs',
+      body: {
+        'text': chunk.text,
+        'digest': chunk.digest,
+        'chunkId': chunk.id,
+        'chunkVersion': narrationChunkVersion,
+        'documentVersion': chunk.start.version,
+        'voice': voice,
+      },
+    );
     for (var attempt = 0; attempt < 120 && isCurrent(); attempt++) {
       if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(job['id'] as String)) {
         throw const FormatException('Invalid narration job identity.');
@@ -183,7 +187,11 @@ class HttpNarrationApi implements NarrationApi {
   @override
   Future<void> deleteBook(String bookId) async {
     _bookId(bookId);
-    await _json('DELETE', '/v1/narration/books/$bookId');
+    await _json(
+      'DELETE',
+      '/v1/narration/books/$bookId',
+      missingIsSuccess: true,
+    );
   }
 
   @override

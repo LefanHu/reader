@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'controller.dart';
-import 'cloud_identity.dart';
+import 'settings.dart';
 import 'models.dart';
 import 'narration/sheet.dart';
 import 'reader.dart';
@@ -26,6 +26,39 @@ class _LibraryScreenState extends State<LibraryScreen> {
   LibraryFilter filter = LibraryFilter.all;
   LibrarySort sort = LibrarySort.recent;
   String query = '';
+  late LibraryFilter _savedFilter;
+  late LibrarySort _savedSort;
+
+  @override
+  void initState() {
+    super.initState();
+    filter = _savedFilter = widget.controller.settings.libraryFilter;
+    sort = _savedSort = widget.controller.settings.librarySort;
+    widget.controller.addListener(_preferencesChanged);
+  }
+
+  // Temporary catalog selections remain independent until saved defaults change.
+  void _preferencesChanged() {
+    final settings = widget.controller.settings;
+    if (settings.libraryFilter == _savedFilter &&
+        settings.librarySort == _savedSort) {
+      return;
+    }
+    setState(() {
+      if (settings.libraryFilter != _savedFilter) {
+        filter = settings.libraryFilter;
+      }
+      if (settings.librarySort != _savedSort) sort = settings.librarySort;
+      _savedFilter = settings.libraryFilter;
+      _savedSort = settings.librarySort;
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_preferencesChanged);
+    super.dispose();
+  }
 
   Future<void> _import() async {
     List<ImportResult> results;
@@ -291,7 +324,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       ),
                     const SizedBox(width: 8),
                     _AppearanceMenu(controller: widget.controller),
-                    _AccountMenu(controller: widget.controller),
+                    IconButton(
+                      tooltip: 'Settings',
+                      icon: const Icon(Icons.settings_outlined),
+                      onPressed: () => SettingsNavigation.open(
+                        Navigator.of(context),
+                        widget.controller,
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 20),
@@ -405,48 +445,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
 }
 
 /// Library accounts remain separate from per-book upload consent and API rollout.
-class _AccountMenu extends StatelessWidget {
-  const _AccountMenu({required this.controller});
-  final ReaderController controller;
-
-  Future<void> _action(BuildContext context, bool signOut) async {
-    try {
-      if (signOut) {
-        await controller.signOutOfCloud();
-      } else {
-        await controller.signInToCloud();
-      }
-    } on Object catch (error) {
-      if (error is CloudIdentityException && error.cancelled) return;
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.toString())));
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => PopupMenuButton<bool>(
-    tooltip: 'Account',
-    enabled: !controller.cloudAccountBusy,
-    icon: const Icon(Icons.account_circle_outlined),
-    onSelected: (signOut) => _action(context, signOut),
-    itemBuilder: (_) => [
-      if (controller.cloudEmail != null)
-        PopupMenuItem<bool>(
-          enabled: false,
-          child: Text(controller.cloudEmail!),
-        ),
-      PopupMenuItem<bool>(
-        value: controller.cloudEmail != null,
-        child: Text(
-          controller.cloudEmail == null ? 'Sign in with Google' : 'Sign out',
-        ),
-      ),
-    ],
-  );
-}
-
 /// Library entry point to the persisted app-wide palette and dependency notices.
 /// Menu radios retain their selected semantics and close after a choice.
 class _AppearanceMenu extends StatefulWidget {

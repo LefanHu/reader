@@ -40,7 +40,11 @@ class NarrationSession {
     required this.currentPosition,
     TextDocumentStore? documents,
     this.abandonRegistration,
-  }) : documents = documents ?? TextDocumentStore() {
+    ReaderSettings Function()? preferences,
+    bool Function(CatalogBook)? isBookAvailable,
+  }) : isBookAvailable = isBookAvailable ?? ((_) => true),
+       preferences = preferences ?? (() => const ReaderSettings()),
+       documents = documents ?? TextDocumentStore() {
     player.bind(play: play, pause: pause, stop: stop, seek: seek);
     _subscription = player.completed.listen((token) {
       unawaited(
@@ -65,6 +69,12 @@ class NarrationSession {
 
   /// Atomic sidecars and LRU cache.
   final NarrationStore store;
+
+  /// Catalog membership fences operations whose book snapshot became deleted.
+  final bool Function(CatalogBook) isBookAvailable;
+
+  /// Authoritative global preferences, read when a publication is attached.
+  final ReaderSettings Function() preferences;
 
   /// Existing normalized document loader, shared by rendering and indexing.
   final TextDocumentStore documents;
@@ -108,6 +118,8 @@ class NarrationSession {
   bool _wanted = false, _disposed = false, _seeked = false;
   late final StreamSubscription<int> _subscription;
   Future<void> _nativeTail = Future.value();
+  Future<void>? _cacheMaintenance;
+  Future<void> _preferenceUpdate = Future.value();
   final Map<String, Future<String>> _downloads = {};
   Timer? _resumeTimer;
 
@@ -126,14 +138,28 @@ class NarrationSession {
 
   /// Opens the selected book, pausing another publication before loading it.
   Future<void> attach(CatalogBook target) async {
-    if (book?.hash == target.hash) return;
+    if (_cacheMaintenance != null) await _cacheMaintenance;
+    await _preferenceUpdate;
+    if (_disposed || !isBookAvailable(target) || book?.hash == target.hash) {
+      return;
+    }
     await stop(restore: false);
     final epoch = ++_epoch;
     final loaded = await store.load(target);
     final doc = await documents.load(target.path);
-    if (_disposed || epoch != _epoch) return;
+    if (_disposed || epoch != _epoch || !isBookAvailable(target)) return;
     book = target;
-    manifest = loaded;
+    final settings = preferences();
+    final sameVoice = loaded.voice == settings.narrationVoice;
+    manifest = NarrationManifest(
+      account: loaded.account,
+      cloudBookId: loaded.cloudBookId,
+      voice: settings.narrationVoice,
+      speed: settings.narrationSpeed,
+      anchor: loaded.anchor,
+      chunkId: sameVoice ? loaded.chunkId : null,
+      offsetMs: sameVoice ? loaded.offsetMs : 0,
+    );
     document = doc;
     status = NarrationStatus.paused;
     changed();
@@ -196,6 +222,8 @@ class NarrationSession {
 
   /// Starts at the committed anchor, reusing private cached files offline.
   Future<void> play() async {
+    if (_cacheMaintenance != null) await _cacheMaintenance;
+    await _preferenceUpdate;
     if (_wanted || book == null || manifest.cloudBookId == null || _disposed) {
       return;
     }
@@ -364,6 +392,12 @@ class NarrationSession {
 
   /// Saves offset without advancing prose; called on suspension and periodically.
   Future<void> flush() async {
+    if (_disposed) return;
+    if (_cacheMaintenance != null) await _cacheMaintenance;
+    await _flush();
+  }
+
+  Future<void> _flush() async {
     if (book == null || manifest.cloudBookId == null || _disposed) return;
     final value = NarrationManifest(
       account: manifest.account,
@@ -372,7 +406,9 @@ class NarrationSession {
       speed: manifest.speed,
       anchor: manifest.anchor,
       chunkId: _seeked ? null : manifest.chunkId,
-      offsetMs: _seeked ? 0 : player.position.inMilliseconds,
+      offsetMs: _seeked || manifest.chunkId == null
+          ? 0
+          : player.position.inMilliseconds,
     );
     manifest = value;
     await store.save(book!, value);
@@ -380,12 +416,17 @@ class NarrationSession {
 
   /// Pauses generation and native audio, retaining a conservative resume anchor.
   Future<void> pause({bool restore = true}) async {
+    if (_cacheMaintenance != null) await _cacheMaintenance;
+    await _pause(restore: restore);
+  }
+
+  Future<void> _pause({bool restore = true}) async {
     _wanted = false;
     final epoch = ++_epoch;
     ++_loadToken;
     _resumeTimer?.cancel();
     await _native(player.pauseAudio);
-    await flush();
+    await _flush();
     if (epoch != _epoch) return;
     if (book != null) status = NarrationStatus.paused;
     changed();
@@ -398,7 +439,12 @@ class NarrationSession {
 
   /// Stops and releases audio but keeps consent and interrupted playback on disk.
   Future<void> stop({bool restore = true}) async {
-    await pause(restore: false);
+    if (_cacheMaintenance != null) await _cacheMaintenance;
+    await _stop(restore: restore);
+  }
+
+  Future<void> _stop({bool restore = true}) async {
+    await _pause(restore: false);
     final epoch = _epoch;
     // Release audio/media ownership before waiting for a viewport frame. A
     // lock-screen Stop must still complete its native work while UI is suspended.
@@ -413,6 +459,7 @@ class NarrationSession {
 
   /// Manual reader navigation invalidates offsets before it can write progress.
   Future<void> navigate(CatalogBook target) async {
+    if (_cacheMaintenance != null) await _cacheMaintenance;
     if (book?.hash != target.hash) return;
     if (manifest.chunkId == null && !_wanted) return;
     await pause(restore: false);
@@ -427,6 +474,7 @@ class NarrationSession {
 
   /// Audio seeking is local and never grants text completion or illustration gates.
   Future<void> seek(Duration offset) async {
+    if (_cacheMaintenance != null) await _cacheMaintenance;
     _seeked = true;
     final max = player.duration?.inMilliseconds ?? 0;
     await _native(
@@ -439,23 +487,54 @@ class NarrationSession {
     await flush();
   }
 
-  /// Voice changes require fresh allowance; speed changes reuse existing audio.
-  Future<void> configure({String? voice, double? speed}) async {
+  /// Applies global preferences without requesting audio or advancing progress.
+  Future<void> applyPreferences(ReaderSettings settings) =>
+      configure(voice: settings.narrationVoice, speed: settings.narrationSpeed);
+
+  /// Updates playback identity; callers persist preferences globally.
+  /// Voice switches pause at the committed anchor; speed reuses existing audio.
+  Future<void> configure({String? voice, double? speed}) {
     if (voice != null && !['marin', 'cedar'].contains(voice)) {
       throw ArgumentError.value(voice);
     }
-    if (speed != null && (speed < .75 || speed > 2)) {
+    if (speed != null && (!speed.isFinite || speed < .75 || speed > 2)) {
       throw ArgumentError.value(speed);
     }
-    if (voice != null && voice != manifest.voice) await navigate(book!);
+    // Capture the current gate before queueing. A later cache clear waits for
+    // this preference operation rather than making it wait on the newer gate.
+    final maintenance = _cacheMaintenance;
+    final operation = _preferenceUpdate.then(
+      (_) => _configure(voice, speed, maintenance),
+    );
+    _preferenceUpdate = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<void> _configure(
+    String? voice,
+    double? speed,
+    Future<void>? maintenance,
+  ) async {
+    if (maintenance != null) await maintenance;
+    if (_disposed) return;
+    final voiceChanged = voice != null && voice != manifest.voice;
+    final speedChanged = speed != null && speed != manifest.speed;
+    // Typography and theme edits must not touch the audio handler or sidecar.
+    if (!voiceChanged && !speedChanged) return;
+    if (voiceChanged && book != null) await _stop();
     manifest = NarrationManifest(
       account: manifest.account,
       cloudBookId: manifest.cloudBookId,
       voice: voice ?? manifest.voice,
       speed: speed ?? manifest.speed,
-      anchor: manifest.anchor,
-      chunkId: manifest.chunkId,
-      offsetMs: manifest.offsetMs,
+      anchor: voiceChanged && book != null
+          ? currentPosition(book!) ?? manifest.anchor
+          : manifest.anchor,
+      chunkId: voiceChanged ? null : manifest.chunkId,
+      offsetMs: voiceChanged ? 0 : manifest.offsetMs,
     );
     await _native(() => player.speed(manifest.speed));
     if (book != null) await store.save(book!, manifest);
@@ -464,6 +543,7 @@ class NarrationSession {
 
   /// Fences callbacks before deletion; waits for atomic writes before removing files.
   Future<void> detach(CatalogBook target) async {
+    if (_cacheMaintenance != null) await _cacheMaintenance;
     if (book?.hash != target.hash) return;
     await stop(restore: false);
     await Future.wait(
@@ -482,30 +562,79 @@ class NarrationSession {
   /// The old audio offset is invalid after removing its exact cached generation.
   Future<void> clear() async {
     final target = book;
-    if (target == null) return;
-    await stop();
-    final epoch = _epoch;
-    await Future.wait(
-      _downloads.values.map(
-        (future) =>
-            future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
-      ),
-    );
-    if (epoch != _epoch || book?.hash != target.hash) return;
-    manifest = NarrationManifest(
-      account: manifest.account,
-      cloudBookId: manifest.cloudBookId,
-      voice: manifest.voice,
-      speed: manifest.speed,
-      anchor: currentPosition(target),
-    );
-    await store.save(target, manifest);
-    await store.clear(target);
-    changed();
+    if (target != null) await clearAllCache([target]);
   }
 
-  /// Releases the app-lifetime handler; shutdown persistence is awaited separately.
+  /// Sums validated audio bytes without loading documents or changing LRU order.
+  Future<int> cachedBytes(List<CatalogBook> books) async {
+    var total = 0;
+    for (final target in books) {
+      if (!isBookAvailable(target)) continue;
+      try {
+        total += await store.cachedBytes(target);
+      } on FormatException {
+        if (isBookAvailable(target)) rethrow;
+      }
+    }
+    return total;
+  }
+
+  /// Stops playback and drains fenced downloads before clearing all owned audio.
+  /// Consent, cache identity metadata and complete text anchors are retained.
+  Future<void> clearAllCache(List<CatalogBook> books) async {
+    final previous = _cacheMaintenance;
+    final preferences = _preferenceUpdate;
+    final finished = Completer<void>();
+    _cacheMaintenance = finished.future;
+    try {
+      if (previous != null) await previous;
+      await preferences;
+      if (_disposed) return;
+      await _stop();
+      await Future.wait(
+        _downloads.values.map(
+          (future) =>
+              future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+        ),
+      );
+      // All public playback mutations wait for maintenance. Private stop/flush
+      // avoid reentering its gate while downloads are fenced and drained.
+      for (final target in books) {
+        if (_disposed || !isBookAvailable(target)) continue;
+        try {
+          final old = book?.hash == target.hash
+              ? manifest
+              : await store.load(target);
+          if (_disposed || !isBookAvailable(target)) continue;
+          final cleared = NarrationManifest(
+            account: old.account,
+            cloudBookId: old.cloudBookId,
+            voice: old.voice,
+            speed: old.speed,
+            anchor: currentPosition(target) ?? old.anchor,
+          );
+          await store.save(target, cleared);
+          if (!isBookAvailable(target)) continue;
+          await store.clear(target);
+          if (book?.hash == target.hash) manifest = cleared;
+        } on FormatException {
+          // An older delete may finish after the snapshot was taken. Owned-path
+          // rejection is safe to ignore only once the catalog confirms removal.
+          if (isBookAvailable(target)) rethrow;
+        }
+      }
+      if (!_disposed) changed();
+    } finally {
+      finished.complete();
+      if (identical(_cacheMaintenance, finished.future)) {
+        _cacheMaintenance = null;
+      }
+    }
+  }
+
+  /// Releases session playback and callbacks; shutdown persistence is awaited separately.
   Future<void> dispose() async {
+    if (_cacheMaintenance != null) await _cacheMaintenance;
     await stop(restore: false);
     _disposed = true;
     await _subscription.cancel();

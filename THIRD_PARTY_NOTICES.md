@@ -4,7 +4,7 @@ Reader uses Flutter's text layout engine and the packages recorded in `pubspec.l
 
 ## Flutter packages
 
-`archive`, `characters`, `crypto`, `file_picker`, `firebase_app_check`, `firebase_auth`, `firebase_core`, `html`, `http`, `path_provider`, `shared_preferences`, `xml`, and their transitive dependencies retain their respective licenses. Firebase's Apple integration is resolved through CocoaPods.
+`archive`, `audio_service`, `audio_session`, `characters`, `crypto`, `file_picker`, `firebase_app_check`, `firebase_auth`, `firebase_core`, `google_sign_in`, `html`, `http`, `just_audio`, `package_info_plus`, `path_provider`, `shared_preferences`, `xml`, and their transitive dependencies retain their respective licenses. Firebase's Apple integration is resolved through CocoaPods.
 
 ## Unicode data
 

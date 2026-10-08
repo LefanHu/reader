@@ -43,6 +43,12 @@ only after a usable scene record and both private objects commit; retries reuse
 the same reservation. `DELETE /v1/account` purges global jobs, temporary prose,
 scene metadata, temporal world revisions and references, reservations, user
 records, and the user's storage prefix.
+Narration purge also removes UID-owned jobs, orphan inputs, and all monthly usage
+records. It releases unsubmitted reservations before deleting counters and awaits
+bulk writes before responding. Minimal account tombstones remain to fence delayed
+workers; shared daily usage retains submitted charges and other users' allowance.
+Firebase identity deletion belongs to the native client after HTTP success, not
+this route. Privacy deletion remains available while generation rollout is off.
 
 Terraform owns the deployed indexes, TTL policy, Security Rules, service
 identities, and Cloud Run services. Do not run `firebase deploy`; use the
@@ -85,7 +91,7 @@ Authenticated routes:
 - `GET /v1/narration/jobs/:jobId`: status and a ten-minute private download URL
   only for live, unexpired audio owned by the caller.
 - `DELETE /v1/narration/books/:bookId`: tombstone and purge; usable with rollout off.
-- `DELETE /v1/account`: also tombstones and purges narration before deleting identity.
+- `DELETE /v1/account`: tombstones and purges narration before the native client deletes identity.
 
 The private `/internal/narration/:jobId` worker transaction claims each job with a
 four-minute lease and unique claim token. Its OpenAI Realtime response uses
@@ -111,3 +117,24 @@ unsubmitted reservations in batches of up to 100.
 Do not enable rollout until signed iOS and macOS authentication/App Check,
 background playback, media controls and listening quality are verified. No live
 provider calls or cloud applies are part of the automated tests.
+
+## Account usage
+
+`GET /v1/account/usage` requires the same verified Firebase ID token and App Check
+token as generation. It remains readable with both feature rollout flags disabled.
+The authenticated token determines ownership; query parameters cannot select an
+account. Responses are marked `Cache-Control: no-store` and contain:
+
+- `asOf`: server UTC ISO timestamp.
+- `narrationEnabled`, `illustrationsEnabled`: independent rollout flags.
+- `narrationMonthlyLimit`, `narrationRemaining`: UTF-16 monthly allowance and
+  remaining units, including outstanding reservations in the charged usage.
+- `narrationResetAt`: first instant of the next UTC month.
+- `illustrationCreditsRemaining`, `illustrationCreditsReserved`: total unspent
+  credits and those held by jobs. Both are null when credits are not activated.
+
+This endpoint performs only reads. It never initializes illustration credits,
+registers books, grants consent, enqueues generation, or reclaims reservations.
+Existing narration configuration/generation cleanup owns reservation recovery;
+the Settings snapshot can conservatively include expired reservations until that
+cleanup runs. Missing monthly usage means the full configured monthly allowance.

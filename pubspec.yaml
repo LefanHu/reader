@@ -22,6 +22,7 @@ dependencies:
   html: ^0.15.7
   http: ^1.6.0
   just_audio: ^0.10.6
+  package_info_plus: ^10.2.2
   path_provider: ^2.1.6
   shared_preferences: ^2.5.5
   xml: ^6.6.1

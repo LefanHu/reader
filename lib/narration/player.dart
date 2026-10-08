@@ -41,61 +41,61 @@ abstract interface class NarrationPlayer {
   /// Uses the same cached file for any supported playback multiplier.
   Future<void> speed(double value);
 
-  /// Releases streams and platform resources at application termination.
+  /// Releases this session's playback ownership; native service lives with the engine.
   Future<void> dispose();
 }
 
 /// One app-lifetime audio_service handler with native Apple media controls.
 class NativeNarrationPlayer extends BaseAudioHandler
     implements NarrationPlayer {
-  /// Initialize once through [create], after Flutter binding initialization.
+  /// Initializes engine-owned streams; obtain the shared handler through [create].
   NativeNarrationPlayer() {
-    _subscriptions.add(
-      _audio.playerStateStream.listen((state) {
-        playbackState.add(
-          playbackState.value.copyWith(
-            controls: [
-              MediaControl.rewind,
-              state.playing ? MediaControl.pause : MediaControl.play,
-              MediaControl.fastForward,
-              MediaControl.stop,
-            ],
-            systemActions: {MediaAction.seek},
-            processingState: switch (state.processingState) {
-              ProcessingState.idle => AudioProcessingState.idle,
-              ProcessingState.loading => AudioProcessingState.loading,
-              ProcessingState.buffering => AudioProcessingState.buffering,
-              ProcessingState.ready => AudioProcessingState.ready,
-              ProcessingState.completed => AudioProcessingState.completed,
-            },
-            playing: state.playing,
-            updatePosition: position,
-            speed: _audio.speed,
-          ),
-        );
-        if (state.processingState == ProcessingState.completed &&
-            _token != null) {
-          final token = _token!;
-          _token = null;
-          _completion.add(token);
-        }
-      }),
-    );
-    _subscriptions.add(
-      _audio.positionStream.listen((offset) {
-        playbackState.add(playbackState.value.copyWith(updatePosition: offset));
-      }),
-    );
+    _audio.playerStateStream.listen((state) {
+      playbackState.add(
+        playbackState.value.copyWith(
+          controls: [
+            MediaControl.rewind,
+            state.playing ? MediaControl.pause : MediaControl.play,
+            MediaControl.fastForward,
+            MediaControl.stop,
+          ],
+          systemActions: {MediaAction.seek},
+          processingState: switch (state.processingState) {
+            ProcessingState.idle => AudioProcessingState.idle,
+            ProcessingState.loading => AudioProcessingState.loading,
+            ProcessingState.buffering => AudioProcessingState.buffering,
+            ProcessingState.ready => AudioProcessingState.ready,
+            ProcessingState.completed => AudioProcessingState.completed,
+          },
+          playing: state.playing,
+          updatePosition: position,
+          speed: _audio.speed,
+        ),
+      );
+      if (state.processingState == ProcessingState.completed &&
+          _token != null) {
+        final token = _token!;
+        _token = null;
+        _completion.add(token);
+      }
+    });
+    _audio.positionStream.listen((offset) {
+      playbackState.add(playbackState.value.copyWith(updatePosition: offset));
+    });
   }
   final AudioPlayer _audio = AudioPlayer(handleInterruptions: false);
   final StreamController<int> _completion = StreamController.broadcast();
-  final List<StreamSubscription<dynamic>> _subscriptions = [];
   int? _token;
   Future<void> Function()? _playAction, _pauseAction, _stopAction;
   Future<void> Function(Duration)? _seekAction;
 
-  /// Native handler creation and spoken-audio interruption configuration.
-  static Future<NativeNarrationPlayer> create() async {
+  // AudioService permits one initialization per engine, even across controllers.
+  static Future<NativeNarrationPlayer>? _instance;
+
+  /// Shares one native handler and spoken-audio configuration for the engine.
+  static Future<NativeNarrationPlayer> create() => _instance ??= _create();
+
+  static Future<NativeNarrationPlayer> _create() async {
     final handler = await AudioService.init(
       builder: NativeNarrationPlayer.new,
       config: const AudioServiceConfig(
@@ -107,16 +107,12 @@ class NativeNarrationPlayer extends BaseAudioHandler
     );
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.speech());
-    handler._subscriptions.add(
-      session.interruptionEventStream.listen((event) {
-        if (event.begin) unawaited(handler._pauseAction?.call());
-      }),
-    );
-    handler._subscriptions.add(
-      session.becomingNoisyEventStream.listen((_) {
-        unawaited(handler._pauseAction?.call());
-      }),
-    );
+    session.interruptionEventStream.listen((event) {
+      if (event.begin) unawaited(handler._pauseAction?.call());
+    });
+    session.becomingNoisyEventStream.listen((_) {
+      unawaited(handler._pauseAction?.call());
+    });
     return handler;
   }
 
@@ -177,8 +173,19 @@ class NativeNarrationPlayer extends BaseAudioHandler
 
   @override
   Future<void> seekAudio(Duration offset) => _audio.seek(offset);
+
+  /// Publishes speed immediately; a speed-only edit need not emit player state.
   @override
-  Future<void> speed(double value) => _audio.setSpeed(value);
+  Future<void> speed(double value) async {
+    await _audio.setSpeed(value);
+    playbackState.add(
+      playbackState.value.copyWith(
+        speed: _audio.speed,
+        updatePosition: position,
+      ),
+    );
+  }
+
   @override
   Future<void> pause() async {
     await _pauseAction?.call();
@@ -214,12 +221,14 @@ class NativeNarrationPlayer extends BaseAudioHandler
     await _stopAction?.call();
   }
 
+  /// Unbinds the closed session without reinitializing AudioService on the next one.
   @override
   Future<void> dispose() async {
-    for (final subscription in _subscriptions) {
-      await subscription.cancel();
+    _token = null;
+    _playAction = _pauseAction = _stopAction = null;
+    _seekAction = null;
+    if (_audio.processingState != ProcessingState.idle) {
+      await stopAudio();
     }
-    await _audio.dispose();
-    await _completion.close();
   }
 }

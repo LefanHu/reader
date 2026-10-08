@@ -26,6 +26,9 @@ abstract interface class NarrationStore {
   /// Active and buffered files cannot be evicted while the player owns them.
   void pin(Set<String> keys);
 
+  /// Counts validated owned WAV files without refreshing their LRU timestamps.
+  Future<int> cachedBytes(CatalogBook book);
+
   /// Removes only audio; consent and reading position survive cache clearing.
   Future<void> clear(CatalogBook book);
 }
@@ -188,6 +191,22 @@ class FileNarrationStore implements NarrationStore {
       total -= stats[file]!.size;
     }
   }
+
+  @override
+  Future<int> cachedBytes(CatalogBook book) => _serial(() async {
+    final directory = _directory(book);
+    if (!await directory.exists()) return 0;
+    var bytes = 0;
+    await for (final file in directory.list(followLinks: false)) {
+      if (file is File &&
+          RegExp(r'/[a-f0-9]{64}\.wav$').hasMatch(file.path) &&
+          await FileSystemEntity.type(file.path, followLinks: false) ==
+              FileSystemEntityType.file) {
+        bytes += await file.length();
+      }
+    }
+    return bytes;
+  });
 
   @override
   Future<void> clear(CatalogBook book) => _serial(() async {

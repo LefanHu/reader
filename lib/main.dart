@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'controller.dart';
 import 'library.dart';
 import 'theme.dart';
+import 'settings.dart';
 
 /// Initializes persistent state and starts the application.
 Future<void> main() async {
@@ -34,10 +35,20 @@ class ReaderApp extends StatefulWidget {
 }
 
 class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
+  final _navigator = GlobalKey<NavigatorState>();
+  static const _settingsChannel = MethodChannel('reader/settings');
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _settingsChannel.setMethodCallHandler((call) async {
+      if (call.method == 'openSettings' && _navigator.currentState != null) {
+        unawaited(
+          SettingsNavigation.open(_navigator.currentState!, widget.controller),
+        );
+      }
+    });
   }
 
   @override
@@ -54,6 +65,7 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _settingsChannel.setMethodCallHandler(null);
     WidgetsBinding.instance.removeObserver(this);
     widget.controller.dispose();
     super.dispose();
@@ -64,6 +76,7 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
     listenable: widget.controller,
     builder: (context, _) => MaterialApp(
       title: 'Reader',
+      navigatorKey: _navigator,
       debugShowCheckedModeBanner: false,
       // Switch all routes and overlays together; interpolated ink would trigger
       // repeated text reflows while the application's surfaces catch up.

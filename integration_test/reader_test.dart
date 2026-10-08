@@ -7,6 +7,7 @@ import 'scenarios/page_flip.dart';
 import 'scenarios/reading.dart';
 import 'scenarios/narration.dart';
 import 'scenarios/accounts.dart';
+import 'scenarios/settings.dart';
 
 /// Single native runner: feature groups support focused --plain-name runs while
 /// each scenario owns a fresh app/catalog through NativeTestApp.
@@ -18,4 +19,5 @@ void main() {
   group('Page flip', registerPageFlipTests);
   group('Narration', registerNarrationTests);
   group('Accounts', registerAccountTests);
+  group('Settings', registerSettingsTests);
 }
