@@ -106,7 +106,224 @@ class _DelayedStore extends MemoryDocumentStore {
   }
 }
 
+/// Rasterizes a live preview without taking ownership of viewport textures.
+Future<Uint8List> _previewPixels(WidgetTester tester) async {
+  final finder = find.byWidgetPredicate(
+    (widget) => widget is CustomPaint && widget.painter is PaperCurlPainter,
+  );
+  final painter = tester.widget<CustomPaint>(finder).painter!;
+  return (await tester.runAsync(
+    () => _rasterPixels(painter, tester.getSize(finder)),
+  ))!;
+}
+
+Future<Uint8List> _rasterPixels(CustomPainter painter, Size size) async {
+  final recorder = ui.PictureRecorder();
+  painter.paint(Canvas(recorder), size);
+  final picture = recorder.endRecording();
+  ui.Image? image;
+  try {
+    image = await picture.toImage(size.width.round(), size.height.round());
+    return (await image.toByteData())!.buffer.asUint8List();
+  } finally {
+    image?.dispose();
+    picture.dispose();
+  }
+}
+
+Rect _pageBounds(WidgetTester tester) {
+  final viewport = tester.getRect(find.byType(TextViewport));
+  return Rect.fromLTRB(
+    viewport.left + 20,
+    viewport.top + 12,
+    viewport.right - 20,
+    viewport.bottom - 12,
+  );
+}
+
+PaperCurlPainter _previewPainter(WidgetTester tester) => tester
+    .widgetList<CustomPaint>(find.byType(CustomPaint))
+    .map((widget) => widget.painter)
+    .whereType<PaperCurlPainter>()
+    .single;
+
+void _expectOpaque(Uint8List pixels) {
+  var transparentPixels = 0;
+  for (var i = 3; i < pixels.length; i += 4) {
+    if (pixels[i] != 255) transparentPixels++;
+  }
+  expect(transparentPixels, 0, reason: 'Every curl pixel must be opaque');
+}
+
+double _differentPixelFraction(Uint8List a, Uint8List b, {int tolerance = 0}) {
+  var different = 0;
+  for (var i = 0; i < a.length; i += 4) {
+    for (var channel = 0; channel < 4; channel++) {
+      if ((a[i + channel] - b[i + channel]).abs() > tolerance) {
+        different++;
+        break;
+      }
+    }
+  }
+  return different / (a.length ~/ 4);
+}
+
 void main() {
+  for (final rtl in [false, true]) {
+    for (final forward in [true, false]) {
+      testWidgets(
+        '${rtl ? 'RTL' : 'LTR'} ${forward ? 'forward' : 'backward'} curls follow grab height and live pointer without committing previews',
+        (tester) async {
+          final h = _Harness(
+            store: rtl
+                ? MemoryDocumentStore(
+                    sections: [
+                      text.TextSection(
+                        id: 's0',
+                        blocks: [
+                          text.TextBlock(id: 'rtl', text: 'שלום עולם ' * 120),
+                        ],
+                      ),
+                    ],
+                  )
+                : null,
+          );
+          await h.mount(tester);
+          if (!forward) {
+            h.navigation.next();
+            await tester.pumpAndSettle();
+          }
+          final start = h.navigation.leadingPosition;
+          if (forward) {
+            h.navigation.next();
+          } else {
+            h.navigation.previous();
+          }
+          await tester.pumpAndSettle();
+          final expected = h.navigation.leadingPosition;
+          expect(expected, isNot(start));
+          if (forward) {
+            h.navigation.previous();
+          } else {
+            h.navigation.next();
+          }
+          await tester.pumpAndSettle();
+          expect(h.navigation.leadingPosition, start);
+          h.reports.clear();
+
+          final bounds = _pageBounds(tester);
+          final sign = forward == rtl ? 1.0 : -1.0;
+          final previews = <Uint8List>[];
+          final verticalGesture = await tester.startGesture(bounds.center);
+          var verticalReleased = false;
+          try {
+            await verticalGesture.moveBy(Offset(0, bounds.height * .2));
+            await tester.pump();
+            expect(h.navigation.leadingPosition, start);
+            expect(h.navigation.retainedTextureCount, 0);
+            expect(h.reports, isEmpty);
+            await verticalGesture.cancel();
+            verticalReleased = true;
+            await tester.pumpAndSettle();
+          } finally {
+            if (!verticalReleased) await verticalGesture.cancel();
+            await tester.pumpAndSettle();
+          }
+
+          for (final height in [.2, .5, .8]) {
+            final origin = Offset(
+              bounds.center.dx,
+              bounds.top + bounds.height * height,
+            );
+            final heldPosition = origin + Offset(sign * bounds.width * .25, 0);
+            final gesture = await tester.startGesture(origin);
+            var released = false;
+            try {
+              await gesture.moveBy(Offset(sign * 20, 0));
+              await tester.pump();
+              await gesture.moveTo(heldPosition);
+              await tester.pump();
+              final held = await _previewPixels(tester);
+              previews.add(held);
+              final progress = _previewPainter(tester).progress;
+              expect(progress, closeTo(.25, .000001));
+              expect(h.navigation.retainedTextureCount, 2);
+
+              // Full localPosition remains two-dimensional after horizontal
+              // recognition; a vertical update changes only the rendered bend.
+              await gesture.moveTo(
+                heldPosition + Offset(0, bounds.height * .1),
+              );
+              await tester.pump();
+              expect(await _previewPixels(tester), isNot(held));
+              expect(_previewPainter(tester).progress, progress);
+              expect(h.navigation.leadingPosition, start);
+              expect(h.reports, isEmpty);
+              await gesture.moveTo(heldPosition);
+              await tester.pump();
+              expect(await _previewPixels(tester), held);
+
+              // Crossing the grab clamps progress at zero, but returning to
+              // the same pointer restores the same preview, not accumulated
+              // clamped deltas or a newly selected logical direction.
+              await gesture.moveTo(
+                origin + Offset(-sign * bounds.width * .05, 0),
+              );
+              await tester.pump();
+              expect(_previewPainter(tester).progress, 0);
+              await gesture.moveTo(heldPosition);
+              await tester.pump();
+              expect(await _previewPixels(tester), held);
+              expect(_previewPainter(tester).progress, progress);
+              expect(h.navigation.leadingPosition, start);
+              expect(h.reports, isEmpty);
+              await gesture.cancel();
+              released = true;
+              await tester.pumpAndSettle();
+              expect(h.navigation.leadingPosition, start);
+              expect(h.reports, isEmpty);
+              expect(h.navigation.retainedTextureCount, 0);
+              expect(h.navigation.retainedLayoutCount, lessThanOrEqualTo(2));
+            } finally {
+              if (!released) await gesture.cancel();
+              await tester.pumpAndSettle();
+            }
+          }
+          expect(previews[0], isNot(previews[1]));
+          expect(previews[1], isNot(previews[2]));
+          expect(previews[0], isNot(previews[2]));
+
+          final origin = Offset(
+            bounds.center.dx,
+            bounds.top + bounds.height * .2,
+          );
+          final gesture = await tester.startGesture(origin);
+          var released = false;
+          try {
+            await gesture.moveBy(Offset(sign * 20, 0));
+            await tester.pump();
+            await gesture.moveTo(
+              origin + Offset(sign * bounds.width * .5, bounds.height * .1),
+            );
+            await tester.pump(const Duration(milliseconds: 200));
+            expect(h.navigation.leadingPosition, start);
+            expect(h.reports, isEmpty);
+            expect(h.navigation.retainedTextureCount, 2);
+            await gesture.up();
+            released = true;
+            await tester.pumpAndSettle();
+            expect(h.navigation.leadingPosition, expected);
+            expect(h.reports, [expected]);
+            expect(h.navigation.retainedTextureCount, 0);
+          } finally {
+            if (!released) await gesture.cancel();
+            await tester.pumpAndSettle();
+          }
+        },
+      );
+    }
+  }
+
   for (final mode in [ReadingMode.pages, ReadingMode.pageFlip]) {
     testWidgets('${mode.name} restores scrolling on its first visible frame', (
       tester,
@@ -283,6 +500,47 @@ void main() {
       expect(h.taps, 0);
     },
   );
+
+  testWidgets('release and cancel settle from the exact last diagonal shape', (
+    tester,
+  ) async {
+    for (final complete in [false, true]) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      final h = _Harness();
+      await h.mount(tester);
+      final start = h.navigation.leadingPosition;
+      final bounds = tester.getRect(find.byType(TextViewport)).deflate(20);
+      final origin = Offset(bounds.center.dx, bounds.top + bounds.height * .2);
+      final gesture = await tester.startGesture(origin);
+      var released = false;
+      try {
+        await gesture.moveBy(const Offset(-20, 0));
+        await tester.pump();
+        await gesture.moveTo(origin + Offset(-h.size.width * .4, 35));
+        await tester.pump(const Duration(milliseconds: 200));
+        final held = await _previewPixels(tester);
+        if (complete) {
+          await gesture.up();
+        } else {
+          await gesture.cancel();
+        }
+        released = true;
+        await tester.pump();
+        expect(await _previewPixels(tester), held);
+        expect(h.navigation.leadingPosition, start);
+        expect(h.reports, isEmpty);
+        await tester.pump(const Duration(milliseconds: 30));
+        expect(await _previewPixels(tester), isNot(held));
+        await tester.pumpAndSettle();
+        expect(h.navigation.leadingPosition, complete ? isNot(start) : start);
+        expect(h.reports, hasLength(complete ? 1 : 0));
+        expect(h.navigation.retainedTextureCount, 0);
+      } finally {
+        if (!released) await gesture.cancel();
+        await tester.pumpAndSettle();
+      }
+    }
+  });
 
   testWidgets('fast short flick completes and reversed release cancels', (
     tester,
@@ -494,7 +752,7 @@ void main() {
   );
 
   testWidgets(
-    'drag released during section loading settles from its recorded fraction',
+    'drag released during section loading retains its last diagonal raster',
     (tester) async {
       for (final complete in [true, false]) {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -502,34 +760,66 @@ void main() {
         final h = _Harness(store: store);
         await h.mount(tester);
         final start = h.navigation.leadingPosition;
-        final gesture = await tester.startGesture(
-          tester.getCenter(find.byType(TextViewport)),
+        final bounds = _pageBounds(tester);
+        final origin = Offset(
+          bounds.left + bounds.width * .75,
+          bounds.top + bounds.height * .2,
         );
-        await gesture.moveBy(const Offset(-20, 0));
-        await tester.pump();
-        await gesture.moveBy(const Offset(-160, 0));
-        await tester.pump(const Duration(milliseconds: 200));
-        if (complete) {
-          await gesture.up();
-        } else {
-          await gesture.cancel();
+        final gesture = await tester.startGesture(origin);
+        var released = false;
+        try {
+          await gesture.moveBy(const Offset(-20, 0));
+          await tester.pump();
+          await gesture.moveTo(
+            origin + Offset(-bounds.width * .3, bounds.height * .1),
+          );
+          await tester.pump();
+          await gesture.moveTo(
+            origin + Offset(-bounds.width * .5, bounds.height * .15),
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+          if (complete) {
+            await gesture.up();
+          } else {
+            await gesture.cancel();
+          }
+          released = true;
+          expect(h.navigation.leadingPosition, start);
+          expect(h.navigation.retainedTextureCount, 0);
+          store.pending!.complete();
+          await tester.pump();
+          await tester.pump();
+          final painter = _previewPainter(tester);
+          final expected = PaperCurlPainter(
+            current: painter.current,
+            target: painter.target,
+            progress: .5,
+            grabY: bounds.height * .2,
+            fingerY: bounds.height * .35,
+            forward: true,
+            fromRight: true,
+            paper: const Color(0xfffffbf0),
+          );
+          expect(
+            await _previewPixels(tester),
+            (await tester.runAsync(
+              () => _rasterPixels(expected, bounds.size),
+            ))!,
+          );
+          expect(h.navigation.leadingPosition, start);
+          expect(h.reports, isEmpty);
+          await tester.pumpAndSettle();
+          expect(
+            h.navigation.leadingPosition!.sectionId,
+            complete ? 's1' : 's0',
+          );
+          expect(h.reports, hasLength(complete ? 1 : 0));
+          expect(h.navigation.retainedTextureCount, 0);
+        } finally {
+          if (!released) await gesture.cancel();
+          if (!store.pending!.isCompleted) store.pending!.complete();
+          await tester.pumpAndSettle();
         }
-        expect(h.navigation.leadingPosition, start);
-        expect(h.navigation.retainedTextureCount, 0);
-        store.pending!.complete();
-        await tester.pump();
-        await tester.pump();
-        final painter = tester
-            .widgetList<CustomPaint>(find.byType(CustomPaint))
-            .map((w) => w.painter)
-            .whereType<PaperCurlPainter>()
-            .single;
-        expect(painter.progress, greaterThan(.35));
-        expect(h.navigation.leadingPosition, start);
-        await tester.pumpAndSettle();
-        expect(h.navigation.leadingPosition!.sectionId, complete ? 's1' : 's0');
-        expect(h.reports, hasLength(complete ? 1 : 0));
-        expect(h.navigation.retainedTextureCount, 0);
       }
     },
   );
@@ -604,58 +894,108 @@ void main() {
   );
 
   testWidgets(
-    'curl pixels have exact endpoints mirrored folds and theme-colored reverse',
+    'curl rasters follow grabs and vertical pulls with mirrored opaque theme paper and continuous exact endpoints',
     (tester) async {
       // Pixel assertions protect geometry and shading without platform font goldens.
       await tester.runAsync(() async {
         const size = Size(240, 160);
-        ui.Image page(Color paper, String title) {
+        ui.Image page(Color paper, [String? title]) {
           final recorder = ui.PictureRecorder();
-          final canvas = Canvas(recorder);
-          canvas.drawColor(paper, BlendMode.src);
-          final text = TextPainter(
-            text: TextSpan(
-              text: '$title $_multilingual',
-              style: TextStyle(
-                fontSize: 16,
-                color: paper.computeLuminance() < .1
-                    ? Colors.white
-                    : Colors.black,
+          final canvas = Canvas(recorder)..drawColor(paper, BlendMode.src);
+          if (title != null) {
+            final text = TextPainter(
+              text: TextSpan(
+                text: '$title $_multilingual',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: paper.computeLuminance() < .1
+                      ? Colors.white
+                      : Colors.black,
+                ),
               ),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout(maxWidth: size.width);
-          text.paint(canvas, const Offset(8, 8));
-          text.dispose();
+              textDirection: TextDirection.ltr,
+            );
+            try {
+              text.layout(maxWidth: size.width);
+              text.paint(canvas, const Offset(8, 8));
+            } finally {
+              text.dispose();
+            }
+          }
           final picture = recorder.endRecording();
-          final result = picture.toImageSync(240, 160);
-          picture.dispose();
-          return result;
+          try {
+            return picture.toImageSync(240, 160);
+          } finally {
+            picture.dispose();
+          }
         }
 
         Future<Uint8List> paint(
           ui.Image current,
           ui.Image target,
           Color paper,
-          double p,
-          bool right, {
+          double p, {
+          required double grabY,
+          required double fingerY,
+          bool right = true,
           bool forward = true,
-        }) async {
-          final recorder = ui.PictureRecorder();
+        }) => _rasterPixels(
           PaperCurlPainter(
             current: current,
             target: target,
             progress: p,
+            grabY: grabY,
+            fingerY: fingerY,
             forward: forward,
             fromRight: right,
             paper: paper,
-          ).paint(Canvas(recorder), size);
-          final picture = recorder.endRecording();
-          final image = await picture.toImage(240, 160);
-          picture.dispose();
-          final data = await image.toByteData();
-          image.dispose();
-          return data!.buffer.asUint8List();
+          ),
+          size,
+        );
+
+        int exposedBlue(Uint8List pixels, int firstRow, int lastRow) {
+          var count = 0;
+          for (var y = firstRow; y < lastRow; y++) {
+            for (var x = 0; x < 240; x++) {
+              final i = (y * 240 + x) * 4;
+              if (pixels[i] < 8 && pixels[i + 1] < 8 && pixels[i + 2] > 240) {
+                count++;
+              }
+            }
+          }
+          return count;
+        }
+
+        Uint8List mirror(Uint8List pixels) {
+          final result = Uint8List(pixels.length);
+          for (var y = 0; y < 160; y++) {
+            for (var x = 0; x < 240; x++) {
+              final source = (y * 240 + x) * 4;
+              final destination = (y * 240 + 239 - x) * 4;
+              for (var channel = 0; channel < 4; channel++) {
+                result[destination + channel] = pixels[source + channel];
+              }
+            }
+          }
+          return result;
+        }
+
+        void expectReversePaper(Uint8List pixels, Color paper) {
+          final red = (paper.r * 255).round();
+          final green = (paper.g * 255).round();
+          final blue = (paper.b * 255).round();
+          var paperPixels = 0;
+          for (var i = 0; i < pixels.length; i += 4) {
+            // A region, not a pinned sample: shading and the faint reverse
+            // print may tint the paper, but it must not become pure white.
+            if ((pixels[i] - red).abs() < 40 &&
+                (pixels[i + 1] - green).abs() < 40 &&
+                (pixels[i + 2] - blue).abs() < 40 &&
+                pixels[i + 2] < 250) {
+              paperPixels++;
+            }
+          }
+          expect(paperPixels, greaterThan(240));
         }
 
         for (final paper in [
@@ -663,28 +1003,181 @@ void main() {
           const Color(0xfff2e4c9),
           const Color(0xff202124),
         ]) {
-          final current = page(paper, 'Current');
-          final target = page(paper, 'Next');
-          final zero = await paint(current, target, paper, 0, true);
-          final one = await paint(current, target, paper, 1, true);
-          expect(zero, (await current.toByteData())!.buffer.asUint8List());
-          expect(one, (await target.toByteData())!.buffer.asUint8List());
-          final mid = await paint(current, target, paper, .3, true);
-          expect(mid, isNot(zero));
-          expect(mid, isNot(one));
-          expect(await paint(current, target, paper, .3, true), mid);
-          final mirrored = await paint(current, target, paper, .3, false);
-          expect(mirrored, isNot(mid));
-          expect(
-            await paint(target, current, paper, .7, true, forward: false),
-            mid,
-          );
-          // Below the printed text, the reversed paper is shaded but opaque.
-          final offset = (140 * 240 + 80) * 4;
-          expect(mid[offset + 3], 255);
-          expect((mid[offset] - (paper.r * 255).round()).abs(), lessThan(40));
-          current.dispose();
-          target.dispose();
+          ui.Image? themedCurrent;
+          ui.Image? themedTarget;
+          ui.Image? red;
+          ui.Image? blue;
+          try {
+            themedCurrent = page(paper, 'Current');
+            themedTarget = page(paper, 'Next');
+            final currentPixels = (await themedCurrent.toByteData())!.buffer
+                .asUint8List();
+            final targetPixels = (await themedTarget.toByteData())!.buffer
+                .asUint8List();
+            for (final forward in [true, false]) {
+              for (final right in [true, false]) {
+                for (final height in [.2, .8]) {
+                  final grabY = size.height * height;
+                  final fingerY = grabY + size.height * .1;
+                  for (final p in [0.0, 1.0]) {
+                    final endpoint = await paint(
+                      themedCurrent,
+                      themedTarget,
+                      paper,
+                      p,
+                      grabY: grabY,
+                      fingerY: fingerY,
+                      right: right,
+                      forward: forward,
+                    );
+                    expect(endpoint, p == 0 ? currentPixels : targetPixels);
+                    _expectOpaque(endpoint);
+                  }
+                  for (final p in [.0001, .9999]) {
+                    final near = await paint(
+                      themedCurrent,
+                      themedTarget,
+                      paper,
+                      p,
+                      grabY: grabY,
+                      fingerY: fingerY,
+                      right: right,
+                      forward: forward,
+                    );
+                    _expectOpaque(near);
+                    expect(
+                      _differentPixelFraction(
+                        near,
+                        p < .5 ? currentPixels : targetPixels,
+                      ),
+                      lessThanOrEqualTo(.01),
+                      reason:
+                          'Endpoint continuity: $paper, forward=$forward, '
+                          'right=$right, grab=$height, progress=$p',
+                    );
+                  }
+                }
+              }
+            }
+
+            red = page(const Color(0xffff0000));
+            blue = page(const Color(0xff0000ff));
+            final upper = await paint(
+              red,
+              blue,
+              paper,
+              .3,
+              grabY: 32,
+              fingerY: 32,
+            );
+            final center = await paint(
+              red,
+              blue,
+              paper,
+              .3,
+              grabY: 80,
+              fingerY: 80,
+            );
+            final lower = await paint(
+              red,
+              blue,
+              paper,
+              .3,
+              grabY: 128,
+              fingerY: 128,
+            );
+            expect(upper, isNot(center));
+            expect(lower, isNot(center));
+            expect(upper, isNot(lower));
+            expect(
+              exposedBlue(upper, 0, 40),
+              greaterThan(exposedBlue(upper, 120, 160)),
+            );
+            expect(
+              exposedBlue(lower, 0, 40),
+              lessThan(exposedBlue(lower, 120, 160)),
+            );
+
+            final pulledUp = await paint(
+              red,
+              blue,
+              paper,
+              .3,
+              grabY: 80,
+              fingerY: 32,
+            );
+            final pulledDown = await paint(
+              red,
+              blue,
+              paper,
+              .3,
+              grabY: 80,
+              fingerY: 128,
+            );
+            expect(pulledUp, isNot(pulledDown));
+            expect(
+              exposedBlue(pulledUp, 0, 40),
+              lessThan(exposedBlue(pulledDown, 0, 40)),
+            );
+            expect(
+              exposedBlue(pulledUp, 120, 160),
+              greaterThan(exposedBlue(pulledDown, 120, 160)),
+            );
+
+            final mirrored = await paint(
+              red,
+              blue,
+              paper,
+              .3,
+              grabY: 32,
+              fingerY: 48,
+              right: false,
+            );
+            final diagonal = await paint(
+              red,
+              blue,
+              paper,
+              .3,
+              grabY: 32,
+              fingerY: 48,
+            );
+            expect(mirrored, isNot(diagonal));
+            expect(
+              _differentPixelFraction(mirrored, mirror(diagonal), tolerance: 2),
+              lessThanOrEqualTo(.01),
+            );
+            final unfolding = await paint(
+              blue,
+              red,
+              paper,
+              .7,
+              grabY: 32,
+              fingerY: 48,
+              forward: false,
+            );
+            expect(
+              _differentPixelFraction(unfolding, diagonal, tolerance: 2),
+              lessThanOrEqualTo(.01),
+            );
+            for (final raster in [
+              upper,
+              center,
+              lower,
+              pulledUp,
+              pulledDown,
+              diagonal,
+              mirrored,
+              unfolding,
+            ]) {
+              _expectOpaque(raster);
+              expectReversePaper(raster, paper);
+            }
+          } finally {
+            themedCurrent?.dispose();
+            themedTarget?.dispose();
+            red?.dispose();
+            blue?.dispose();
+          }
         }
       });
     },

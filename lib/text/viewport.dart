@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -129,6 +130,9 @@ class _TextViewportState extends State<TextViewport>
   bool _dragAccepted = false;
   bool _dragging = false;
   double _dragDistance = 0;
+  // Page-local coordinates survive release and section I/O until hard cleanup.
+  Offset? _dragOrigin;
+  Offset? _dragPointer;
   int _turnDelta = 1;
   bool _releaseComplete = false;
   bool _endOnly = false;
@@ -289,6 +293,8 @@ class _TextViewportState extends State<TextViewport>
     _turnBusy = false;
     _dragAccepted = false;
     _dragging = false;
+    _dragOrigin = null;
+    _dragPointer = null;
     _endOnly = false;
     _turnError = null;
   }
@@ -391,6 +397,10 @@ class _TextViewportState extends State<TextViewport>
 
   Future<void> _startTurn(int delta, {required bool automatic}) async {
     if (_turnBusy || _layout == null || _restoring) return;
+    if (automatic) {
+      _dragOrigin = null;
+      _dragPointer = null;
+    }
     final epoch = ++_turnEpoch;
     _turnBusy = true;
     _turnDelta = delta;
@@ -479,20 +489,21 @@ class _TextViewportState extends State<TextViewport>
     if (!_dragAccepted) return;
     _dragging = true;
     _dragDistance = 0;
+    _dragOrigin = details.localPosition;
+    _dragPointer = details.localPosition;
     _releaseComplete = false;
   }
 
   void _dragUpdate(DragUpdateDetails details) {
     if (!_dragAccepted || !_dragging) return;
-    final movement = details.primaryDelta ?? 0;
+    _dragPointer = details.localPosition;
+    final movement = _dragPointer!.dx - _dragOrigin!.dx;
     if (!_turnBusy && movement != 0) {
       _turnDelta = (movement < 0) != widget.navigation.rightToLeft ? 1 : -1;
       _startTurn(_turnDelta, automatic: false);
     }
     final negative = (_turnDelta > 0) != widget.navigation.rightToLeft;
-    _dragDistance = negative
-        ? math.min(0, _dragDistance + movement)
-        : math.max(0, _dragDistance + movement);
+    _dragDistance = negative ? math.min(0, movement) : math.max(0, movement);
     if (_turn != null) setState(() => _animation.value = _dragProgress);
   }
 
@@ -752,6 +763,9 @@ class _TextViewportState extends State<TextViewport>
               )
             : GestureDetector(
                 behavior: HitTestBehavior.opaque,
+                dragStartBehavior: widget.settings.mode == ReadingMode.pageFlip
+                    ? DragStartBehavior.down
+                    : DragStartBehavior.start,
                 onTapUp: widget.settings.mode == ReadingMode.pageFlip
                     ? (details) {
                         final fraction = details.localPosition.dx / width;
@@ -809,6 +823,8 @@ class _TextViewportState extends State<TextViewport>
                                 current: _turn!.current!,
                                 target: _turn!.incoming!,
                                 progress: _animation.value,
+                                grabY: _dragOrigin?.dy ?? _height / 2,
+                                fingerY: _dragPointer?.dy ?? _height / 2,
                                 forward: _turn!.delta > 0,
                                 fromRight: !widget.navigation.rightToLeft,
                                 paper: widget.background,

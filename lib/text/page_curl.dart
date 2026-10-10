@@ -15,6 +15,8 @@ class PaperCurlPainter extends CustomPainter {
     required this.current,
     required this.target,
     required this.progress,
+    required this.grabY,
+    required this.fingerY,
     required this.forward,
     required this.fromRight,
     required this.paper,
@@ -29,6 +31,13 @@ class PaperCurlPainter extends CustomPainter {
   /// Fraction of the turn, where one is a completed navigation.
   final double progress;
 
+  /// Initial page-local grab height in logical pixels. [progress] carries
+  /// horizontal movement; these heights control the two-dimensional bend.
+  final double grabY;
+
+  /// Live page-local pointer height, frozen while the released turn settles.
+  final double fingerY;
+
   /// Whether the outgoing sheet curls away or the incoming sheet unfolds.
   final bool forward;
 
@@ -41,6 +50,7 @@ class PaperCurlPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
     final p = progress.clamp(0.0, 1.0);
     final rect = Offset.zero & size;
     void image(ui.Image image) => canvas.drawImageRect(
@@ -56,31 +66,126 @@ class PaperCurlPainter extends CustomPainter {
     image(forward ? target : current);
     final sheet = forward ? current : target;
     final curl = forward ? p : 1 - p;
-    final fold = size.width * (1 - 1.1 * curl);
-    final radius = size.width * (.015 + .08 * math.sin(math.pi * curl));
+    final taper = math.sin(math.pi * curl);
+    final grab = grabY.clamp(0.0, size.height);
+    final finger = fingerY.clamp(-size.height, 2 * size.height);
+    final anchorX = size.width * (1 - curl);
+    final anchorY = finger;
+    final slope =
+        (.6 * (.5 - grab / size.height) + (finger - grab) / size.width).clamp(
+          -.8,
+          .8,
+        ) *
+        taper;
+    final inverseLength = 1 / math.sqrt(1 + slope * slope);
+    final normalX = inverseLength;
+    final normalY = -slope * inverseLength;
+    final tangentX = slope * inverseLength;
+    final tangentY = inverseLength;
+    final radius = math.max(.000001, size.width * .095 * taper);
     final front = _Mesh();
     final reverse = _Mesh();
 
-    // A slight diagonal bend gives the fold depth without introducing seams
-    // between independently transformed strips. The complete mesh shares UVs.
+    // Projection, side classification and shadow share one page-local crease.
+    // Scalar frame geometry avoids allocating normal/anchor objects per vertex.
+    double distance(double x, double y) =>
+        (x - anchorX) * normalX + (y - anchorY) * normalY;
+    double mirrorX(double x) => fromRight ? x : size.width - x;
     Offset project(double x, double y) {
-      final localFold =
-          fold +
-          .06 * size.width * math.sin(math.pi * curl) * (y / size.height - .5);
-      final distance = x - localFold;
-      var mapped = x;
-      var lift = 0.0;
-      if (distance > 0) {
-        final angle = math.min(math.pi, distance / radius);
-        mapped = distance <= math.pi * radius
-            ? localFold + radius * math.sin(angle)
-            : localFold - (distance - math.pi * radius);
-        lift = radius * (1 - math.cos(angle));
-      }
+      final d = distance(x, y);
+      final displacement = d <= 0
+          ? 0.0
+          : d <= math.pi * radius
+          ? radius * math.sin(d / radius) - d
+          : math.pi * radius - 2 * d;
       return Offset(
-        fromRight ? mapped : size.width - mapped,
-        y + lift * .12 * (y / size.height - .5),
+        mirrorX(x + normalX * displacement),
+        y + normalY * displacement,
       );
+    }
+
+    final boundaries = [0.0, math.pi * radius / 2, math.pi * radius];
+    void emit(List<Offset> source) {
+      var centerDistance = 0.0;
+      for (final v in source) {
+        centerDistance += distance(v.dx, v.dy);
+      }
+      final back = centerDistance / source.length > boundaries[1];
+      final mesh = back ? reverse : front;
+      mesh.polygon(
+        source.map((v) => project(v.dx, v.dy)).toList(),
+        source
+            .map(
+              (v) => Offset(
+                mirrorX(v.dx) / size.width * sheet.width,
+                v.dy / size.height * sheet.height,
+              ),
+            )
+            .toList(),
+        source.map((v) {
+          // Vertex lighting avoids row-sized shade steps on diagonal folds.
+          final angle = (distance(v.dx, v.dy) / radius).clamp(0.0, math.pi);
+          final light = 1 - .18 * math.sin(angle);
+          return back
+              ? Color.lerp(paper, Colors.black, (1 - light) * .6)!
+              : Color.fromRGBO(
+                  (255 * light).round(),
+                  (255 * light).round(),
+                  (255 * light).round(),
+                  1,
+                );
+        }).toList(),
+      );
+    }
+
+    // Only crease-straddling triangles need extra vertices. Each intersection
+    // is shared by both pieces; UVs come from the same interpolated source point.
+    void splitTriangle(List<Offset> triangle) {
+      var pieces = [triangle];
+      for (final boundary in boundaries) {
+        final next = <List<Offset>>[];
+        for (final piece in pieces) {
+          var hasLow = false;
+          var hasHigh = false;
+          for (final vertex in piece) {
+            final d = distance(vertex.dx, vertex.dy);
+            hasLow |= d < boundary;
+            hasHigh |= d > boundary;
+            if (hasLow && hasHigh) break;
+          }
+          if (!hasLow || !hasHigh) {
+            next.add(piece);
+            continue;
+          }
+          final low = <Offset>[];
+          final high = <Offset>[];
+          var previous = piece.last;
+          var previousD = distance(previous.dx, previous.dy);
+          for (final vertex in piece) {
+            final d = distance(vertex.dx, vertex.dy);
+            if ((previousD < boundary && d > boundary) ||
+                (previousD > boundary && d < boundary)) {
+              final fraction = (boundary - previousD) / (d - previousD);
+              final intersection = Offset(
+                previous.dx + (vertex.dx - previous.dx) * fraction,
+                previous.dy + (vertex.dy - previous.dy) * fraction,
+              );
+              low.add(intersection);
+              high.add(intersection);
+            }
+            if (d <= boundary) low.add(vertex);
+            if (d >= boundary) high.add(vertex);
+            previous = vertex;
+            previousD = d;
+          }
+          if (low.length >= 3) next.add(low);
+          if (high.length >= 3) next.add(high);
+        }
+        pieces = next;
+      }
+      for (final piece in pieces) {
+        emit(piece);
+      }
     }
 
     const columns = 100;
@@ -91,56 +196,55 @@ class PaperCurlPainter extends CustomPainter {
       for (var row = 0; row < rows; row++) {
         final y0 = size.height * row / rows;
         final y1 = size.height * (row + 1) / rows;
-        final angle = ((x0 + x1) / 2 - fold) / radius;
-        final back = angle > math.pi / 2;
-        final light = 1 - .18 * math.sin(angle.clamp(0, math.pi));
-        final color = back
-            ? Color.lerp(paper, Colors.black, (1 - light) * .6)!
-            : Color.fromRGBO(
-                (255 * light).round(),
-                (255 * light).round(),
-                (255 * light).round(),
-                1,
-              );
-        final mesh = back ? reverse : front;
         final corners = [
           Offset(x0, y0),
           Offset(x1, y0),
           Offset(x1, y1),
           Offset(x0, y1),
         ];
-        mesh.quad(
-          corners.map((v) => project(v.dx, v.dy)).toList(),
-          corners
-              .map(
-                (v) => Offset(
-                  (fromRight ? v.dx : size.width - v.dx) /
-                      size.width *
-                      sheet.width,
-                  v.dy / size.height * sheet.height,
-                ),
-              )
-              .toList(),
-          color,
-        );
+        var minimum = double.infinity;
+        var maximum = double.negativeInfinity;
+        for (final vertex in corners) {
+          final d = distance(vertex.dx, vertex.dy);
+          minimum = math.min(minimum, d);
+          maximum = math.max(maximum, d);
+        }
+        if (boundaries.any(
+          (boundary) => minimum < boundary && maximum > boundary,
+        )) {
+          splitTriangle([corners[0], corners[1], corners[2]]);
+          splitTriangle([corners[0], corners[2], corners[3]]);
+        } else {
+          emit(corners);
+        }
       }
     }
     canvas.save();
     canvas.clipRect(rect);
-    final edge = fromRight ? fold + radius : size.width - fold - radius;
+    final shadowX = anchorX + normalX * radius;
+    final shadowY = anchorY + normalY * radius;
     final shadowWidth = radius * 1.5;
-    final shadow = Rect.fromLTWH(
-      edge - shadowWidth,
-      0,
-      shadowWidth * 2,
-      size.height,
+    final extent =
+        2 * math.sqrt(size.width * size.width + size.height * size.height);
+    Offset shadowPoint(double normal, double tangent) => Offset(
+      mirrorX(shadowX + normalX * normal + tangentX * tangent),
+      shadowY + normalY * normal + tangentY * tangent,
     );
-    canvas.drawRect(
-      shadow,
+    final start = shadowPoint(-shadowWidth, 0);
+    final end = shadowPoint(shadowWidth, 0);
+    final ribbon = Path()
+      ..addPolygon([
+        shadowPoint(-shadowWidth, -extent),
+        shadowPoint(shadowWidth, -extent),
+        shadowPoint(shadowWidth, extent),
+        shadowPoint(-shadowWidth, extent),
+      ], true);
+    canvas.drawPath(
+      ribbon,
       Paint()
         ..shader = ui.Gradient.linear(
-          shadow.centerLeft,
-          shadow.centerRight,
+          start,
+          end,
           [
             Colors.transparent,
             Colors.black.withValues(alpha: .22),
@@ -174,6 +278,8 @@ class PaperCurlPainter extends CustomPainter {
       oldDelegate.current != current ||
       oldDelegate.target != target ||
       oldDelegate.progress != progress ||
+      oldDelegate.grabY != grabY ||
+      oldDelegate.fingerY != fingerY ||
       oldDelegate.forward != forward ||
       oldDelegate.fromRight != fromRight ||
       oldDelegate.paper != paper;
@@ -186,12 +292,17 @@ class _Mesh {
   final colors = <Color>[];
   final indices = <int>[];
 
-  void quad(List<Offset> points, List<Offset> uv, Color color) {
+  void polygon(List<Offset> points, List<Offset> uv, List<Color> shading) {
     final base = positions.length;
     positions.addAll(points);
     textures.addAll(uv);
-    colors.addAll(List.filled(4, color));
-    indices.addAll([base, base + 1, base + 2, base, base + 2, base + 3]);
+    colors.addAll(shading);
+    for (var i = 1; i + 1 < points.length; i++) {
+      indices
+        ..add(base)
+        ..add(base + i)
+        ..add(base + i + 1);
+    }
   }
 
   void draw(Canvas canvas, Paint paint, BlendMode blend) {
