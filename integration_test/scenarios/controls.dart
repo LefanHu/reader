@@ -43,6 +43,53 @@ void registerControlTests() {
         expect(app.viewport.navigation.leadingPosition, anchor);
       },
     );
+
+    for (final visibility in ['visible', 'hidden']) {
+      testWidgets(
+        '${mode.name} $visibility left-edge Back preserves the committed anchor',
+        (tester) async {
+          final app = await NativeTestApp.launch(tester);
+          await app.controller.preferences.configure(mode: mode);
+          await app.openBook('Unicode Test');
+          await app.advance();
+          final anchor = app.viewport.navigation.leadingPosition;
+          final book = app.book('Unicode Test');
+          expect(anchor, isNotNull);
+          final bounds = tester.getRect(find.byType(TextViewport));
+          if (visibility == 'hidden') {
+            await tester.tapAt(bounds.center);
+            await tester.pumpAndSettle();
+            expect(find.byTooltip('Show reading controls'), findsOneWidget);
+          }
+          final gesture = await tester.startGesture(
+            Offset(1, bounds.center.dy),
+          );
+          var active = true;
+          try {
+            await gesture.moveBy(const Offset(50, 0));
+            await tester.pump(const Duration(milliseconds: 100));
+            await gesture.moveBy(const Offset(50, 0));
+            await tester.pump(const Duration(milliseconds: 500));
+            expect(find.byType(TextViewport), findsOneWidget);
+            expect(app.viewport.navigation.leadingPosition, anchor);
+            await gesture.up();
+            active = false;
+          } finally {
+            if (active) await gesture.cancel();
+          }
+          await app.waitForReaderClosed();
+          final saved = await app.store.load();
+          expect(
+            saved.firstWhere((item) => item.hash == book.hash).lastPosition,
+            anchor,
+          );
+          await app.capture('edge-back-${mode.name}-$visibility-library');
+          await app.openBook('Unicode Test');
+          expect(app.viewport.navigation.leadingPosition, anchor);
+          await app.capture('edge-back-${mode.name}-$visibility-reopened');
+        },
+      );
+    }
   }
 
   for (final mode in [ReadingMode.pages, ReadingMode.pageFlip]) {

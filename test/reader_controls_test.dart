@@ -1,9 +1,13 @@
+import 'dart:async';
+import 'dart:io';
 import 'dart:ui' show Tristate;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/app/reader_controller.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/importing/book_importer.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/reader/reader_screen.dart';
@@ -12,6 +16,13 @@ import 'package:reader/text/text_section.dart' as text;
 import 'package:reader/text/viewport.dart';
 
 import 'fixtures/catalog_book.dart';
+import 'support/fake_illustration_api.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_text_indexer.dart';
+import 'support/fake_word_counter.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/memory_illustration_store.dart';
+import 'support/memory_settings_store.dart';
 import 'support/memory_document_store.dart';
 import 'support/test_controller.dart';
 
@@ -55,6 +66,145 @@ Future<ReaderController> _mount(
   return controller;
 }
 
+/// Holds only explicitly armed catalog writes, so mounting cannot deadlock.
+class _GatedCatalogStore extends MemoryCatalogStore {
+  _GatedCatalogStore(super.initial);
+
+  Completer<void>? _gate;
+  int heldSaves = 0;
+
+  void arm() {
+    heldSaves = 0;
+    _gate = Completer<void>();
+  }
+
+  void release() {
+    final gate = _gate;
+    _gate = null;
+    if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
+  @override
+  Future<void> save(List<CatalogBook> value) async {
+    final gate = _gate;
+    if (gate != null) {
+      heldSaves++;
+      await gate.future;
+    }
+    await super.save(value);
+  }
+}
+
+/// A real pushed Reader route above a sentinel, with optional held persistence.
+class _RoutedReader {
+  _RoutedReader(this.controller, this.store, this.navigator);
+
+  final ReaderController controller;
+  final _GatedCatalogStore store;
+  final GlobalKey<NavigatorState> navigator;
+
+  static Future<_RoutedReader> mount(
+    WidgetTester tester, {
+    ReadingMode mode = ReadingMode.scroll,
+    bool rtl = false,
+    bool gated = false,
+  }) async {
+    // At phone width the viewport reaches the screen edge: x=19 must remain
+    // outside its padded page hit targets, including RTL curl previews.
+    await tester.binding.setSurfaceSize(const Size(390, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final book = testBook();
+    final store = _GatedCatalogStore([book]);
+    final controller = gated
+        ? ReaderController(
+            catalogStore: store,
+            settingsStore: MemorySettingsStore(),
+            importer: BookImporter(
+              root: Directory('${Directory.systemTemp.path}/reader_test'),
+            ),
+            picker: FakePicker(const []),
+            illustrationStore: MemoryIllustrationStore(),
+            textIndexer: FakeTextIndexer(),
+            wordCounter: FakeWordCounter(),
+            illustrationApi: FakeIllustrationApi(),
+          )
+        : await testController(books: [book]);
+    if (gated) await controller.initialize();
+    final navigator = GlobalKey<NavigatorState>();
+    addTearDown(() async {
+      store.release();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await controller.flush();
+      controller.dispose();
+    });
+    await controller.preferences.configure(mode: mode);
+    final documents = MemoryDocumentStore(
+      sections: [
+        text.TextSection(
+          id: 's0',
+          blocks: [
+            for (var i = 0; i < 8; i++)
+              text.TextBlock(
+                id: 'p$i',
+                text: rtl
+                    ? 'العربية نص طويل للقراءة واختبار الصفحات English 中文 ' * 80
+                    : 'English 中文 العربية हिन्दी e\u0301 👩🏽‍🚀 ' * 80,
+              ),
+          ],
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: navigator,
+        home: const Scaffold(body: Text('Reader route root')),
+      ),
+    );
+    navigator.currentState!.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => Directionality(
+          textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
+          child: ReaderScreen(
+            book: book,
+            controller: controller,
+            documentStore: documents,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    return _RoutedReader(controller, store, navigator);
+  }
+}
+
+/// Sends a real pointer sequence, cancelling only while it remains active.
+Future<void> _readerDrag(
+  WidgetTester tester,
+  Offset origin,
+  Offset displacement, {
+  bool cancel = false,
+  Future<void> Function()? held,
+}) async {
+  final gesture = await tester.startGesture(origin);
+  var active = true;
+  try {
+    await gesture.moveBy(displacement * .25);
+    await tester.pump();
+    await gesture.moveBy(displacement * .75);
+    await tester.pump(const Duration(milliseconds: 100));
+    if (held != null) await held();
+    if (cancel) {
+      await gesture.cancel();
+    } else {
+      await gesture.up();
+    }
+    active = false;
+    await tester.pumpAndSettle();
+  } finally {
+    if (active) await gesture.cancel();
+  }
+}
+
 FadeTransition _toolbarFade(WidgetTester tester) =>
     tester.widget<FadeTransition>(
       find
@@ -82,6 +232,254 @@ bool _hasControlSemantics(WidgetTester tester, String description) {
 }
 
 void main() {
+  for (final mode in ReadingMode.values) {
+    for (final hidden in [false, true]) {
+      for (final rtl in mode == ReadingMode.scroll ? [false] : [false, true]) {
+        testWidgets(
+          '${mode.name} ${hidden ? 'hidden' : 'visible'} '
+          '${rtl ? 'RTL' : 'LTR'} routed edge Back preserves complete anchor',
+          (tester) async {
+            final fixture = await _RoutedReader.mount(
+              tester,
+              mode: mode,
+              rtl: rtl,
+            );
+            final navigation = tester
+                .widget<TextViewport>(find.byType(TextViewport))
+                .navigation;
+            navigation.next();
+            await tester.pumpAndSettle();
+            final anchor = navigation.leadingPosition;
+            expect(anchor, isNotNull);
+            expect(
+              fixture.controller.catalog.books.single.lastPosition,
+              anchor,
+            );
+            if (hidden) {
+              await tester.tapAt(tester.getCenter(find.byType(TextViewport)));
+              await tester.pumpAndSettle();
+              expect(find.byTooltip('Show reading controls'), findsOneWidget);
+            }
+            final origin = Offset(
+              19,
+              tester.getCenter(find.byType(TextViewport)).dy,
+            );
+            Future<void> unchanged() async {
+              expect(find.byType(ReaderScreen), findsOneWidget);
+              expect(navigation.leadingPosition, anchor);
+              expect(
+                fixture.controller.catalog.books.single.lastPosition,
+                anchor,
+              );
+            }
+
+            await _readerDrag(
+              tester,
+              origin,
+              const Offset(100, 0),
+              cancel: true,
+              held: unchanged,
+            );
+            await unchanged();
+            await _readerDrag(
+              tester,
+              origin,
+              const Offset(100, 0),
+              held: unchanged,
+            );
+            expect(find.byType(ReaderScreen), findsNothing);
+            expect(find.text('Reader route root'), findsOneWidget);
+            expect(
+              fixture.controller.catalog.books.single.lastPosition,
+              anchor,
+            );
+            expect(
+              (await fixture.controller.catalog.store.load())
+                  .single
+                  .lastPosition,
+              anchor,
+            );
+          },
+        );
+      }
+    }
+    for (final rtl in mode == ReadingMode.scroll ? [false] : [false, true]) {
+      testWidgets(
+        '${mode.name} ${rtl ? 'RTL' : 'LTR'} interior gesture navigates content',
+        (tester) async {
+          final fixture = await _RoutedReader.mount(
+            tester,
+            mode: mode,
+            rtl: rtl,
+          );
+          final navigation = tester
+              .widget<TextViewport>(find.byType(TextViewport))
+              .navigation;
+          final before = navigation.leadingPosition;
+          final bounds = tester.getRect(find.byType(TextViewport));
+          final scrollable = find.descendant(
+            of: find.byType(TextViewport),
+            matching: find.byType(Scrollable),
+          );
+          final scrollBefore = mode == ReadingMode.scroll
+              ? tester.state<ScrollableState>(scrollable.first).position.pixels
+              : null;
+          if (mode == ReadingMode.pages) {
+            // Pages uses fling velocity; curl and edge Back instead use travel.
+            await tester.flingFrom(
+              bounds.center,
+              Offset(bounds.width * (rtl ? .7 : -.7), 0),
+              800,
+            );
+            await tester.pumpAndSettle();
+          } else {
+            await _readerDrag(
+              tester,
+              bounds.center,
+              mode == ReadingMode.scroll
+                  ? const Offset(0, -250)
+                  : Offset(bounds.width * (rtl ? .7 : -.7), 0),
+              held: mode == ReadingMode.pageFlip
+                  ? () async {
+                      expect(navigation.leadingPosition, before);
+                      expect(
+                        fixture.controller.catalog.books.single.lastPosition,
+                        before,
+                      );
+                    }
+                  : null,
+            );
+          }
+          expect(find.byType(ReaderScreen), findsOneWidget);
+          if (mode == ReadingMode.scroll) {
+            expect(
+              tester.state<ScrollableState>(scrollable.first).position.pixels,
+              greaterThan(scrollBefore!),
+            );
+          }
+          expect(navigation.leadingPosition, isNot(before));
+          expect(
+            fixture.controller.catalog.books.single.lastPosition,
+            navigation.leadingPosition,
+          );
+        },
+      );
+    }
+  }
+
+  for (final coverBeforeDown in [false, true]) {
+    testWidgets(
+      'cover ${coverBeforeDown ? 'before DOWN' : 'before UP'} prevents Reader edge exit',
+      (tester) async {
+        final fixture = await _RoutedReader.mount(tester);
+        final navigation = tester
+            .widget<TextViewport>(find.byType(TextViewport))
+            .navigation;
+        navigation.next();
+        await tester.pumpAndSettle();
+        final anchor = navigation.leadingPosition;
+        final origin = Offset(
+          1,
+          tester.getCenter(find.byType(TextViewport)).dy,
+        );
+        Future<void> cover() async {
+          fixture.navigator.currentState!.push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) =>
+                  const Scaffold(body: Text('Covering active gesture')),
+            ),
+          );
+          await tester.pumpAndSettle();
+        }
+
+        if (coverBeforeDown) await cover();
+        await _readerDrag(
+          tester,
+          origin,
+          const Offset(100, 0),
+          held: coverBeforeDown ? null : cover,
+        );
+        expect(find.text('Covering active gesture'), findsOneWidget);
+        expect(find.byType(ReaderScreen, skipOffstage: false), findsOneWidget);
+        expect(navigation.leadingPosition, anchor);
+        expect(fixture.controller.catalog.books.single.lastPosition, anchor);
+        fixture.navigator.currentState!.pop();
+        await tester.pumpAndSettle();
+        expect(find.byType(ReaderScreen), findsOneWidget);
+        expect(navigation.leadingPosition, anchor);
+      },
+    );
+  }
+
+  testWidgets('edge exit waits for one flush despite competing toolbar Back', (
+    tester,
+  ) async {
+    final fixture = await _RoutedReader.mount(tester, gated: true);
+    final navigation = tester
+        .widget<TextViewport>(find.byType(TextViewport))
+        .navigation;
+    navigation.next();
+    await tester.pumpAndSettle();
+    final anchor = navigation.leadingPosition;
+    fixture.store.arm();
+    await _readerDrag(
+      tester,
+      Offset(1, tester.getCenter(find.byType(TextViewport)).dy),
+      const Offset(100, 0),
+    );
+    expect(fixture.store.heldSaves, 1);
+    expect(find.byType(ReaderScreen), findsOneWidget);
+    await tester.tap(find.byTooltip('Back to library'));
+    await tester.pump();
+    expect(fixture.store.heldSaves, 1);
+    expect(find.byType(ReaderScreen), findsOneWidget);
+    fixture.store.release();
+    await tester.pumpAndSettle();
+    expect(find.byType(ReaderScreen), findsNothing);
+    expect(find.text('Reader route root'), findsOneWidget);
+    expect((await fixture.store.load()).single.lastPosition, anchor);
+  });
+
+  testWidgets(
+    'covering route during flush preserves both routes and allows retry',
+    (tester) async {
+      final fixture = await _RoutedReader.mount(tester, gated: true);
+      final navigation = tester
+          .widget<TextViewport>(find.byType(TextViewport))
+          .navigation;
+      navigation.next();
+      await tester.pumpAndSettle();
+      final anchor = navigation.leadingPosition;
+      fixture.store.arm();
+      await _readerDrag(
+        tester,
+        Offset(1, tester.getCenter(find.byType(TextViewport)).dy),
+        const Offset(100, 0),
+      );
+      expect(fixture.store.heldSaves, 1);
+      fixture.navigator.currentState!.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Covering Reader route')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      fixture.store.release();
+      await tester.pumpAndSettle();
+      expect(find.text('Covering Reader route'), findsOneWidget);
+      expect(find.byType(ReaderScreen, skipOffstage: false), findsOneWidget);
+      expect((await fixture.store.load()).single.lastPosition, anchor);
+      fixture.navigator.currentState!.pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(ReaderScreen), findsOneWidget);
+      expect(navigation.leadingPosition, anchor);
+      await tester.tap(find.byTooltip('Back to library'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ReaderScreen), findsNothing);
+      expect(find.text('Reader route root'), findsOneWidget);
+      expect((await fixture.store.load()).single.lastPosition, anchor);
+    },
+  );
+
   testWidgets('toolbar chapter title is centered on the reading viewport', (
     tester,
   ) async {

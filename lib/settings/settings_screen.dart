@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import '../app/edge_back_gesture.dart';
 import '../app/reader_controller.dart';
 import '../identity/cloud_identity_exception.dart';
 import '../preferences/library_filter.dart';
@@ -55,6 +56,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (section == _Section.about) _packageInfo ??= PackageInfo.fromPlatform();
     if (section == _Section.storage) {
       _cacheSize = controller.narrationCacheBytes();
+    }
+  }
+
+  /// Narrow details unwind before the route; covered Settings never navigates.
+  void _back({required bool wide}) {
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    if (!wide && _selected != null) {
+      setState(() => _selected = null);
+    } else {
+      Navigator.pop(context);
     }
   }
 
@@ -113,34 +124,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
             constraints.maxWidth >= 700 &&
             MediaQuery.textScalerOf(context).scale(16) <= 24;
         final selected = _selected ?? (wide ? _Section.account : null);
-        return Scaffold(
-          appBar: AppBar(
-            title: Text(wide || selected == null ? 'Settings' : selected.label),
-            leading: BackButton(
-              onPressed: () {
-                if (!wide && _selected != null) {
-                  setState(() => _selected = null);
-                } else {
-                  Navigator.pop(context);
-                }
-              },
+        void back() => _back(wide: wide);
+        // Suppress native edge pops so every Back uses the same detail hierarchy.
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) back();
+          },
+          child: EdgeBackGesture(
+            onBack: back,
+            child: Scaffold(
+              appBar: AppBar(
+                title: Text(
+                  wide || selected == null ? 'Settings' : selected.label,
+                ),
+                leading: BackButton(onPressed: back),
+              ),
+              body: SafeArea(
+                child: wide
+                    ? Row(
+                        children: [
+                          SizedBox(
+                            width: 240,
+                            child: _sections(selected, sidebar: true),
+                          ),
+                          const VerticalDivider(width: 1),
+                          Expanded(child: _detail(selected!)),
+                        ],
+                      )
+                    : selected == null
+                    ? _sections(null)
+                    : _detail(selected),
+              ),
             ),
-          ),
-          body: SafeArea(
-            child: wide
-                ? Row(
-                    children: [
-                      SizedBox(
-                        width: 240,
-                        child: _sections(selected, sidebar: true),
-                      ),
-                      const VerticalDivider(width: 1),
-                      Expanded(child: _detail(selected!)),
-                    ],
-                  )
-                : selected == null
-                ? _sections(null)
-                : _detail(selected),
           ),
         );
       },

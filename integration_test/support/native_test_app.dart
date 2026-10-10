@@ -188,6 +188,12 @@ class NativeTestApp {
   /// Waits for viewport disposal so the next toolbar is not behind a transition.
   Future<void> closeReader() async {
     await tester.tap(find.byTooltip('Back to library'));
+    await waitForReaderClosed();
+  }
+
+  /// Waits for an already-requested Reader exit and outgoing route disposal.
+  /// Does not tap Back or flush, so gesture scenarios prove their own exit.
+  Future<void> waitForReaderClosed() async {
     await _waitFor(find.byType(LibraryScreen), 'the flushed reader to close');
     await tester.pumpAndSettle();
     await _waitFor(

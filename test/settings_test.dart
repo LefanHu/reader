@@ -114,6 +114,54 @@ Future<void> _section(
   }
 }
 
+/// Uses the production singleton route so edge exits also prove completion cleanup.
+Future<GlobalKey<NavigatorState>> _mountRouted(
+  WidgetTester tester, {
+  required bool wide,
+}) async {
+  await tester.binding.setSurfaceSize(Size(wide ? 1100 : 390, 600));
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+  final controller = await testController();
+  addTearDown(() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await controller.flush();
+  });
+  final navigator = GlobalKey<NavigatorState>();
+  await tester.pumpWidget(
+    MaterialApp(
+      navigatorKey: navigator,
+      theme: ThemeData(
+        platform: wide ? TargetPlatform.macOS : TargetPlatform.iOS,
+      ),
+      home: const Scaffold(body: Text('Library sentinel')),
+    ),
+  );
+  unawaited(SettingsNavigation.open(navigator.currentState!, controller));
+  await tester.pumpAndSettle();
+  return navigator;
+}
+
+Future<void> _edgeBack(WidgetTester tester, {bool cancel = false}) async {
+  final gesture = await tester.startGesture(const Offset(1, 300));
+  var ended = false;
+  try {
+    await gesture.moveBy(const Offset(50, 0));
+    await gesture.moveBy(const Offset(50, 0));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    if (cancel) {
+      await gesture.cancel();
+    } else {
+      await gesture.up();
+    }
+    ended = true;
+    await tester.pumpAndSettle();
+  } finally {
+    if (!ended) await gesture.cancel();
+  }
+}
+
 Future<ReaderController> _accountController({
   required FakeCloudIdentity identity,
   FakeAccountApi? accountApi,
@@ -679,6 +727,100 @@ void main() {
       await reopened;
     },
   );
+
+  for (final wide in [false, true]) {
+    testWidgets(
+      '${wide ? 'wide' : 'compact'} edge Back follows Settings hierarchy',
+      (tester) async {
+        await _mountRouted(tester, wide: wide);
+        await _section(tester, 'Reading');
+        await _edgeBack(tester);
+        if (!wide) {
+          expect(find.widgetWithText(ListTile, 'Reading'), findsOneWidget);
+          expect(find.text('Settings'), findsOneWidget);
+          await _edgeBack(tester);
+        }
+        expect(find.text('Library sentinel'), findsOneWidget);
+        expect(find.byType(SettingsScreen), findsNothing);
+      },
+    );
+
+    testWidgets(
+      '${wide ? 'wide' : 'compact'} interior and cancelled swipes retain detail',
+      (tester) async {
+        await _mountRouted(tester, wide: wide);
+        await _section(tester, 'Reading');
+        final detail = tester.widget<AppBar>(find.byType(AppBar)).title;
+        await tester.dragFrom(const Offset(24, 300), const Offset(100, 0));
+        await tester.pumpAndSettle();
+        await _edgeBack(tester, cancel: true);
+        expect(tester.widget<AppBar>(find.byType(AppBar)).title, detail);
+        expect(find.byType(SettingsScreen), findsOneWidget);
+        if (!wide) {
+          expect(find.widgetWithText(ListTile, 'Reading'), findsNothing);
+        }
+      },
+    );
+
+    testWidgets(
+      '${wide ? 'wide' : 'compact'} confirmation covers Settings edge Back',
+      (tester) async {
+        await _mountRouted(tester, wide: wide);
+        PackageInfo.setMockInitialValues(
+          appName: 'Reader',
+          packageName: 'reader',
+          version: '1',
+          buildNumber: '1',
+          buildSignature: '',
+        );
+        await _section(tester, 'About');
+        await tester.ensureVisible(find.text('Reset preferences'));
+        await tester.tap(find.text('Reset preferences'));
+        await tester.pumpAndSettle();
+        await _edgeBack(tester);
+        expect(find.text('Reset preferences?'), findsOneWidget);
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+        expect(find.text('Reset preferences'), findsOneWidget);
+        expect(find.byType(SettingsScreen), findsOneWidget);
+        if (!wide) expect(find.widgetWithText(ListTile, 'About'), findsNothing);
+      },
+    );
+  }
+
+  testWidgets(
+    'compact system Back unwinds detail before completing Settings route',
+    (tester) async {
+      final navigator = await _mountRouted(tester, wide: false);
+      await _section(tester, 'Reading');
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ListTile, 'Reading'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('Library sentinel'), findsOneWidget);
+      // Route completion removes the singleton; opening again must create a route.
+      final controller = await testController();
+      addTearDown(controller.dispose);
+      unawaited(SettingsNavigation.open(navigator.currentState!, controller));
+      await tester.pumpAndSettle();
+      expect(find.byType(SettingsScreen), findsOneWidget);
+    },
+  );
+
+  testWidgets('edge vertical gesture scrolls compact categories without exit', (
+    tester,
+  ) async {
+    await _mountRouted(tester, wide: false);
+    final position = tester
+        .state<ScrollableState>(find.byType(Scrollable).first)
+        .position;
+    await tester.dragFrom(const Offset(1, 450), const Offset(0, -200));
+    await tester.pumpAndSettle();
+    expect(position.pixels, greaterThan(0));
+    expect(find.text('Settings'), findsOneWidget);
+    expect(find.byType(SettingsScreen), findsOneWidget);
+  });
 
   for (final theme in ReadingTheme.values) {
     for (final desktop in [false, true]) {

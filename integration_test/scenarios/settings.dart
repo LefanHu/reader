@@ -3,11 +3,13 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reader/library/library_screen.dart';
 import 'package:reader/narration/native_narration_player.dart';
 import 'package:reader/narration/session.dart';
 import 'package:reader/preferences/reader_settings.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/settings/settings_screen.dart';
 
 import '../../test/fixtures/narration_audio.dart';
 import '../../test/support/fake_narration_api.dart';
@@ -83,8 +85,83 @@ Future<void> _wait(WidgetTester tester, bool Function() ready) async {
   fail('Timed out waiting for native Settings state.');
 }
 
+/// Sends a physical pointer drag, cancelling only if release was not reached.
+Future<void> _swipe(WidgetTester tester, Offset start) async {
+  final gesture = await tester.startGesture(start);
+  var active = true;
+  try {
+    await gesture.moveBy(const Offset(50, 0));
+    await tester.pump(const Duration(milliseconds: 100));
+    await gesture.moveBy(const Offset(50, 0));
+    await tester.pump(const Duration(milliseconds: 500));
+    await gesture.up();
+    active = false;
+  } finally {
+    if (active) await gesture.cancel();
+  }
+  await tester.pumpAndSettle();
+}
+
 /// Native preferences flows keep imported books and normalized progress intact.
 void registerSettingsTests() {
+  testWidgets('left-edge Back follows Settings hierarchy', (tester) async {
+    final app = await NativeTestApp.launch(tester);
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    final flow = _SettingsFlow(tester);
+    final platform = Theme.of(tester.element(find.byType(SettingsScreen)))
+        .platform;
+    expect(platform, anyOf(TargetPlatform.iOS, TargetPlatform.macOS));
+    // Capture layout while mounted; wide exits remove the divider used by flow.
+    final wide = flow.wide;
+    expect(wide, platform == TargetPlatform.macOS);
+    final layout = wide ? 'wide' : 'compact';
+    await flow.section('Reading');
+    final bounds = tester.getRect(find.byType(SettingsScreen));
+    await _swipe(tester, bounds.center);
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    expect(find.text('Serif font'), findsOneWidget);
+    if (!wide) {
+      expect(find.widgetWithText(ListTile, 'Reading'), findsNothing);
+    }
+
+    // A confirmation covers the owning route: its edge cannot navigate Settings.
+    await flow.section('About');
+    await flow.tap('Reset preferences');
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await _swipe(tester, Offset(1, bounds.center.dy));
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    await flow.visible(find.text('Open-source licenses'));
+    expect(find.text('Open-source licenses'), findsOneWidget);
+    if (!wide) {
+      expect(find.widgetWithText(ListTile, 'About'), findsNothing);
+    }
+
+    await flow.section('Reading');
+    await _swipe(tester, Offset(1, bounds.center.dy));
+    if (!wide) {
+      await _wait(
+        tester,
+        () => find.widgetWithText(ListTile, 'Reading').evaluate().isNotEmpty,
+      );
+      expect(find.byType(SettingsScreen), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
+      expect(find.text('Serif font'), findsNothing);
+      await _swipe(tester, Offset(1, bounds.center.dy));
+    }
+    await _wait(
+      tester,
+      () => find.byType(BackButton, skipOffstage: false).evaluate().isEmpty,
+    );
+    expect(find.byType(SettingsScreen, skipOffstage: false), findsNothing);
+    expect(find.byType(LibraryScreen), findsOneWidget);
+    await app.capture('edge-back-settings-$layout-library');
+  });
+
   testWidgets(
     'global settings change theme voice speed and retain imported books',
     (tester) async {

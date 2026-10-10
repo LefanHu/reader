@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../app/edge_back_gesture.dart';
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
 import '../illustrations/illustration_scene.dart';
@@ -255,10 +256,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Future<void> _close() async {
     // Back gestures and toolbar actions can race; flush only once on exit.
-    if (closed) return;
+    final route = ModalRoute.of(context);
+    if (closed || route?.isCurrent != true) return;
     closed = true;
     await widget.controller.flush();
-    if (mounted) Navigator.pop(context);
+    if (!mounted) return;
+    // A sheet opened during persistence belongs to a different exit action.
+    if (route!.isCurrent) {
+      Navigator.pop(context);
+    } else {
+      closed = false;
+    }
   }
 
   @override
@@ -281,109 +289,114 @@ class _ReaderScreenState extends State<ReaderScreen> {
     },
     child: ListenableBuilder(
       listenable: widget.controller,
-      builder: (context, _) => Scaffold(
-        backgroundColor: _background,
-        body: SafeArea(
-          child: FutureBuilder<text.TextDocument>(
-            future: publication,
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return ReaderError(
-                  message: snapshot.error.toString(),
-                  onBack: _close,
-                );
-              }
-              final pub = snapshot.data;
-              if (pub == null) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              return Column(
-                children: [
-                  // Both control areas remain reserved. Changing these heights
-                  // would reflow text and interrupt a page curl when chrome toggles.
-                  SizedBox(
-                    height: 60,
-                    child: Stack(
-                      children: [
-                        ReaderControlsTransition(
-                          visible: controls,
-                          hiddenOffset: const Offset(0, -.15),
-                          child: ReaderToolbar(
-                            title: chapterTitle ?? widget.book.title,
-                            foreground: _foreground,
-                            illustrationCount: widget.controller.illustrations
-                                .manifestFor(widget.book)
-                                .unlockedScenes
-                                .length,
-                            onBack: _close,
-                            onToc: () => _showToc(pub),
-                            onIllustrations: _showIllustrations,
-                            onListen: () => showNarrationSheet(
-                              context,
-                              widget.controller,
-                              widget.book,
+      builder: (context, _) => EdgeBackGesture(
+        onBack: _close,
+        child: Scaffold(
+          backgroundColor: _background,
+          body: SafeArea(
+            child: FutureBuilder<text.TextDocument>(
+              future: publication,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return ReaderError(
+                    message: snapshot.error.toString(),
+                    onBack: _close,
+                  );
+                }
+                final pub = snapshot.data;
+                if (pub == null) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                return Column(
+                  children: [
+                    // Both control areas remain reserved. Changing these heights
+                    // would reflow text and interrupt a page curl when chrome toggles.
+                    SizedBox(
+                      height: 60,
+                      child: Stack(
+                        children: [
+                          ReaderControlsTransition(
+                            visible: controls,
+                            hiddenOffset: const Offset(0, -.15),
+                            child: ReaderToolbar(
+                              title: chapterTitle ?? widget.book.title,
+                              foreground: _foreground,
+                              illustrationCount: widget.controller.illustrations
+                                  .manifestFor(widget.book)
+                                  .unlockedScenes
+                                  .length,
+                              onBack: _close,
+                              onToc: () => _showToc(pub),
+                              onIllustrations: _showIllustrations,
+                              onListen: () => showNarrationSheet(
+                                context,
+                                widget.controller,
+                                widget.book,
+                              ),
+                              onSettings: _showSettings,
+                              onHide: () => setState(() => controls = false),
                             ),
-                            onSettings: _showSettings,
-                            onHide: () => setState(() => controls = false),
                           ),
-                        ),
-                        ReaderControlsTransition(
-                          visible: !controls,
-                          child: SizedBox(
-                            height: 60,
-                            child: Align(
-                              alignment: Alignment.centerRight,
-                              child: IconButton(
-                                tooltip: 'Show reading controls',
-                                color: _foreground,
-                                onPressed: () =>
-                                    setState(() => controls = true),
-                                icon: const Icon(Icons.visibility_outlined),
+                          ReaderControlsTransition(
+                            visible: !controls,
+                            child: SizedBox(
+                              height: 60,
+                              child: Align(
+                                alignment: Alignment.centerRight,
+                                child: IconButton(
+                                  tooltip: 'Show reading controls',
+                                  color: _foreground,
+                                  onPressed: () =>
+                                      setState(() => controls = true),
+                                  icon: const Icon(Icons.visibility_outlined),
+                                ),
                               ),
                             ),
                           ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      // Keep the same viewport element through control transitions.
+                      key: const ValueKey('reading-content'),
+                      child: Center(
+                        child: ConstrainedBox(
+                          // Long lines reduce readability, especially on iPad.
+                          constraints: const BoxConstraints(maxWidth: 680),
+                          child: _readerView(pub),
                         ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    // Keep the same viewport element through control transitions.
-                    key: const ValueKey('reading-content'),
-                    child: Center(
-                      child: ConstrainedBox(
-                        // Long lines reduce readability, especially on iPad.
-                        constraints: const BoxConstraints(maxWidth: 680),
-                        child: _readerView(pub),
                       ),
                     ),
-                  ),
-                  SizedBox(
-                    height: 62,
-                    child: ReaderControlsTransition(
-                      visible: controls,
-                      hiddenOffset: const Offset(0, .15),
-                      child: ReaderNavigationBar(
-                        progress:
-                            widget.controller.catalog.books
-                                .where((book) => book.hash == widget.book.hash)
-                                .firstOrNull
-                                ?.progress ??
-                            widget.book.progress,
-                        foreground: _foreground,
-                        pages:
-                            widget.controller.preferences.settings.mode !=
-                            ReadingMode.scroll,
-                        rightToLeft: navigation.rightToLeft,
-                        onPrevious: navigation.previous,
-                        onNext: navigation.next,
-                        onPreviousChapter: navigation.previousSection,
-                        onNextChapter: navigation.nextSection,
+                    SizedBox(
+                      height: 62,
+                      child: ReaderControlsTransition(
+                        visible: controls,
+                        hiddenOffset: const Offset(0, .15),
+                        child: ReaderNavigationBar(
+                          progress:
+                              widget.controller.catalog.books
+                                  .where(
+                                    (book) => book.hash == widget.book.hash,
+                                  )
+                                  .firstOrNull
+                                  ?.progress ??
+                              widget.book.progress,
+                          foreground: _foreground,
+                          pages:
+                              widget.controller.preferences.settings.mode !=
+                              ReadingMode.scroll,
+                          rightToLeft: navigation.rightToLeft,
+                          onPrevious: navigation.previous,
+                          onNext: navigation.next,
+                          onPreviousChapter: navigation.previousSection,
+                          onNextChapter: navigation.nextSection,
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              );
-            },
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),
