@@ -10,6 +10,13 @@
 - Test names should state behavior. Add comments inside tests only when the fixture or assertion protects a non-obvious regression.
 - Important notes should go here in AGENTS.md
 
+## Dart component organization
+
+- Keep every handwritten Dart file below 1,000 physical lines with headroom. Exempt exactly `lib/text/direction.dart` for its generated Unicode table; do not split the data or alter its generator to satisfy the cap.
+- Keep production/domain and shared test components in focused declaring files. Pair widgets with their private State; owned enums, typedefs, helpers, and small single-test fixtures may remain alongside their owner. Use direct imports, never compatibility exports, barrels, or `part` splits.
+- `ReaderController` remains the sole shared notifier and cross-feature transaction owner. Catalog, preferences, and illustration coordinators own authoritative state and installed live callbacks; they do not import the controller, UI, or one another.
+- `SectionLayout` owns measured painters and `PageTurn` owns its two-or-zero images. Navigation attaches live callbacks only during viewport lifecycle transitions and detaches only the identical owner; borrowed targets, lines, slices, and painters never dispose these resources.
+
 ## Reader and interface invariants
 
 - Rendering and illustration indexing must consume the same normalized `TextDocument` text and stable block identities. Keep extraction and normalization in `lib/text/`; do not introduce a second text pipeline.

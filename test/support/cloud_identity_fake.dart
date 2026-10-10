@@ -1,6 +1,7 @@
 // Test state records boundary behavior; production APIs document lifecycle rules.
 // ignore_for_file: public_member_api_docs
-import 'package:reader/cloud_identity.dart';
+import 'package:reader/identity/cloud_identity.dart';
+import 'package:reader/identity/cloud_identity_exception.dart';
 
 /// Offline account fake never grants per-book consent or invokes feature APIs.
 class FakeCloudIdentity implements CloudIdentity {

@@ -3,11 +3,14 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/models.dart';
-import 'package:reader/narration/player.dart';
+import 'package:reader/narration/native_narration_player.dart';
 import 'package:reader/narration/session.dart';
+import 'package:reader/preferences/reader_settings.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
 
-import '../../test/support/narration_fakes.dart';
+import '../../test/fixtures/narration_audio.dart';
+import '../../test/support/fake_narration_api.dart';
 import '../support/native_test_app.dart';
 
 // Resolve lazy children only after scrolling; compact iOS and wide macOS have
@@ -127,22 +130,22 @@ void registerSettingsTests() {
         expect(app.book('Unicode Test').lastPosition, anchor);
       }
       await flow.tap('Serif font');
-      expect(app.controller.settings.serif, isFalse);
+      expect(app.controller.preferences.settings.serif, isFalse);
       await flow.visible(find.byType(Slider));
       await tester.drag(find.byType(Slider), const Offset(60, 0));
       await tester.pumpAndSettle();
-      expect(app.controller.settings.fontSize, isNot(100));
+      expect(app.controller.preferences.settings.fontSize, isNot(100));
       final sample = find.textContaining('The quiet room held');
       await flow.visible(sample);
       expect(tester.widget<Text>(sample).style!.fontFamily, 'DM Sans');
       await flow.section('Narration');
       await flow.tap('Cedar');
       await flow.tap('1.5×');
-      expect(app.controller.settings.narrationVoice, 'cedar');
-      expect(app.controller.settings.narrationSpeed, 1.5);
+      expect(app.controller.preferences.settings.narrationVoice, 'cedar');
+      expect(app.controller.preferences.settings.narrationSpeed, 1.5);
       await flow.section('Appearance');
       await flow.tap('Sepia');
-      expect(app.controller.settings.theme, ReadingTheme.sepia);
+      expect(app.controller.preferences.settings.theme, ReadingTheme.sepia);
       await app.capture('settings-sepia');
       await flow.close();
       await tester.enterText(find.byType(TextField), 'Unicode');
@@ -178,7 +181,10 @@ void registerSettingsTests() {
       await app.openBook('Unicode Test');
       expect(app.textPaints, findsWidgets);
       expect(app.viewport.settings.serif, isFalse);
-      expect(app.viewport.settings.fontSize, app.controller.settings.fontSize);
+      expect(
+        app.viewport.settings.fontSize,
+        app.controller.preferences.settings.fontSize,
+      );
       expect(app.viewport.settings.mode, ReadingMode.scroll);
       expect(app.viewport.navigation.leadingPosition, anchor);
       expect(app.book('Unicode Test').lastPosition, anchor);
@@ -243,8 +249,8 @@ void registerSettingsTests() {
       await app.capture('settings-reset-confirmation');
       await flow.tap('Cancel');
       expect(session.status, NarrationStatus.playing);
-      expect(app.controller.settings.narrationVoice, 'cedar');
-      expect(app.controller.settings.narrationSpeed, 1.5);
+      expect(app.controller.preferences.settings.narrationVoice, 'cedar');
+      expect(app.controller.preferences.settings.narrationSpeed, 1.5);
       expect(app.book('Unicode Test').lastPosition, anchor);
       expect(session.manifest.cloudBookId, consent);
       expect(await tester.runAsync(app.controller.narrationCacheBytes), cached);
@@ -254,9 +260,12 @@ void registerSettingsTests() {
         tester,
         () =>
             session.status == NarrationStatus.paused &&
-            app.controller.settings.narrationVoice == 'marin',
+            app.controller.preferences.settings.narrationVoice == 'marin',
       );
-      expect(app.controller.settings.toJson(), const ReaderSettings().toJson());
+      expect(
+        app.controller.preferences.settings.toJson(),
+        const ReaderSettings().toJson(),
+      );
       expect(session.manifest.cloudBookId, consent);
       expect(await tester.runAsync(app.controller.narrationCacheBytes), cached);
       expect(app.book('Unicode Test').lastPosition, anchor);

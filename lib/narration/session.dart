@@ -1,11 +1,17 @@
 import 'dart:async';
 
-import '../models.dart';
+import '../catalog/catalog_book.dart';
+import '../preferences/reader_settings.dart';
 import '../text/document.dart';
+import '../text/document_store.dart';
+import '../text/text_position.dart';
+import '../text/text_section.dart';
 import '../text/narration.dart';
+import '../text/narration_chunk.dart';
 import 'api.dart';
-import 'models.dart';
+import 'narration_manifest.dart';
 import 'player.dart';
+import 'narration_cache_key.dart';
 import 'store.dart';
 
 /// Session status separates cloud buffering from committed reading progress.

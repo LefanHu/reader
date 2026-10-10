@@ -7,22 +7,24 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/main.dart';
-import 'package:reader/library.dart';
-import 'package:reader/models.dart';
-import 'package:reader/narration/player.dart';
-import 'package:reader/narration/store.dart';
-import 'package:reader/cloud_identity.dart';
-
-import '../../test/support/narration_fakes.dart';
-
-import 'package:reader/storage.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/catalog/file_catalog_store.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/identity/cloud_identity.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/importing/import_candidate.dart';
+import 'package:reader/library/library_screen.dart';
+import 'package:reader/app/reader_app.dart';
+import 'package:reader/narration/file_narration_store.dart';
+import 'package:reader/narration/native_narration_player.dart';
+import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/viewport.dart';
 
-import '../../test/fakes.dart';
+import '../../test/support/fake_illustration_api.dart';
+import '../../test/support/fake_picker.dart';
+import '../../test/support/memory_settings_store.dart';
 import '../../test/fixtures/epub.dart';
+import '../../test/support/fake_narration_api.dart';
 
 /// Owns one native test's real private catalog, parser, and application routes.
 /// Only picker input, preferences, and cloud services are replaced with fakes.
@@ -97,7 +99,7 @@ class NativeTestApp {
         child: ReaderApp(controller: app.controller),
       ),
     );
-    if (importBooks) await app.controller.pickAndImport();
+    if (importBooks) await app.controller.catalog.pickAndImport();
     await tester.pumpAndSettle();
     return app;
   }
@@ -116,7 +118,7 @@ class NativeTestApp {
 
   /// Finds a fixture book by its imported metadata title.
   CatalogBook book(String title) =>
-      controller.books.firstWhere((book) => book.title == title);
+      controller.catalog.books.firstWhere((book) => book.title == title);
 
   /// Opens a real imported document through its library tile.
   Future<void> openBook(String title) async {

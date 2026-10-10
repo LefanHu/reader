@@ -3,13 +3,19 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/illustrations/outbox.dart';
-import 'package:reader/models.dart';
-import 'package:reader/storage.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/catalog/file_catalog_store.dart';
+import 'package:reader/illustrations/file_illustration_deletion_outbox.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/importing/import_candidate.dart';
+import 'package:reader/importing/import_result.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/text/document_store.dart';
+import 'package:reader/text/text_position.dart';
 
-import 'fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/test_controller.dart';
 
 void main() {
   late Directory root;
@@ -201,10 +207,10 @@ void main() {
         ],
       );
       addTearDown(controller.dispose);
-      final results = await controller.pickAndImport();
+      final results = await controller.catalog.pickAndImport();
       expect(results.single.status, ImportStatus.failed);
-      expect(controller.importing, isFalse);
-      expect(controller.books, isEmpty);
+      expect(controller.catalog.importing, isFalse);
+      expect(controller.catalog.books, isEmpty);
       expect(Directory('${root.path}/books').listSync(), isEmpty);
     },
   );
@@ -217,16 +223,16 @@ void main() {
       addTearDown(controller.dispose);
       const position = TextPosition(sectionId: 's0', blockId: 'p0', offset: 4);
       await controller.savePosition(book, position, .7);
-      await controller.configure(
+      await controller.preferences.configure(
         mode: ReadingMode.pages,
         theme: ReadingTheme.dark,
         fontSize: 140,
         serif: false,
       );
       await controller.flush();
-      expect(controller.books.single.lastPosition, position);
-      expect(controller.books.single.progress, .7);
-      expect(controller.settings.mode, ReadingMode.pages);
+      expect(controller.catalog.books.single.lastPosition, position);
+      expect(controller.catalog.books.single.progress, .7);
+      expect(controller.preferences.settings.mode, ReadingMode.pages);
     },
   );
 }

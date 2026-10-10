@@ -6,13 +6,16 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/main.dart';
-import 'package:reader/models.dart';
-import 'package:reader/reader.dart';
+import 'package:reader/app/reader_app.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/reader/reader_screen.dart';
 import 'package:reader/text/viewport.dart';
 import 'package:reader/theme.dart';
 
-import 'fakes.dart';
+import 'support/memory_document_store.dart';
+import 'support/memory_settings_store.dart';
+import 'support/test_controller.dart';
 
 /// Stable catalog metadata used to inspect layout without file or cloud imports.
 List<CatalogBook> _books({bool longTitles = false, String? cover}) => [
@@ -120,7 +123,7 @@ void main() {
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
-    expect(controller.settings.theme, ReadingTheme.dark);
+    expect(controller.preferences.settings.theme, ReadingTheme.dark);
     expect(
       Theme.of(tester.element(find.text('Your library'))).colorScheme,
       buildReaderTheme(ReadingTheme.dark).colorScheme,
@@ -130,7 +133,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Open source licenses'));
     await tester.pumpAndSettle();
-    await controller.configure(theme: ReadingTheme.sepia);
+    await controller.preferences.configure(theme: ReadingTheme.sepia);
     await tester.pumpAndSettle();
     expect(
       Theme.of(tester.element(find.byType(LicensePage))).colorScheme.surface,
@@ -142,7 +145,7 @@ void main() {
     final restored = await testController(settingsStore: preferences);
     await tester.pumpWidget(ReaderApp(controller: restored));
     await tester.pumpAndSettle();
-    expect(restored.settings.theme, ReadingTheme.sepia);
+    expect(restored.preferences.settings.theme, ReadingTheme.sepia);
     expect(
       Theme.of(tester.element(find.text('Your library'))).brightness,
       Brightness.light,
@@ -161,7 +164,7 @@ void main() {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => ReaderScreen(
-            book: controller.books.first,
+            book: controller.catalog.books.first,
             controller: controller,
             documentStore: MemoryDocumentStore(),
           ),
@@ -206,7 +209,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Delete'));
       await tester.pumpAndSettle();
-      await controller.configure(theme: ReadingTheme.dark);
+      await controller.preferences.configure(theme: ReadingTheme.dark);
       await tester.pumpAndSettle();
       expect(
         Theme.of(tester.element(find.byType(AlertDialog))).colorScheme.surface,
@@ -304,7 +307,7 @@ void main() {
           );
           addTearDown(() => tester.binding.setSurfaceSize(null));
           final controller = await testController(books: _books());
-          await controller.configure(theme: preset);
+          await controller.preferences.configure(theme: preset);
           final key = GlobalKey();
           await tester.pumpWidget(
             RepaintBoundary(

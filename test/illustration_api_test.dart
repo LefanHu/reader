@@ -1,8 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:reader/cloud_identity.dart';
-import 'package:reader/illustrations/api.dart';
+import 'package:reader/identity/cloud_identity.dart';
+import 'package:reader/illustrations/http_illustration_api.dart';
+import 'package:reader/illustrations/illustration_exception.dart';
 
 class _Identity implements CloudIdentity {
   int signIns = 0;

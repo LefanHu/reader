@@ -3,16 +3,25 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:reader/book_service.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/importing/import_candidate.dart';
 
 import 'fixtures/epub.dart';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/models.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/importing/import_result.dart';
+import 'package:reader/text/text_block.dart';
+import 'package:reader/text/text_position.dart';
+import 'package:reader/text/text_section.dart';
+import 'package:reader/text/book_word_counter.dart';
+import 'package:reader/text/file_book_word_counter.dart';
 import 'package:reader/text/word_count.dart';
+import 'package:reader/text/word_count_label.dart';
 
-import 'fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/test_controller.dart';
 
 /// Controls worker completion to verify merges against live catalog records.
 class _DelayedCounter implements BookWordCounter {
@@ -128,21 +137,21 @@ void main() {
       );
       addTearDown(controller.dispose);
       expect(counter.pending, hasLength(1));
-      await controller.markOpened(controller.books.single);
+      await controller.markOpened(controller.catalog.books.single);
       await controller.savePosition(
-        controller.books.single,
+        controller.catalog.books.single,
         const TextPosition(sectionId: 's0', blockId: 'p0', offset: 8),
         .5,
       );
-      final opened = controller.books.single.lastOpenedAt;
+      final opened = controller.catalog.books.single.lastOpenedAt;
       counter.pending.single.complete(100);
       await _settle();
-      expect(controller.books.single.wordCount, 100);
-      expect(controller.books.single.lastOpenedAt, opened);
-      expect(controller.books.single.lastPosition?.offset, 8);
-      expect(controller.books.single.progress, .5);
+      expect(controller.catalog.books.single.wordCount, 100);
+      expect(controller.catalog.books.single.lastOpenedAt, opened);
+      expect(controller.catalog.books.single.lastPosition?.offset, 8);
+      expect(controller.catalog.books.single.progress, .5);
       expect(
-        (controller.catalogStore as MemoryCatalogStore).books.single.wordCount,
+        (controller.catalog.store as MemoryCatalogStore).books.single.wordCount,
         100,
       );
     },
@@ -155,9 +164,9 @@ void main() {
       final controller = await testController(books: [original]);
       addTearDown(controller.dispose);
       await _settle();
-      expect(controller.books.single.wordCount, 42);
+      expect(controller.catalog.books.single.wordCount, 42);
       await controller.markOpened(original);
-      expect(controller.books.single.wordCount, 42);
+      expect(controller.catalog.books.single.wordCount, 42);
     },
   );
 
@@ -168,11 +177,11 @@ void main() {
       wordCounter: counter,
     );
     addTearDown(controller.dispose);
-    await controller.delete(controller.books.single);
+    await controller.delete(controller.catalog.books.single);
     counter.pending.single.complete(100);
     await _settle();
-    expect(controller.books, isEmpty);
-    expect((controller.catalogStore as MemoryCatalogStore).books, isEmpty);
+    expect(controller.catalog.books, isEmpty);
+    expect((controller.catalog.store as MemoryCatalogStore).books, isEmpty);
   });
 
   test(
@@ -183,7 +192,7 @@ void main() {
         books: [testBook()],
         wordCounter: counter,
       );
-      final store = controller.catalogStore as MemoryCatalogStore;
+      final store = controller.catalog.store as MemoryCatalogStore;
       controller.dispose();
       counter.pending.single.complete(100);
       await _settle();
@@ -191,7 +200,7 @@ void main() {
       final restarted = await testController(books: store.books);
       addTearDown(restarted.dispose);
       await _settle();
-      expect(restarted.books.single.wordCount, 42);
+      expect(restarted.catalog.books.single.wordCount, 42);
     },
   );
 
@@ -218,10 +227,10 @@ void main() {
       );
       await _settle();
       expect(counter.pending, hasLength(2));
-      expect(controller.books.first.wordCount, isNull);
+      expect(controller.catalog.books.first.wordCount, isNull);
       counter.pending.last.complete(5);
       await _settle();
-      expect(controller.books.last.wordCount, 5);
+      expect(controller.catalog.books.last.wordCount, 5);
     },
   );
 }

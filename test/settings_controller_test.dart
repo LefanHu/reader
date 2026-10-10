@@ -4,20 +4,37 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:reader/account/api.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/models.dart';
+import 'package:reader/account/account_usage.dart';
+import 'package:reader/account/account_usage_exception.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/importing/book_importer.dart';
 import 'package:reader/narration/api.dart';
+import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/player.dart';
 import 'package:reader/narration/session.dart';
 import 'package:reader/narration/store.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/preferences/library_filter.dart';
+import 'package:reader/preferences/library_sort.dart';
+import 'package:reader/preferences/reader_settings.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/text/document_store.dart';
+import 'package:reader/text/text_position.dart';
 
-import 'fakes.dart';
-import 'support/account_fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/fake_illustration_api.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_word_counter.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/memory_document_store.dart';
+import 'support/memory_illustration_store.dart';
+import 'support/memory_settings_store.dart';
+import 'fixtures/account_usage.dart';
+import 'support/fake_account_api.dart';
 import 'support/cloud_identity_fake.dart';
-import 'support/narration_fakes.dart';
+import 'support/fake_narration_api.dart';
+import 'support/fake_narration_player.dart';
+import 'support/memory_narration_store.dart';
 
 /// Holds the first complete preference write to expose ordering regressions.
 class _DelayedSettingsStore extends MemorySettingsStore {
@@ -82,8 +99,10 @@ void main() {
     () async {
       final store = _DelayedSettingsStore();
       final controller = await _controller(settingsStore: store);
-      final first = controller.configure(libraryFilter: LibraryFilter.reading);
-      final second = controller.configure(fontSize: 125);
+      final first = controller.preferences.configure(
+        libraryFilter: LibraryFilter.reading,
+      );
+      final second = controller.preferences.configure(fontSize: 125);
       await Future<void>.delayed(Duration.zero);
       expect(store.writes, 1);
       store.firstWrite.complete();
@@ -98,16 +117,19 @@ void main() {
     () async {
       final identity = FakeCloudIdentity()..email = 'reader@example.test';
       final controller = await _controller(identity: identity);
-      final position = controller.books.single.lastPosition;
-      await controller.configure(
+      final position = controller.catalog.books.single.lastPosition;
+      await controller.preferences.configure(
         theme: ReadingTheme.dark,
         narrationVoice: 'cedar',
         narrationSpeed: 1.75,
         librarySort: LibrarySort.title,
       );
-      await controller.resetPreferences();
-      expect(controller.settings.toJson(), const ReaderSettings().toJson());
-      expect(controller.books.single.lastPosition, position);
+      await controller.preferences.reset();
+      expect(
+        controller.preferences.settings.toJson(),
+        const ReaderSettings().toJson(),
+      );
+      expect(controller.catalog.books.single.lastPosition, position);
       expect(controller.cloudEmail, 'reader@example.test');
       expect(identity.signOuts, 0);
     },
@@ -138,8 +160,8 @@ void main() {
       blockId: 'p1',
       offset: 2,
     );
-    await controller.savePosition(controller.books.single, anchor, .3);
-    final book = controller.books.single;
+    await controller.savePosition(controller.catalog.books.single, anchor, .3);
+    final book = controller.catalog.books.single;
     await controller.consentToNarration(book);
     final session = controller.narration!;
     await session.play();
@@ -153,7 +175,7 @@ void main() {
     final requests = api.requests.length;
     final files = Map.of(cache.files);
 
-    final reset = controller.resetPreferences();
+    final reset = controller.preferences.reset();
     for (var turn = 0; turn < 20 && preferences.writes == 0; turn++) {
       await Future<void>.delayed(Duration.zero);
     }
@@ -175,8 +197,8 @@ void main() {
     final flush = controller.flush().then((_) => flushed = true);
     await Future<void>.delayed(Duration.zero);
     expect(flushed, false);
-    expect(controller.books.single.lastPosition, anchor);
-    expect(controller.books.single.progress, .3);
+    expect(controller.catalog.books.single.lastPosition, anchor);
+    expect(controller.catalog.books.single.progress, .3);
     expect(preferences.settings.narrationVoice, 'cedar');
     preferences.firstWrite.complete();
     await reset;
@@ -186,7 +208,7 @@ void main() {
       (await preferences.load()).toJson(),
       const ReaderSettings().toJson(),
     );
-    expect((await controller.catalogStore.load()).single.lastPosition, anchor);
+    expect((await controller.catalog.store.load()).single.lastPosition, anchor);
     expect(cache.manifests[book.hash]!.cloudBookId, 'cloud-book');
     expect(cache.manifests[book.hash]!.anchor, anchor);
     expect(cache.files, files);
@@ -199,11 +221,11 @@ void main() {
       final store = MemorySettingsStore();
       final controller = await _controller(settingsStore: store);
       await expectLater(
-        controller.configure(narrationVoice: 'unknown'),
+        controller.preferences.configure(narrationVoice: 'unknown'),
         throwsArgumentError,
       );
       await expectLater(
-        controller.configure(narrationSpeed: double.nan),
+        controller.preferences.configure(narrationSpeed: double.nan),
         throwsArgumentError,
       );
       expect(store.settings.toJson(), const ReaderSettings().toJson());
@@ -315,7 +337,7 @@ void main() {
         throwsA(isA<Exception>()),
       );
       expect(identity.deletions, 0);
-      expect(controller.books, hasLength(1));
+      expect(controller.catalog.books, hasLength(1));
       expect(controller.cloudAccountBusy, false);
     },
   );
@@ -344,7 +366,7 @@ void main() {
       blockId: 'p1',
       offset: 2,
     );
-    await controller.savePosition(controller.books.single, anchor, .3);
+    await controller.savePosition(controller.catalog.books.single, anchor, .3);
     await expectLater(
       controller.deleteCloudAccount(),
       throwsA(
@@ -359,7 +381,7 @@ void main() {
     expect(identity.email, isNull);
     expect(controller.cloudEmail, identity.email);
     expect(controller.cloudAccountBusy, false);
-    expect(controller.books.single.lastPosition, anchor);
-    expect(controller.books.single.progress, .3);
+    expect(controller.catalog.books.single.lastPosition, anchor);
+    expect(controller.catalog.books.single.progress, .3);
   });
 }

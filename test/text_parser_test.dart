@@ -6,12 +6,16 @@ import 'package:archive/archive.dart';
 import 'package:characters/characters.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/illustrations/indexer.dart';
-import 'package:reader/models.dart';
+import 'package:reader/illustrations/document_text_indexer.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/importing/import_candidate.dart';
+import 'package:reader/importing/import_result.dart';
 import 'package:reader/text/direction.dart';
-import 'package:reader/text/document.dart' as text;
+import 'package:reader/text/document_store.dart' as text;
+import 'package:reader/text/grapheme_boundary.dart' as text;
+import 'package:reader/text/parsed_text_book.dart';
 import 'package:reader/text/parser.dart';
+import 'package:reader/text/parser_limits.dart';
 
 import 'fixtures/epub.dart';
 

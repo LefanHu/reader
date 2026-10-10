@@ -5,25 +5,44 @@ import 'dart:ui' show Tristate;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:reader/account/api.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/illustrations/models.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:reader/account/account_usage.dart';
+import 'package:reader/account/account_usage_exception.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/illustrations/illustration_manifest.dart';
+import 'package:reader/illustrations/illustration_profile.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/app/reader_app.dart';
 import 'package:reader/narration/api.dart';
-import 'package:reader/narration/models.dart';
-import 'package:reader/text/document.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/models.dart';
-import 'package:reader/main.dart';
-import 'package:reader/settings.dart';
+import 'package:reader/narration/http_narration_api.dart';
+import 'package:reader/narration/narration_manifest.dart';
+import 'package:reader/preferences/library_filter.dart';
+import 'package:reader/preferences/library_sort.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/settings/settings_navigation.dart';
+import 'package:reader/settings/settings_screen.dart';
+import 'package:reader/text/text_position.dart';
 import 'package:reader/theme.dart';
 
-import 'fakes.dart';
-import 'support/account_fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/fake_illustration_api.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_word_counter.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/memory_document_store.dart';
+import 'support/memory_illustration_store.dart';
+import 'support/memory_settings_store.dart';
+import 'support/test_controller.dart';
+import 'fixtures/account_usage.dart';
+import 'support/fake_account_api.dart';
 import 'support/cloud_identity_fake.dart';
-import 'support/narration_fakes.dart';
+import 'fixtures/narration_audio.dart';
+import 'support/fake_narration_api.dart';
+import 'support/fake_narration_player.dart';
+import 'support/memory_narration_store.dart';
 
 Future<ReaderController> _mount(
   WidgetTester tester, {
@@ -37,7 +56,7 @@ Future<ReaderController> _mount(
   await tester.binding.setSurfaceSize(Size(width, 900));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   final controller = suppliedController ?? await testController();
-  await controller.configure(theme: theme);
+  await controller.preferences.configure(theme: theme);
   addTearDown(() async {
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
@@ -49,7 +68,7 @@ Future<ReaderController> _mount(
     ListenableBuilder(
       listenable: controller,
       builder: (context, _) => MaterialApp(
-        theme: buildReaderTheme(controller.settings.theme)
+        theme: buildReaderTheme(controller.preferences.settings.theme)
             .copyWith(platform: platform),
         home: MediaQuery(
           data: MediaQueryData(
@@ -189,7 +208,10 @@ void main() {
       expect(identity.signIns, 0);
       expect(narrationApi.registrations, 0);
       expect(narrationApi.requests, isEmpty);
-      expect((await store.load(controller.books.single)).cloudBookId, isNull);
+      expect(
+        (await store.load(controller.catalog.books.single)).cloudBookId,
+        isNull,
+      );
     },
   );
 
@@ -241,7 +263,10 @@ void main() {
       expect(identity.signIns, 0);
       expect(narrationApi.registrations, 0);
       expect(narrationApi.requests, isEmpty);
-      expect((await store.load(controller.books.single)).cloudBookId, isNull);
+      expect(
+        (await store.load(controller.catalog.books.single)).cloudBookId,
+        isNull,
+      );
     });
   }
 
@@ -394,7 +419,7 @@ void main() {
         expect((await store.load(book)).toJson(), consent.toJson());
         expect(await store.cached(book, 'cached-audio'), isNotNull);
         expect((await illustrations.loadManifest(book)).profile?.enabled, true);
-        expect(controller.books.single.toJson(), book.toJson());
+        expect(controller.catalog.books.single.toJson(), book.toJson());
 
         deletion = Completer<http.Response>();
         await tester.tap(deleteButton);
@@ -415,10 +440,13 @@ void main() {
         expect((await store.load(book)).cloudBookId, isNull);
         expect(await store.cached(book, 'cached-audio'), isNull);
         expect((await illustrations.loadManifest(book)).profile, isNull);
-        expect(controller.books.single.toJson(), book.toJson());
+        expect(controller.catalog.books.single.toJson(), book.toJson());
         await controller.flush();
-        expect(controller.books.single.lastPosition?.toJson(), anchor.toJson());
-        expect(controller.books.single.progress, .3);
+        expect(
+          controller.catalog.books.single.lastPosition?.toJson(),
+          anchor.toJson(),
+        );
+        expect(controller.catalog.books.single.progress, .3);
       },
     );
   }
@@ -453,14 +481,14 @@ void main() {
       }
       await tester.tap(find.text('1.5×'));
       await tester.pumpAndSettle();
-      expect(controller.settings.narrationVoice, 'cedar');
-      expect(controller.settings.narrationSpeed, 1.5);
+      expect(controller.preferences.settings.narrationVoice, 'cedar');
+      expect(controller.preferences.settings.narrationSpeed, 1.5);
       await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
       await _section(tester, 'Appearance');
       await tester.tap(find.text('Dark'));
       await tester.pumpAndSettle();
-      expect(controller.settings.theme, ReadingTheme.dark);
+      expect(controller.preferences.settings.theme, ReadingTheme.dark);
       await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
       await _section(tester, 'Library');
@@ -468,8 +496,11 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Title'));
       await tester.pumpAndSettle();
-      expect(controller.settings.libraryFilter, LibraryFilter.finished);
-      expect(controller.settings.librarySort, LibrarySort.title);
+      expect(
+        controller.preferences.settings.libraryFilter,
+        LibraryFilter.finished,
+      );
+      expect(controller.preferences.settings.librarySort, LibrarySort.title);
       expect(tester.takeException(), isNull);
     },
   );
@@ -491,7 +522,7 @@ void main() {
         scale: 2,
         direction: TextDirection.rtl,
       );
-      await controller.configure(
+      await controller.preferences.configure(
         narrationVoice: 'cedar',
         theme: ReadingTheme.dark,
       );
@@ -504,13 +535,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
-      expect(controller.settings.narrationVoice, 'cedar');
+      expect(controller.preferences.settings.narrationVoice, 'cedar');
       await tester.tap(reset);
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(FilledButton, 'Reset preferences'));
       await tester.pumpAndSettle();
-      expect(controller.settings.narrationVoice, 'marin');
-      expect(controller.settings.theme, ReadingTheme.paper);
+      expect(controller.preferences.settings.narrationVoice, 'marin');
+      expect(controller.preferences.settings.theme, ReadingTheme.paper);
       expect(tester.takeException(), isNull);
     },
   );
@@ -624,7 +655,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget);
       expect(find.text('Cedar'), findsOneWidget);
-      expect(controller.settings.narrationVoice, 'cedar');
+      expect(controller.preferences.settings.narrationVoice, 'cedar');
       expect(firstClosed, false);
       expect(secondClosed, false);
       navigator.currentState!.pop();
@@ -642,7 +673,7 @@ void main() {
       expect(find.byType(SettingsScreen), findsOneWidget);
       await _section(tester, 'Narration');
       expect(find.text('Cedar'), findsOneWidget);
-      expect(controller.settings.narrationVoice, 'cedar');
+      expect(controller.preferences.settings.narrationVoice, 'cedar');
       navigator.currentState!.pop();
       await tester.pumpAndSettle();
       await reopened;

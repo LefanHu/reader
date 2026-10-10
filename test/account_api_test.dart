@@ -4,8 +4,10 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:reader/account/api.dart';
-import 'package:reader/cloud_identity.dart';
+import 'package:reader/account/account_usage.dart';
+import 'package:reader/account/account_usage_exception.dart';
+import 'package:reader/account/http_account_api.dart';
+import 'package:reader/identity/cloud_identity_exception.dart';
 
 import 'support/cloud_identity_fake.dart';
 

@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vm_service/vm_service.dart';
 
 import '../integration_test/support/performance_capture.dart';
-import '../test_driver/performance_test.dart';
+import '../integration_test/support/frame_summary.dart';
 
 void main() {
   test(

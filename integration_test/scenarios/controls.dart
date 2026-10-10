@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/models.dart';
+import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/text/viewport.dart';
 
 import '../support/native_test_app.dart';
@@ -11,7 +11,7 @@ void registerControlTests() {
       '${mode.name} controls animate with centered title and stationary text',
       (tester) async {
         final app = await NativeTestApp.launch(tester);
-        await app.controller.configure(mode: mode);
+        await app.controller.preferences.configure(mode: mode);
         await app.openBook('Unicode Test');
         await app.advance();
         final anchor = app.viewport.navigation.leadingPosition;
@@ -50,17 +50,17 @@ void registerControlTests() {
       '${mode.name} restores Scroll on its first visible frame and returns without drift',
       (tester) async {
         final app = await NativeTestApp.launch(tester);
-        await app.controller.configure(mode: mode);
+        await app.controller.preferences.configure(mode: mode);
         await app.openBook('Unicode Test');
         await app.advance();
         final anchor = app.viewport.navigation.leadingPosition;
-        await app.controller.configure(mode: ReadingMode.scroll);
+        await app.controller.preferences.configure(mode: ReadingMode.scroll);
         await tester.pump();
         final text = tester.getRect(app.textPaints.first);
         await tester.pumpAndSettle();
         expect(tester.getRect(app.textPaints.first), text);
         expect(app.viewport.navigation.leadingPosition, anchor);
-        await app.controller.configure(mode: mode);
+        await app.controller.preferences.configure(mode: mode);
         await tester.pump();
         final pageText = tester.getRect(app.textPaints.first);
         await tester.pumpAndSettle();

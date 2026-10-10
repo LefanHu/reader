@@ -6,59 +6,20 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../models.dart';
+import '../preferences/reader_settings.dart';
+import '../preferences/reading_mode.dart';
 import 'direction.dart';
 import 'document.dart' as text;
 import 'page_curl.dart';
-
-/// Commands address logical reading order rather than visual RTL direction.
-class TextReaderNavigation {
-  /// Owned by the reader shell and attached only while a viewport is mounted.
-  TextReaderNavigation();
-  _TextViewportState? _state;
-
-  /// Current logical anchor, retained through typography and viewport changes.
-  text.TextPosition? get leadingPosition => _state?._position;
-
-  /// Spatial controls follow the current section's paragraph direction.
-  bool get rightToLeft {
-    final block = _state?._section?.blocks.first;
-    return block != null &&
-        paragraphDirection(block.text, block.direction) == TextDirection.rtl;
-  }
-
-  /// Bounded engine layout count, exposed for memory regression tests.
-  @visibleForTesting
-  int get retainedLayoutCount => _state?._cache.length ?? 0;
-
-  /// Number of turn textures owned by the viewport, for memory regressions.
-  @visibleForTesting
-  int get retainedTextureCount => _state?._turn?.current == null ? 0 : 2;
-
-  /// Advances one page or viewport in logical reading order.
-  void next() => _state?._step(1);
-
-  /// Returns one page or viewport in logical reading order.
-  void previous() => _state?._step(-1);
-
-  /// Opens the next normalized section.
-  void nextSection() => _state?._changeSection(1);
-
-  /// Opens the previous normalized section.
-  void previousSection() => _state?._changeSection(-1);
-
-  /// Navigates to a resolved nested contents entry.
-  void goTo(text.TextPosition position) {
-    _state?._manualNavigation();
-    _state?._goTo(position);
-  }
-
-  /// Restores an external committed anchor through layout and its first frame.
-  /// Restoration never writes viewport progress back over narration commits.
-  Future<void> restore(text.TextPosition position) async {
-    await _state?._goTo(position, restoration: true);
-  }
-}
+import 'document_store.dart' as text;
+import 'text_section.dart' as text;
+import 'text_position.dart' as text;
+import 'reader_navigation.dart';
+import 'page_target.dart';
+import 'page_turn.dart';
+import 'layout/section_layout.dart';
+import 'layout/text_line.dart';
+import 'block_slice.dart';
 
 /// Measured native Flutter text viewport shared by scroll and page modes.
 /// At most two section layouts are retained, including an adjacent curl preview.
@@ -124,7 +85,7 @@ class TextViewport extends StatefulWidget {
 class _TextViewportState extends State<TextViewport>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _animation;
-  _PageTurn? _turn;
+  PageTurn? _turn;
   int _turnEpoch = 0;
   bool _turnBusy = false;
   bool _dragAccepted = false;
@@ -142,10 +103,10 @@ class _TextViewportState extends State<TextViewport>
   bool _reduceMotion = false;
   ScrollController _scroll = ScrollController(keepScrollOffset: false);
   int _restoreGeneration = 0;
-  final _cache = <String, _SectionLayout>{};
+  final _cache = <String, SectionLayout>{};
   text.TextSection? _section;
   text.TextPosition? _position;
-  _SectionLayout? _layout;
+  SectionLayout? _layout;
   String? _layoutKey;
   Object? _error;
   int _ordinal = 0;
@@ -160,10 +121,34 @@ class _TextViewportState extends State<TextViewport>
     widget.onManualNavigation?.call();
   }
 
+  void _attachNavigation() {
+    widget.navigation.attach(
+      this,
+      leadingPosition: () => _position,
+      rightToLeft: () {
+        final block = _section?.blocks.first;
+        return block != null &&
+            paragraphDirection(block.text, block.direction) ==
+                TextDirection.rtl;
+      },
+      retainedLayoutCount: () => _cache.length,
+      retainedTextureCount: () => _turn?.current == null ? 0 : 2,
+      next: () => _step(1),
+      previous: () => _step(-1),
+      nextSection: () => _changeSection(1),
+      previousSection: () => _changeSection(-1),
+      goTo: (position) {
+        _manualNavigation();
+        _goTo(position);
+      },
+      restore: (position) => _goTo(position, restoration: true),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
-    widget.navigation._state = this;
+    _attachNavigation();
     WidgetsBinding.instance.addObserver(this);
     _animation = AnimationController(vsync: this)
       ..addListener(() {
@@ -188,8 +173,8 @@ class _TextViewportState extends State<TextViewport>
       _cancelTurn();
     }
     if (oldWidget.navigation != widget.navigation) {
-      oldWidget.navigation._state = null;
-      widget.navigation._state = this;
+      oldWidget.navigation.detach(this);
+      _attachNavigation();
     }
   }
 
@@ -301,10 +286,10 @@ class _TextViewportState extends State<TextViewport>
 
   // Adjacent pages use the same measured layout as the current viewport. A
   // generation token prevents chapter jumps/reflows accepting stale loads.
-  Future<_PageTarget?> _resolvePage(int delta) async {
+  Future<PageTarget?> _resolvePage(int delta) async {
     final index = _page + delta;
     if (index >= 0 && index < _layout!.pages.length) {
-      return _PageTarget(_ordinal, _section!, _layout!, index);
+      return PageTarget(_ordinal, _section!, _layout!, index);
     }
     final ordinal = _ordinal + delta;
     if (ordinal < 0 || ordinal >= widget.document.sections.length) return null;
@@ -315,7 +300,7 @@ class _TextViewportState extends State<TextViewport>
     );
     if (!mounted || epoch != _turnEpoch) return null;
     final layout = _obtainLayout(section, _width, _height, _scaler);
-    return _PageTarget(
+    return PageTarget(
       ordinal,
       section,
       layout,
@@ -323,7 +308,7 @@ class _TextViewportState extends State<TextViewport>
     );
   }
 
-  void _commitPage(_PageTarget target) {
+  void _commitPage(PageTarget target) {
     setState(() {
       _ordinal = target.ordinal;
       _section = target.section;
@@ -358,7 +343,7 @@ class _TextViewportState extends State<TextViewport>
     }
   }
 
-  ui.Image _texture(_SectionLayout layout, int page) {
+  ui.Image _texture(SectionLayout layout, int page) {
     final ratio = math.min(2.0, 2048 / math.max(_width, _height));
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder)..scale(ratio);
@@ -417,11 +402,11 @@ class _TextViewportState extends State<TextViewport>
       }
       if (_reduceMotion) {
         // Reduced motion keeps live paragraphs visible throughout the drag.
-        _turn = _PageTurn(target, null, null, delta);
+        _turn = PageTurn(target, null, null, delta);
       } else {
         current = _texture(_layout!, _page);
         final incoming = _texture(target.layout, target.page);
-        _turn = _PageTurn(target, current, incoming, delta);
+        _turn = PageTurn(target, current, incoming, delta);
         current = null; // Ownership transfers only after both textures exist.
       }
       // A drag may have ended during section I/O. Resume at its actual fraction
@@ -621,7 +606,7 @@ class _TextViewportState extends State<TextViewport>
   ) =>
       '${section.id}:$width:$height:${widget.settings.fontSize}:${widget.settings.serif}:${widget.foreground.toARGB32()}:${scaler.scale(20)}';
 
-  _SectionLayout _obtainLayout(
+  SectionLayout _obtainLayout(
     text.TextSection section,
     double width,
     double height,
@@ -630,7 +615,7 @@ class _TextViewportState extends State<TextViewport>
     final key = _key(section, width, height, scaler);
     final layout =
         _cache.remove(key) ??
-        _SectionLayout(
+        SectionLayout(
           section,
           width,
           height,
@@ -699,7 +684,7 @@ class _TextViewportState extends State<TextViewport>
   @override
   void dispose() {
     if (_restored?.isCompleted == false) _restored!.complete();
-    if (widget.navigation._state == this) widget.navigation._state = null;
+    widget.navigation.detach(this);
     WidgetsBinding.instance.removeObserver(this);
     _cancelTurn();
     _animation.dispose();
@@ -748,7 +733,7 @@ class _TextViewportState extends State<TextViewport>
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       for (final block in layout.blocks)
-                        _BlockSlice(
+                        BlockSlice(
                           block: block,
                           top: 0,
                           height: block.painter.height,
@@ -899,7 +884,7 @@ class _TextViewportState extends State<TextViewport>
     );
   }
 
-  List<Widget> _pageSlices(List<_Line> page) {
+  List<Widget> _pageSlices(List<TextLine> page) {
     final slices = <Widget>[];
     var start = 0;
     while (start < page.length) {
@@ -910,7 +895,7 @@ class _TextViewportState extends State<TextViewport>
       final first = page[start];
       final last = page[end - 1];
       slices.add(
-        _BlockSlice(
+        BlockSlice(
           block: first.block,
           top: first.top,
           height: last.top + last.height - first.top,
@@ -923,177 +908,4 @@ class _TextViewportState extends State<TextViewport>
     }
     return slices;
   }
-}
-
-/// A resolved page owns no textures and shares the bounded section layout.
-class _PageTarget {
-  _PageTarget(this.ordinal, this.section, this.layout, this.page);
-  final int ordinal, page;
-  final text.TextSection section;
-  final _SectionLayout layout;
-}
-
-/// Owns exactly two textures, or none when reduced motion is enabled.
-class _PageTurn {
-  _PageTurn(this.target, this.current, this.incoming, this.delta);
-  final _PageTarget target;
-  final ui.Image? current, incoming;
-  final int delta;
-  void dispose() {
-    current?.dispose();
-    incoming?.dispose();
-  }
-}
-
-class _MeasuredBlock {
-  _MeasuredBlock(this.block, this.painter);
-  final text.TextBlock block;
-  final TextPainter painter;
-}
-
-class _Line {
-  _Line(
-    this.block,
-    this.top,
-    this.globalTop,
-    this.height,
-    this.start,
-    this.end,
-  );
-  final _MeasuredBlock block;
-  final double top, globalTop, height;
-  final int start, end;
-  text.TextPosition position(String section) => text.TextPosition(
-    sectionId: section,
-    blockId: block.block.id,
-    offset: start,
-  );
-}
-
-class _SectionLayout {
-  _SectionLayout(
-    text.TextSection section,
-    double width,
-    this.viewportHeight,
-    TextStyle style,
-    TextScaler scaler,
-  ) {
-    var globalTop = 0.0;
-    for (final block in section.blocks) {
-      final painter = TextPainter(
-        text: TextSpan(
-          text: block.text,
-          style: style.copyWith(
-            fontWeight: block.kind == 'heading'
-                ? FontWeight.w600
-                : FontWeight.normal,
-            fontStyle: block.kind == 'quote'
-                ? FontStyle.italic
-                : FontStyle.normal,
-          ),
-        ),
-        textDirection: paragraphDirection(block.text, block.direction),
-        textScaler: scaler,
-      )..layout(maxWidth: width);
-      final measured = _MeasuredBlock(block, painter);
-      blocks.add(measured);
-      final metrics = painter.computeLineMetrics();
-      var start = 0;
-      for (var i = 0; i < metrics.length; i++) {
-        final metric = metrics[i];
-        final top = metric.baseline - metric.ascent;
-        final probe = painter.getPositionForOffset(
-          Offset(metric.left + metric.width / 2, top + metric.height / 2),
-        );
-        final boundary = painter.getLineBoundary(probe);
-        var end = i == metrics.length - 1
-            ? block.text.length
-            : text.graphemeFloor(block.text, boundary.end);
-        if (end < block.text.length && block.text[end] == '\n') end++;
-        // LineMetrics.height is rounded; use measured top-to-top distances so
-        // fractional font sizes cannot accumulate into page overflow.
-        final lineHeight = i + 1 < metrics.length
-            ? metrics[i + 1].baseline - metrics[i + 1].ascent - top
-            : painter.height - top;
-        lines.add(
-          _Line(measured, top, globalTop + top, lineHeight, start, end),
-        );
-        start = end;
-      }
-      globalTop += painter.height + 16;
-    }
-    var page = <_Line>[];
-    var used = 0.0;
-    for (final line in lines) {
-      final gap = page.isNotEmpty && page.last.block != line.block ? 16.0 : 0.0;
-      if (page.isNotEmpty && used + gap + line.height > viewportHeight) {
-        pages.add(page);
-        page = [];
-        used = 0;
-      }
-      if (page.isNotEmpty && page.last.block != line.block) used += 16;
-      page.add(line);
-      used += line.height;
-    }
-    if (page.isNotEmpty) pages.add(page);
-  }
-  final double viewportHeight;
-  final blocks = <_MeasuredBlock>[];
-  final lines = <_Line>[];
-  final pages = <List<_Line>>[];
-  _Line lineFor(text.TextPosition position) =>
-      lines
-          .where(
-            (line) =>
-                line.block.block.id == position.blockId &&
-                line.start <= position.offset,
-          )
-          .lastOrNull ??
-      lines.first;
-  void dispose() {
-    for (final block in blocks) {
-      block.painter.dispose();
-    }
-  }
-}
-
-class _BlockSlice extends StatelessWidget {
-  const _BlockSlice({
-    required this.block,
-    required this.top,
-    required this.height,
-    required this.start,
-    required this.end,
-    required this.bottomPadding,
-  });
-  final _MeasuredBlock block;
-  final double top, height, bottomPadding;
-  final int start, end;
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: EdgeInsets.only(bottom: bottomPadding),
-    child: Semantics(
-      label: block.block.text.substring(start, end),
-      textDirection: block.painter.textDirection,
-      header: block.block.kind == 'heading',
-      child: SizedBox(
-        height: height,
-        child: ClipRect(
-          child: CustomPaint(painter: _TextSlicePainter(block.painter, top)),
-        ),
-      ),
-    ),
-  );
-}
-
-class _TextSlicePainter extends CustomPainter {
-  _TextSlicePainter(this.textPainter, this.top);
-  final TextPainter textPainter;
-  final double top;
-  @override
-  void paint(Canvas canvas, Size size) =>
-      textPainter.paint(canvas, Offset(0, -top));
-  @override
-  bool shouldRepaint(_TextSlicePainter oldDelegate) =>
-      oldDelegate.textPainter != textPainter || oldDelegate.top != top;
 }

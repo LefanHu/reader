@@ -1,5 +1,7 @@
-import '../text/document.dart';
-import 'models.dart';
+import '../text/grapheme_boundary.dart';
+import '../text/text_position.dart';
+import 'book_text_index.dart';
+import 'scene_anchor.dart';
 
 /// Releases scenes only after the viewport's leading passage passes their end.
 /// End-exclusive offsets also release a final paragraph after explicit finish.

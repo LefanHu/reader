@@ -5,17 +5,27 @@ import 'dart:typed_data';
 
 import 'package:characters/characters.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/models.dart';
-import 'package:reader/narration/models.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/catalog/file_catalog_store.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/importing/import_candidate.dart';
+import 'package:reader/narration/file_narration_store.dart';
+import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/session.dart';
-import 'package:reader/narration/store.dart';
-import 'package:reader/storage.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/preferences/reader_settings.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/text/grapheme_boundary.dart';
+import 'package:reader/text/text_block.dart';
+import 'package:reader/text/text_position.dart';
+import 'package:reader/text/text_section.dart';
 import 'package:reader/text/narration.dart';
 
-import 'fakes.dart';
-import 'support/narration_fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/memory_document_store.dart';
+import 'fixtures/narration_audio.dart';
+import 'support/fake_narration_api.dart';
+import 'support/fake_narration_player.dart';
+import 'support/memory_narration_store.dart';
 
 Future<void> settle() => pumpEventQueue(times: 30);
 

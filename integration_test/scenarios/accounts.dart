@@ -12,7 +12,7 @@ void registerAccountTests() {
     (tester) async {
       final identity = FakeCloudIdentity()..cancel = true;
       final app = await NativeTestApp.launch(tester, cloudIdentity: identity);
-      final count = app.controller.books.length;
+      final count = app.controller.catalog.books.length;
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Account'));
@@ -28,7 +28,7 @@ void registerAccountTests() {
       await tester.tap(find.text('Sign out'));
       await tester.pumpAndSettle();
       expect(app.controller.cloudEmail, isNull);
-      expect(app.controller.books, hasLength(count));
+      expect(app.controller.catalog.books, hasLength(count));
       Navigator.of(tester.element(find.text('Sign in with Google'))).pop();
       await tester.pumpAndSettle();
       await app.openBook('Unicode Test');

@@ -2,13 +2,19 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/library.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/library/library_screen.dart';
 import 'package:reader/theme.dart';
-import 'package:reader/models.dart';
+import 'package:reader/preferences/reading_theme.dart';
 
-import 'fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/fake_illustration_api.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_word_counter.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/memory_illustration_store.dart';
+import 'support/memory_settings_store.dart';
 import 'support/cloud_identity_fake.dart';
 
 void main() {
@@ -61,7 +67,7 @@ void main() {
       await tester.tap(find.text('Sign in with Google'));
       await tester.pumpAndSettle();
       expect(controller.cloudEmail, 'reader@example.test');
-      expect(controller.books.single.lastPosition, book.lastPosition);
+      expect(controller.catalog.books.single.lastPosition, book.lastPosition);
       expect(controller.narration, isNull);
       identity.failSignOut = true;
       await expectLater(controller.signOutOfCloud(), throwsStateError);

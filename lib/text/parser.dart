@@ -2,51 +2,16 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
-import 'package:characters/characters.dart';
-import 'package:crypto/crypto.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html;
 import 'package:xml/xml.dart';
 
-import 'document.dart';
-
-/// Source and archive bounds enforced before untrusted content is expanded.
-const maxBookBytes = 100 * 1024 * 1024;
-
-/// Total expanded archive budget, including resources never rendered.
-const maxExpandedBytes = 300 * 1024 * 1024;
-
-/// Maximum archive directory size accepted by the importer.
-const maxArchiveEntries = 10000;
-
-/// Each normalized section fits the server's chapter payload limits.
-const maxSectionCharacters = 400000;
-
-/// Server paragraph limit, measured in UTF-16 code units.
-const maxBlockCharacters = 20000;
-
-/// Isolate-safe parsed import; sections are persisted separately at commit.
-class ParsedTextBook {
-  /// The cover is local archive data and never fetched over the network.
-  const ParsedTextBook(
-    this.document,
-    this.sections, {
-    this.cover,
-    this.coverExtension = 'jpg',
-  });
-
-  /// Small immutable metadata manifest.
-  final TextDocument document;
-
-  /// Normalized text ready for per-section persistence.
-  final List<TextSection> sections;
-
-  /// Optional bounded local cover bytes.
-  final Uint8List? cover;
-
-  /// Extension chosen from the declared cover MIME type.
-  final String coverExtension;
-}
+import 'normalized_text_builder.dart';
+import 'parsed_text_book.dart';
+import 'parser_limits.dart';
+import 'text_block.dart';
+import 'text_contents_entry.dart';
+import 'text_position.dart';
 
 /// Pure parsing boundary suitable for execution in a worker isolate.
 ParsedTextBook parseTextBook(Uint8List bytes, String name, String hash) {
@@ -61,7 +26,7 @@ ParsedTextBook parseTextBook(Uint8List bytes, String name, String hash) {
     final text = _decodeText(bytes)
         .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n');
-    final builder = _Builder(hash);
+    final builder = NormalizedTextBuilder(hash);
     for (final part in text.split('\f')) {
       final blocks = part
           .split(RegExp(r'\n[ \t]*\n+'))
@@ -283,7 +248,7 @@ ParsedTextBook _parseEpub(Uint8List bytes, String fallback, String hash) {
       throw const FormatException('Remote EPUB resources are not supported.');
     }
   }
-  final builder = _Builder(hash);
+  final builder = NormalizedTextBuilder(hash);
   final targets = <String, TextPosition>{};
   final language = metadata('language');
   for (final ref in elements.where((e) => e.localName == 'itemref')) {
@@ -584,135 +549,5 @@ void _validateMarkup(dom.Document parsed) {
         (element.localName == 'style' && _remoteCss(element.text))) {
       throw const FormatException('Remote EPUB resources are not supported.');
     }
-  }
-}
-
-class _Builder {
-  _Builder(this.hash);
-  final String hash;
-  final sections = <TextSection>[];
-  final summaries = <SectionSummary>[];
-  void add(
-    List<TextBlock> sourceBlocks, {
-    required String title,
-    required String source,
-    String? language,
-    Map<String, int> sourceIds = const {},
-    Map<String, TextPosition>? targets,
-  }) {
-    var blocks = <TextBlock>[];
-    var length = 0;
-    void commit() {
-      if (blocks.isEmpty) return;
-      final id = 's${sections.length}';
-      sections.add(TextSection(id: id, blocks: blocks));
-      summaries.add(
-        SectionSummary(
-          id: id,
-          title: summaries.any((item) => item.source == source)
-              ? '$title (continued)'
-              : title,
-          source: source,
-          length: length,
-          language: language,
-        ),
-      );
-      blocks = [];
-      length = 0;
-    }
-
-    for (var ordinal = 0; ordinal < sourceBlocks.length; ordinal++) {
-      final block = sourceBlocks[ordinal];
-      final pieces = <String>[];
-      var buffer = StringBuffer();
-      for (final cluster in block.text.characters) {
-        if (cluster.length > maxBlockCharacters) {
-          throw const FormatException(
-            'A single text character exceeds the paragraph limit.',
-          );
-        }
-        if (buffer.length + cluster.length > maxBlockCharacters) {
-          pieces.add(buffer.toString());
-          buffer = StringBuffer();
-        }
-        buffer.write(cluster);
-      }
-      if (buffer.isNotEmpty) pieces.add(buffer.toString());
-      for (var piece = 0; piece < pieces.length; piece++) {
-        final text = pieces[piece];
-        if (length + text.length > maxSectionCharacters ||
-            blocks.length >= 2000) {
-          commit();
-        }
-        final sectionId = 's${sections.length}';
-        final id = sha256
-            .convert(utf8.encode('$hash:$source:$ordinal:$piece'))
-            .toString()
-            .substring(0, 24);
-        final position = TextPosition(sectionId: sectionId, blockId: id);
-        targets?.putIfAbsent(source, () => position);
-        if (piece == 0) {
-          for (final entry in sourceIds.entries.where(
-            (entry) => entry.value == ordinal,
-          )) {
-            targets?.putIfAbsent('$source#${entry.key}', () => position);
-          }
-        }
-        blocks.add(
-          TextBlock(
-            id: id,
-            text: text,
-            kind: block.kind,
-            direction: block.direction,
-            sourceId: piece == 0
-                ? sourceIds.entries
-                      .where((entry) => entry.value == ordinal)
-                      .firstOrNull
-                      ?.key
-                : null,
-          ),
-        );
-        length += text.length;
-      }
-    }
-    commit();
-    if (sections.length > 10000) {
-      throw const FormatException('The book contains too many sections.');
-    }
-  }
-
-  ParsedTextBook finish(
-    String title,
-    List<String> authors, {
-    String? language,
-    String? identifier,
-    List<TextContentsEntry>? contents,
-    Uint8List? cover,
-    String coverExtension = 'jpg',
-  }) {
-    if (sections.isEmpty) {
-      throw const FormatException('This book has no readable text.');
-    }
-    return ParsedTextBook(
-      TextDocument(
-        title: title,
-        authors: authors,
-        sections: summaries,
-        contents: contents?.isNotEmpty == true
-            ? contents!
-            : [
-                for (var i = 0; i < sections.length; i++)
-                  TextContentsEntry(
-                    title: summaries[i].title,
-                    position: sections[i].start,
-                  ),
-              ],
-        language: language,
-        identifier: identifier,
-      ),
-      sections,
-      cover: cover,
-      coverExtension: coverExtension,
-    );
   }
 }

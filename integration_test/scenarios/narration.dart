@@ -4,11 +4,12 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/narration/player.dart';
+import 'package:reader/narration/native_narration_player.dart';
 import 'package:reader/narration/session.dart';
 import 'package:reader/text/viewport.dart';
 
-import '../../test/support/narration_fakes.dart';
+import '../../test/fixtures/narration_audio.dart';
+import '../../test/support/fake_narration_api.dart';
 import '../support/native_test_app.dart';
 
 /// Real importing, audio decoding, persistence and reader routes with offline cloud input.
@@ -31,7 +32,7 @@ void registerNarrationTests() {
       expect(api.registrations, 0);
       expect(api.requests, isEmpty);
       await app.runWithFrames(() => app.controller.consentToNarration(book));
-      final initial = app.controller.books
+      final initial = app.controller.catalog.books
           .firstWhere((item) => item.hash == book.hash)
           .lastPosition;
       await app.runWithFrames(session.play);
@@ -56,14 +57,14 @@ void registerNarrationTests() {
       );
       await tester.pump();
       expect(
-        app.controller.books
+        app.controller.catalog.books
             .firstWhere((item) => item.hash == book.hash)
             .lastPosition,
         initial,
       );
       await app.runWithFrames(native.pause);
       await app.runWithFrames(
-        () => app.controller.configure(narrationSpeed: 1.5),
+        () => app.controller.preferences.configure(narrationSpeed: 1.5),
       );
       expect(session.manifest.speed, 1.5);
       api.offline = false;
@@ -75,7 +76,7 @@ void registerNarrationTests() {
       expect(session.ownsPosition(book), isFalse);
       expect(session.manifest.chunkId, isNull);
       await app.runWithFrames(
-        () => app.controller.configure(narrationVoice: 'cedar'),
+        () => app.controller.preferences.configure(narrationVoice: 'cedar'),
       );
       await app.runWithFrames(session.play);
       await tester.pump();
@@ -91,7 +92,7 @@ void registerNarrationTests() {
       expect(api.signOuts, 1);
       await app.runWithFrames(app.controller.deleteCloudAccount);
       expect(api.accountDeletions, 1);
-      expect(app.controller.books, hasLength(1));
+      expect(app.controller.catalog.books, hasLength(1));
     },
   );
 }

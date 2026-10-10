@@ -6,14 +6,16 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/models.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/importing/import_candidate.dart';
+import 'package:reader/importing/import_result.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/text/document_store.dart';
 import 'package:reader/text/viewport.dart';
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 
-import '../../test/fakes.dart';
+import '../../test/support/fake_picker.dart';
 import '../../test/fixtures/performance_book.dart';
 import '../support/native_test_app.dart';
 import '../support/performance_capture.dart';
@@ -26,14 +28,14 @@ void registerPerformanceTests(IntegrationTestWidgetsFlutterBinding binding) {
     }
     final app = await NativeTestApp.launch(tester, importBooks: false);
     final bytes = performanceBookFixture();
-    (app.controller.picker as FakePicker).files = [
+    (app.controller.catalog.picker as FakePicker).files = [
       ImportCandidate(
         name: 'Profile.epub',
         size: bytes.length,
         readBytes: () async => bytes,
       ),
     ];
-    final imported = await app.controller.pickAndImport();
+    final imported = await app.controller.catalog.pickAndImport();
     expect(imported.single.status, ImportStatus.imported);
     await tester.pumpAndSettle();
     final book = app.book('Novel');
@@ -84,7 +86,7 @@ void registerPerformanceTests(IntegrationTestWidgetsFlutterBinding binding) {
     // Reset the committed anchor outside timing: each repetition starts at the
     // same prose, instead of reopening wherever the previous chapter jump ended.
     for (var repeat = 0; repeat < 2; repeat++) {
-      await app.controller.configure(
+      await app.controller.preferences.configure(
         mode: ReadingMode.scroll,
         theme: ReadingTheme.paper,
         fontSize: 100,
@@ -120,7 +122,7 @@ void registerPerformanceTests(IntegrationTestWidgetsFlutterBinding binding) {
       // Async polling must not call the tester's guarded widget lookup mid-pump.
       final navigation = app.viewport.navigation;
       final turnStart = navigation.leadingPosition!;
-      await app.controller.configure(mode: ReadingMode.pageFlip);
+      await app.controller.preferences.configure(mode: ReadingMode.pageFlip);
       await tester.pumpAndSettle();
       // Reflow can await sidecar I/O after pumpAndSettle sees no scheduled frame.
       await app.runWithFrames(() => navigation.restore(turnStart));

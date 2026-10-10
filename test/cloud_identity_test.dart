@@ -2,8 +2,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:reader/cloud_identity.dart';
-import 'package:reader/narration/api.dart';
+import 'package:reader/identity/cloud_identity_exception.dart';
+import 'package:reader/identity/firebase_cloud_identity.dart';
+import 'package:reader/identity/google_identity_provider.dart';
+import 'package:reader/narration/http_narration_api.dart';
 
 class _Google extends Fake implements GoogleIdentityProvider {
   final List<String> events;

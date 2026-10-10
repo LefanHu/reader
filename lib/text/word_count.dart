@@ -1,10 +1,6 @@
-import 'dart:convert';
-import 'dart:io';
-import 'dart:isolate';
-
 import 'package:characters/characters.dart';
 
-import 'document.dart';
+import 'text_section.dart';
 
 final _letterOrNumber = RegExp(r'[\p{L}\p{N}]', unicode: true);
 final _mark = RegExp(r'^\p{M}+$', unicode: true);
@@ -55,42 +51,3 @@ int countSectionWords(TextSection section) => section.blocks.fold(
   0,
   (sum, block) => sum + approximateWordCount(block.text),
 );
-
-/// Injectable boundary for background backfill from existing normalized books.
-abstract interface class BookWordCounter {
-  /// Loads bounded sections sequentially, without reparsing the source book.
-  Future<int> count(String sourcePath);
-}
-
-/// Performs disk decoding and counting on one worker isolate per book.
-/// Callers supply validated app-owned catalog paths; section IDs are validated
-/// by the document manifest before becoming local sidecar filenames.
-class FileBookWordCounter implements BookWordCounter {
-  @override
-  Future<int> count(String sourcePath) => Isolate.run(() async {
-    final root = File(sourcePath).parent.path;
-    final document = TextDocument.fromJson(
-      (jsonDecode(await File('$root/document.json').readAsString()) as Map)
-          .cast<String, dynamic>(),
-    );
-    var count = 0;
-    for (final summary in document.sections) {
-      final section = TextSection.fromJson(
-        (jsonDecode(
-          await File('$root/text/${summary.id}.json').readAsString(),
-        ) as Map).cast<String, dynamic>(),
-      );
-      if (section.id != summary.id) {
-        throw const FormatException('Section identity mismatch.');
-      }
-      count += countSectionWords(section);
-    }
-    return count;
-  });
-}
-
-/// Stable, compact English grouping used beside titles in the library.
-String wordCountLabel(int count) {
-  final digits = count.toString();
-  return '≈ ${digits.replaceAllMapped(RegExp(r"\B(?=(\d{3})+(?!\d))"), (_) => ',')} words';
-}

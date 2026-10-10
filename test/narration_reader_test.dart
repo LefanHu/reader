@@ -3,17 +3,30 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/models.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/narration/session.dart';
-import 'package:reader/reader.dart';
+import 'package:reader/reader/reader_screen.dart';
 import 'package:reader/theme.dart';
-import 'package:reader/text/document.dart' as text;
+import 'package:reader/text/text_block.dart' as text;
+import 'package:reader/text/text_position.dart' as text;
+import 'package:reader/text/text_section.dart' as text;
 import 'package:reader/text/viewport.dart';
 
-import 'fakes.dart';
-import 'support/narration_fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/fake_illustration_api.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_word_counter.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/memory_document_store.dart';
+import 'support/memory_illustration_store.dart';
+import 'support/memory_settings_store.dart';
+import 'support/test_controller.dart';
+import 'support/fake_narration_api.dart';
+import 'support/fake_narration_player.dart';
+import 'support/memory_narration_store.dart';
 
 void main() {
   setUpAll(() async {
@@ -134,16 +147,19 @@ void main() {
       await tester.pump();
       player.finish();
       await tester.pumpAndSettle();
-      final committed = controller.books.single.lastPosition!;
+      final committed = controller.catalog.books.single.lastPosition!;
       expect(
         committed,
         const text.TextPosition(sectionId: 's0', blockId: 'p0', offset: 16),
       );
       await tester.binding.setSurfaceSize(const Size(390, 700));
       addTearDown(() => tester.binding.setSurfaceSize(null));
-      await controller.configure(mode: ReadingMode.scroll, fontSize: 24);
+      await controller.preferences.configure(
+        mode: ReadingMode.scroll,
+        fontSize: 24,
+      );
       await tester.pumpAndSettle();
-      expect(controller.books.single.lastPosition, committed);
+      expect(controller.catalog.books.single.lastPosition, committed);
       final pause = player.remotePause!();
       await tester.pumpAndSettle();
       await pause;
@@ -151,14 +167,14 @@ void main() {
           .widget<TextViewport>(find.byType(TextViewport))
           .navigation;
       expect(navigation.leadingPosition, committed);
-      expect(controller.books.single.lastPosition, committed);
+      expect(controller.catalog.books.single.lastPosition, committed);
       expect(controller.narration!.status, NarrationStatus.paused);
       final restored = navigation.restore(
         const text.TextPosition(sectionId: 's0', blockId: 'p1', offset: 5),
       );
       await tester.pumpAndSettle();
       await restored;
-      expect(controller.books.single.lastPosition, committed);
+      expect(controller.catalog.books.single.lastPosition, committed);
       navigation.next();
       await tester.pumpAndSettle();
       expect(controller.narration!.manifest.chunkId, isNull);
@@ -266,7 +282,7 @@ void main() {
     expect(controller.narration!.manifest.chunkId, isNull);
     expect(tester.takeException(), isNull);
     final api = controller.narration!.api as FakeNarrationApi;
-    final anchor = controller.books.single.lastPosition;
+    final anchor = controller.catalog.books.single.lastPosition;
     await tester.tap(find.byTooltip('Cloud account'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Delete cloud account'));
@@ -282,7 +298,7 @@ void main() {
     await tester.tap(find.text('Delete account'));
     await tester.pumpAndSettle();
     expect(api.accountDeletions, 1);
-    expect(controller.books.single.lastPosition, anchor);
+    expect(controller.catalog.books.single.lastPosition, anchor);
     expect(controller.narration!.manifest.cloudBookId, isNull);
     expect(find.text('AI narration'), findsNothing);
     expect(tester.takeException(), isNull);

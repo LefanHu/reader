@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'models.dart';
+import 'preferences/reading_theme.dart';
 
 /// Default paper background, also used for the reader's opaque page textures.
 const paper = Color(0xFFF7F4ED);

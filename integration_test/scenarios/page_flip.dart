@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/models.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/viewport.dart';
 
 import '../support/native_test_app.dart';
@@ -10,7 +11,7 @@ void registerPageFlipTests() {
     'cancelled curl releases preview textures and preserves the committed anchor',
     (tester) async {
       final app = await NativeTestApp.launch(tester);
-      await app.controller.configure(
+      await app.controller.preferences.configure(
         mode: ReadingMode.pageFlip,
         fontSize: 140,
         serif: false,
@@ -44,7 +45,7 @@ void registerPageFlipTests() {
     (tester) async {
       final app = await NativeTestApp.launch(tester);
       await app.runWithFrames(
-        () => app.controller.configure(
+        () => app.controller.preferences.configure(
           mode: ReadingMode.pageFlip,
           fontSize: 140,
           serif: false,

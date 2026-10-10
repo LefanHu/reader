@@ -3,12 +3,16 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/library.dart';
-import 'package:reader/models.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/library/library_screen.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/preferences/library_filter.dart';
+import 'package:reader/preferences/library_sort.dart';
+import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/theme.dart';
 
-import 'fakes.dart';
+import 'support/memory_settings_store.dart';
+import 'support/test_controller.dart';
 
 CatalogBook _book({
   bool long = false,
@@ -153,8 +157,8 @@ void main() {
       await tester.pumpAndSettle();
       expectShelf(['A Quiet Book']);
       expect(find.text('Title A–Z'), findsOneWidget);
-      expect(controller.settings.libraryFilter, LibraryFilter.all);
-      expect(controller.settings.librarySort, LibrarySort.recent);
+      expect(controller.preferences.settings.libraryFilter, LibraryFilter.all);
+      expect(controller.preferences.settings.librarySort, LibrarySort.recent);
       expect(settingsStore.settings.libraryFilter, LibraryFilter.all);
       expect(settingsStore.settings.librarySort, LibrarySort.recent);
 
@@ -165,7 +169,10 @@ void main() {
       expectShelf(['B Quiet Book']);
       expect(find.text('Title A–Z'), findsOneWidget);
       await controller.flush();
-      expect(controller.settings.libraryFilter, LibraryFilter.finished);
+      expect(
+        controller.preferences.settings.libraryFilter,
+        LibraryFilter.finished,
+      );
       expect(settingsStore.settings.libraryFilter, LibraryFilter.finished);
       expect(settingsStore.settings.librarySort, LibrarySort.recent);
 
@@ -180,8 +187,8 @@ void main() {
       await controller.flush();
       expect(settingsStore.settings.libraryFilter, LibraryFilter.all);
       expect(settingsStore.settings.librarySort, LibrarySort.title);
-      expect(controller.settings.libraryFilter, LibraryFilter.all);
-      expect(controller.settings.librarySort, LibrarySort.title);
+      expect(controller.preferences.settings.libraryFilter, LibraryFilter.all);
+      expect(controller.preferences.settings.librarySort, LibrarySort.title);
     },
   );
 

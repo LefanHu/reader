@@ -1,17 +1,30 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/illustrations/api.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/illustrations/book_text_index.dart';
+import 'package:reader/illustrations/chapter_text_index.dart';
+import 'package:reader/illustrations/file_illustration_deletion_outbox.dart';
+import 'package:reader/illustrations/file_illustration_store.dart';
 import 'package:reader/illustrations/gate.dart';
-import 'package:reader/illustrations/models.dart';
-import 'package:reader/illustrations/outbox.dart';
-import 'package:reader/illustrations/store.dart';
-import 'package:reader/models.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/illustrations/illustration_job_result.dart';
+import 'package:reader/illustrations/illustration_manifest.dart';
+import 'package:reader/illustrations/illustration_scene.dart';
+import 'package:reader/illustrations/illustration_setup.dart';
+import 'package:reader/illustrations/indexed_paragraph.dart';
+import 'package:reader/illustrations/memory_illustration_deletion_outbox.dart';
+import 'package:reader/illustrations/scene_anchor.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/text/text_position.dart';
 
-import 'fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/fake_illustration_api.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_text_indexer.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/memory_illustration_store.dart';
+import 'support/memory_settings_store.dart';
 
 void main() {
   test(
@@ -148,7 +161,7 @@ void main() {
       textIndexer: FakeTextIndexer(),
     );
     await controller.initialize();
-    final setup = await controller.beginIllustrationSetup(book);
+    final setup = await controller.illustrations.beginSetup(book);
     expect(setup.cloudBookId, 'cloud-book');
     expect(api.deletedBooks, ['old-book']);
     expect(await outbox.load(), isEmpty);
@@ -252,7 +265,7 @@ void main() {
       );
       addTearDown(controller.dispose);
       await controller.initialize();
-      await controller.confirmIllustrations(
+      await controller.illustrations.confirm(
         book,
         setup: const IllustrationSetup(
           cloudBookId: 'cloud-book',
@@ -269,7 +282,9 @@ void main() {
         const TextPosition(sectionId: 's0', blockId: 'c0-p1'),
         .1,
       );
-      await _waitUntil(() => controller.manifestFor(book).scenes.isNotEmpty);
+      await _waitUntil(
+        () => controller.illustrations.manifestFor(book).scenes.isNotEmpty,
+      );
       expect(api.unlockedSceneIds, isEmpty);
       await controller.savePosition(
         book,
@@ -277,7 +292,7 @@ void main() {
         .2,
       );
       await _waitUntil(() => api.unlockedSceneIds.isNotEmpty);
-      expect(controller.pendingRevealFor(book)?.id, 'scene-0');
+      expect(controller.illustrations.pendingRevealFor(book)?.id, 'scene-0');
       await controller.savePosition(
         book,
         const TextPosition(sectionId: 's1', blockId: 'c1-p0'),

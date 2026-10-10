@@ -1,7 +1,23 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/models.dart';
+import 'package:reader/preferences/library_filter.dart';
+import 'package:reader/preferences/library_sort.dart';
+import 'package:reader/preferences/reader_settings.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
 
 void main() {
+  test('page flip settings round trip without changing old defaults', () {
+    const setting = ReaderSettings(mode: ReadingMode.pageFlip);
+    expect(
+      ReaderSettings.fromJson(setting.toJson()).mode,
+      ReadingMode.pageFlip,
+    );
+    expect(ReaderSettings.fromJson({}).mode, ReadingMode.scroll);
+    for (final mode in [ReadingMode.pages, ReadingMode.scroll]) {
+      expect(ReaderSettings.fromJson({'mode': mode.name}).mode, mode);
+    }
+  });
+
   test('older preferences restore global narration and library defaults', () {
     final settings = ReaderSettings.fromJson({
       'mode': 'pages',

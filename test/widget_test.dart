@@ -3,16 +3,31 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/book_service.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/library.dart';
-import 'package:reader/models.dart';
-import 'package:reader/reader.dart';
-import 'package:reader/text/document.dart' as text;
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/library/library_screen.dart';
+import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/preferences/reader_settings.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/reader/reader_screen.dart';
+import 'package:reader/text/grapheme_boundary.dart' as text;
+import 'package:reader/text/text_block.dart' as text;
+import 'package:reader/text/text_contents_entry.dart' as text;
+import 'package:reader/text/text_position.dart' as text;
+import 'package:reader/text/text_section.dart' as text;
+import 'package:reader/text/reader_navigation.dart';
 import 'package:reader/text/viewport.dart';
 import 'package:reader/theme.dart';
 
-import 'fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/fake_illustration_api.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_text_indexer.dart';
+import 'support/memory_catalog_store.dart';
+import 'support/memory_document_store.dart';
+import 'support/memory_illustration_store.dart';
+import 'support/memory_settings_store.dart';
+import 'support/test_controller.dart';
 
 void main() {
   testWidgets('empty library offers EPUB and TXT import', (tester) async {
@@ -68,7 +83,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
     await tester.pumpAndSettle();
-    expect(controller.books, hasLength(1));
+    expect(controller.catalog.books, hasLength(1));
   });
 
   testWidgets(
@@ -107,26 +122,26 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(controller.books.single.lastPosition!.offset, 2);
+      expect(controller.catalog.books.single.lastPosition!.offset, 2);
       await tester.tap(find.byTooltip('Reading settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Pages'));
       await tester.pumpAndSettle();
-      expect(controller.settings.mode, ReadingMode.pages);
+      expect(controller.preferences.settings.mode, ReadingMode.pages);
       await tester.tap(find.byTooltip('Close settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Choose chapter'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Nested passage'));
       await tester.pumpAndSettle();
-      expect(controller.books.single.lastPosition!.blockId, 'p1');
+      expect(controller.catalog.books.single.lastPosition!.blockId, 'p1');
       await tester.tap(find.byTooltip('Hide reading controls'));
       await tester.pumpAndSettle();
       expect(find.byTooltip('Show reading controls'), findsOneWidget);
-      expect(controller.books.single.lastPosition!.blockId, 'p1');
+      expect(controller.catalog.books.single.lastPosition!.blockId, 'p1');
       await tester.tap(find.byTooltip('Show reading controls'));
       await tester.pumpAndSettle();
-      expect(controller.books.single.lastPosition!.blockId, 'p1');
+      expect(controller.catalog.books.single.lastPosition!.blockId, 'p1');
     },
   );
 

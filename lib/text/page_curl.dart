@@ -4,6 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import 'curl_mesh.dart';
+
 /// Paints two already-shaped page textures without changing text or positions.
 ///
 /// The caller owns both images. A cylindrical fold is tessellated into front
@@ -83,8 +85,8 @@ class PaperCurlPainter extends CustomPainter {
     final tangentX = slope * inverseLength;
     final tangentY = inverseLength;
     final radius = math.max(.000001, size.width * .095 * taper);
-    final front = _Mesh();
-    final reverse = _Mesh();
+    final front = CurlMesh();
+    final reverse = CurlMesh();
 
     // Projection, side classification and shadow share one page-local crease.
     // Scalar frame geometry avoids allocating normal/anchor objects per vertex.
@@ -283,38 +285,4 @@ class PaperCurlPainter extends CustomPainter {
       oldDelegate.forward != forward ||
       oldDelegate.fromRight != fromRight ||
       oldDelegate.paper != paper;
-}
-
-/// Collects indexed triangles so each side of the sheet needs one canvas draw.
-class _Mesh {
-  final positions = <Offset>[];
-  final textures = <Offset>[];
-  final colors = <Color>[];
-  final indices = <int>[];
-
-  void polygon(List<Offset> points, List<Offset> uv, List<Color> shading) {
-    final base = positions.length;
-    positions.addAll(points);
-    textures.addAll(uv);
-    colors.addAll(shading);
-    for (var i = 1; i + 1 < points.length; i++) {
-      indices
-        ..add(base)
-        ..add(base + i)
-        ..add(base + i + 1);
-    }
-  }
-
-  void draw(Canvas canvas, Paint paint, BlendMode blend) {
-    if (positions.isEmpty) return;
-    final vertices = ui.Vertices(
-      ui.VertexMode.triangles,
-      positions,
-      textureCoordinates: textures,
-      colors: colors,
-      indices: indices,
-    );
-    canvas.drawVertices(vertices, blend, paint);
-    vertices.dispose();
-  }
 }

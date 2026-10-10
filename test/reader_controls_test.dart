@@ -3,13 +3,17 @@ import 'dart:ui' show Tristate;
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/controller.dart';
-import 'package:reader/models.dart';
-import 'package:reader/reader.dart';
-import 'package:reader/text/document.dart' as text;
+import 'package:reader/app/reader_controller.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/reader/reader_screen.dart';
+import 'package:reader/text/text_block.dart' as text;
+import 'package:reader/text/text_section.dart' as text;
 import 'package:reader/text/viewport.dart';
 
-import 'fakes.dart';
+import 'fixtures/catalog_book.dart';
+import 'support/memory_document_store.dart';
+import 'support/test_controller.dart';
 
 /// Real reader shell with enough text to observe scrolling and page positions.
 Future<ReaderController> _mount(
@@ -20,7 +24,7 @@ Future<ReaderController> _mount(
   final book = testBook();
   final controller = await testController(books: [book]);
   addTearDown(controller.dispose);
-  await controller.configure(mode: mode);
+  await controller.preferences.configure(mode: mode);
   final store = MemoryDocumentStore(
     sections: [
       text.TextSection(
@@ -162,9 +166,9 @@ void main() {
           );
         }
       }
-      expect(controller.settings.mode, ReadingMode.scroll);
-      expect(controller.settings.serif, isFalse);
-      expect(controller.settings.theme, ReadingTheme.dark);
+      expect(controller.preferences.settings.mode, ReadingMode.scroll);
+      expect(controller.preferences.settings.serif, isFalse);
+      expect(controller.preferences.settings.theme, ReadingTheme.dark);
       expect(find.byIcon(Icons.check), findsNothing);
       semantics.dispose();
     },
@@ -206,7 +210,7 @@ void main() {
           expect(tester.getRect(find.byType(TextViewport)), viewport);
           expect(tester.getRect(paints.first), textRect);
           expect(navigation.leadingPosition, anchor);
-          expect(controller.books.single.lastPosition, anchor);
+          expect(controller.catalog.books.single.lastPosition, anchor);
           expect(scrollOffset(), offset);
         }
 

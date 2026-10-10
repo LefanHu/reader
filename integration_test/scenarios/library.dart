@@ -2,11 +2,12 @@ import 'dart:io';
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:reader/text/word_count.dart';
+import 'package:reader/text/word_count_label.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/models.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/text/document_store.dart';
 import 'package:reader/theme.dart';
 
 import '../support/native_test_app.dart';
@@ -18,7 +19,7 @@ void registerLibraryTests() {
   ) async {
     final app = await NativeTestApp.launch(tester, importBooks: false);
     await app.importThroughLibrary();
-    expect(app.controller.books, hasLength(2));
+    expect(app.controller.catalog.books, hasLength(2));
     expect(find.text('Import results'), findsOneWidget);
     await tester.tap(find.text('Done'));
     await tester.pumpAndSettle();
@@ -92,7 +93,7 @@ void registerLibraryTests() {
       await tester.tap(find.text('Delete').last);
       await tester.pumpAndSettle();
       expect(
-        app.controller.books.any((item) => item.hash == book.hash),
+        app.controller.catalog.books.any((item) => item.hash == book.hash),
         isFalse,
       );
     },
@@ -107,7 +108,7 @@ void registerLibraryTests() {
         await tester.pumpAndSettle();
         await tester.tap(find.text(themeLabel(preset)));
         await tester.pumpAndSettle();
-        expect(app.controller.settings.theme, preset);
+        expect(app.controller.preferences.settings.theme, preset);
         expect(
           Theme.of(tester.element(find.text('Your library'))).colorScheme,
           buildReaderTheme(preset).colorScheme,

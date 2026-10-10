@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/models.dart';
-import 'package:reader/text/document.dart';
+import 'package:reader/preferences/reading_mode.dart';
+import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/text/document_store.dart';
+import 'package:reader/text/grapheme_boundary.dart';
 import 'package:reader/text/viewport.dart';
 import 'package:reader/theme.dart';
 
@@ -27,7 +29,7 @@ void registerReadingTests() {
         (block) => block.id == anchor.blockId,
       );
       expect(graphemeFloor(block.text, anchor.offset), anchor.offset);
-      await app.controller.configure(
+      await app.controller.preferences.configure(
         mode: ReadingMode.pageFlip,
         fontSize: 140,
         serif: false,
@@ -85,7 +87,7 @@ void registerReadingTests() {
         final app = await NativeTestApp.launch(tester);
         // Paper must also be an actual theme transition, not the default state.
         if (preset == ReadingTheme.paper) {
-          await app.controller.configure(theme: ReadingTheme.dark);
+          await app.controller.preferences.configure(theme: ReadingTheme.dark);
           await tester.pumpAndSettle();
         }
         await app.openBook('Unicode Test');
