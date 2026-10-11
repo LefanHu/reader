@@ -1,232 +1,12 @@
-# Reader illustration backend
+# Reader backend
 
-One container image contains the authenticated mobile API and Cloud Tasks worker
-routes. Deploy it as two Cloud Run services: a public API service and a private
-worker service. Set `WORKER_URL` to the worker and require Cloud Run IAM
-authentication for that service.
+One container image serves the authenticated mobile API and the Cloud Tasks
+worker routes. Deploy it as two Cloud Run services: a public API service
+(`SERVICE_ROLE=api`) and a private worker service (`SERVICE_ROLE=worker`,
+Cloud Run IAM required, reached only by Cloud Tasks via OIDC). `WORKER_URL`
+points at the worker.
 
-## Runtime ownership
-
-- `src/index.ts` composes deployments, public book/profile/job routes, verified
-  identity, task authorization, feature rollout gates, and shared error translation.
-- `src/illustration-worker.ts` owns illustration claims, world-history planning,
-  credit settlement, moderation, and guarded asset publication/cleanup. Its
-  injected resources/provider boundary allows local execution without cloud calls.
-- `src/illustration-scenes.ts` owns public scene delivery, durable regeneration
-  task submission, and scene tombstone/asset cleanup.
-- `src/http.ts` shares bounded request validation and expected HTTP
-  errors between public routes and the worker, preserving status translation.
-- `src/fences.ts` owns shared book/account deletion-fence lookups,
-  `src/illustration-credits.ts` credit reservations and claim fencing, and
-  `src/illustration-jobs.ts` the `/v1` book profile and job routes.
-- `src/illustration-books.ts` owns transactional illustration book registration
-  and tombstoned deletion. The first registration initializes pilot credits;
-  retries/additional books retain spent/reserved balances. Deleted account/book
-  fences reject registration with HTTP 410 instead of recreating deleted data.
-- `src/openai.ts`, `src/narration.ts`, and `src/account.ts` retain provider,
-  narration lifecycle, and account responsibilities respectively.
-
-Illustration lifecycle regressions run in `src/illustration-worker.test.ts` through
-local HTTP with isolated storage, deterministic provider barriers, real deletion
-handlers and transient enqueue failures. Run `npm run build` and `npm test`;
-these commands never apply cloud changes.
-
-Illustration chapter inputs omit absent optional `title`/`language` fields rather
-than writing `undefined`. Historical `WorldSnapshot.referenceObject` is likewise
-absent until an earlier usable illustration provides a reference. This preserves
-Firestore's default strict field validation without disabling it globally.
-
-## Configuration
-
-Required configuration:
-
-- `OPENAI_API_KEY`, `FINGERPRINT_SECRET`
-- `GOOGLE_CLOUD_PROJECT`, `ILLUSTRATION_BUCKET`
-- `TASK_LOCATION`, `TASK_QUEUE`, `TASK_SERVICE_ACCOUNT`, `WORKER_URL`
-- `ILLUSTRATIONS_ENABLED=true` to open the remote feature flag (it defaults off)
-- `SERVICE_ROLE=api` on the public mobile service and `SERVICE_ROLE=worker` on
-  the private, Cloud Tasks/IAM-only worker service
-- optional `OPENAI_SCENE_MODEL`, `OPENAI_IMAGE_MODEL`,
-  `OPENAI_IMAGE_ORCHESTRATOR_MODEL`, and `PILOT_CREDITS`
-
-The OpenAI API organization behind the key must have funded API usage; a ChatGPT
-subscription does not fund these direct API calls. Successful model discovery or
-moderation does not prove generation allowance. Realtime
-`credit_balance_exhausted` / `insufficient_quota` indicates provider billing, not
-Google IAM permissions. Fund the existing API organization before replacing a
-working key or changing cloud permissions.
-
-Create Firestore TTL on `illustrationJobInputs.expiresAt`, deny all direct client
-access to Firestore and Storage, and grant the API/worker service accounts only
-the collections, bucket prefix, Secret Manager secret, and task permissions they
-need. The mobile build supplies Firebase and API values with `--dart-define`.
-
-Configure the bucket lifecycle to delete `users/**/scenes/**` after 30 days.
-Scene documents also carry `assetExpiresAt`; `/unlock` queues an uncharged
-refresh when an asset is within 24 hours of expiry. Cloud Storage must remain
-private—clients receive only ten-minute signed URLs after their local locator
-gate opens. Use Firestore CMEK if the deployment requires customer-managed
-encryption for temporary chapter jobs; Firestore encryption at rest is always
-required.
-
-The API never accepts an EPUB. It accepts one normalized chapter at a time and
-analyzes it once into append-only, paragraph-anchored entity revisions plus
-scene candidates. The prose is deleted immediately after that analysis. Image
-generation receives only the selected scene range and the compact world state
-that was established before the scene, never the whole chapter or future
-revisions. OpenAI Responses API storage is disabled.
-
-The service runs text moderation before image generation and image moderation
-before committing an asset. Credits are reserved transactionally, then charged
-in the same transaction that publishes a usable scene and its world reference
-after both private objects save. A live lease's unique token is checked against
-the current job/scene, book tombstone and shared `narrationAccountTombstones`
-record before history, status, accounting or publication writes. Stale claims
-cannot refund newer reservations or overwrite/delete newer objects; each attempt
-uses unique, immutable `.claim-<token>` object names and removes its own objects
-when publication is cancelled, including saves that finish after deletion.
-An expired, still-owned lease returns HTTP 409 for task retry rather than leaving
-its reservation stranded; the next claim transfers that reservation exactly once.
-
-Job documents temporarily retain a `plan` containing only bounded scene anchors,
-paraphrased facts and generation specs/world snapshots; raw chapter text remains
-solely in the 24-hour-TTL input until the guarded analysis commit deletes it.
-The plan lets a replacement lease resume without another prose copy or repeated
-history/counter increments. Terminal completion/failure removes the plan; book/
-account deletion purges jobs and plans. Job `claimToken`, scene
-`regenerationToken` and reservation `claimToken` fence lease ownership. Reservation
-`sceneId` links deletion refunds to the owning scene.
-
-Regeneration records persist `regenerationTarget`, `regenerationRefresh` and
-`regenerationTaskId` before enqueue. A caller retry (including `/unlock` for
-expired assets) resubmits that same identity after a transient enqueue failure;
-it cannot switch paid/free billing intent or double-charge. Completed targets
-are no-ops, and old task identities cannot claim a newer request. A new request
-after provider failure gets a new task identity and can reserve a previously
-refunded credit. Publication/failure removes this temporary submission metadata.
-
-Scene deletion first fences the scene, refunds reserved work, removes its world
-reference and objects, then leaves a minimal `deleted` tombstone. Book deletion
-first replaces the book with a minimal durable `deleted` tombstone, releases its
-reserved credits and purges owned jobs, inputs, scenes, reservations, revisions,
-references and objects. These fences are not TTL records: deleted scene delivery
-returns 404, and deleted book profile/jobs/registration return 410. Account
-deletion removes those book/scene tombstones too, retaining only the shared
-account fence. `DELETE /v1/account` purges temporary prose, jobs/plans, scene
-metadata, temporal history, reservations, user records and the storage prefix.
-Narration purge also removes UID-owned jobs, orphan inputs, and all monthly usage
-records. It releases unsubmitted reservations before deleting counters and awaits
-bulk writes before responding. Minimal account tombstones remain to fence delayed
-workers; shared daily usage retains submitted charges and other users' allowance.
-Firebase identity deletion belongs to the native client after HTTP success, not
-this route. Privacy deletion remains available while generation rollout is off.
-
-Terraform owns the deployed indexes, TTL policy, Security Rules, service
-identities, and Cloud Run services. Do not run `firebase deploy`; use the
-repository-root deployment entry point so these resources retain one source of
-truth:
-
-```sh
-tool/deploy_backend dev
-```
-
-Accounts/shared infrastructure can be deployed separately with
-`tool/deploy_backend dev --scope core`. The illustration path uses
-`--scope illustrations` after core exists; omitting scope preserves the full
-workflow. Existing foundation state must migrate before either path is applied.
-This split does not add Google sign-in or change backend routes.
-
-See [`../infra/README.md`](../infra/README.md) for state bootstrapping,
-migration safeguards, secrets, drift review, and new-environment setup.
-
-## AI narration (disabled by default)
-
-Narration uses the same API and private worker deployments, Firebase Auth, App Check,
-Firestore database, Secret Manager key and private asset bucket as the existing
-feature stack. It does not initialize or spend illustration credits.
-
-Narration registration has no consent gate and accepts only the account-scoped
-fingerprint. Authentication and App Check remain mandatory; illustration consent
-is unchanged.
-
-Set `narration_enabled`, `narration_monthly_characters` and
-`narration_daily_characters` in the environment Terraform configuration. Runtime
-injects `NARRATION_ENABLED` (default false), `NARRATION_MONTHLY_CHARACTERS`
-(default 500000), `NARRATION_DAILY_CHARACTERS` (default 200000) and
-`NARRATION_TASK_QUEUE` (`reader-narration`). Foundation owns both Apple Firebase
-registrations; the feature stack owns the dedicated queue, input TTL and job
-indexes. Existing deployment scopes remain `core|illustrations|all`.
-
-Authenticated routes:
-
-- `GET /v1/narration/config`: rollout, model/voices and remaining UTC-month allowance.
-- `POST /v1/narration/books`: account-scoped fingerprint only; no prose is uploaded.
-- `POST /v1/narration/books/:bookId/jobs`: exact prose, SHA-256 digest, chunk ID,
-  document/chunk versions and Marin/Cedar voice. Requests are idempotent.
-- `GET /v1/narration/jobs/:jobId`: status and a ten-minute private download URL
-  only for live, unexpired audio owned by the caller.
-- `DELETE /v1/narration/books/:bookId`: tombstone and purge; usable with rollout off.
-- `DELETE /v1/account`: tombstones and purges narration before the native client deletes identity.
-
-The private `/internal/narration/:jobId` worker transaction claims each job with a
-four-minute lease and unique claim token. Its OpenAI Realtime response uses
-`gpt-realtime-2.1-mini`, fixed narration instructions, no tools, isolated input,
-24 kHz mono PCM and a three-minute timeout. Refusal, incomplete output, empty,
-misaligned or oversized PCM produce no published asset. Successfully completed
-audio is accepted independently of absent or mismatching transcript metadata;
-transcript events are ignored. The provider is instructed to read the exact source
-passage, but this service does not verify spoken-text fidelity.
-See [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations)
-and [the TTS migration notice](https://developers.openai.com/api/docs/deprecations).
-
-Quota transactions reserve UTF-16 input characters against both the user's UTC
-month and the environment's UTC day. Submission is durably recorded before the
-provider request. Pre-submission failures release the reservation; submitted
-failures remain charged. A user retry gets a new reservation and task identity,
-with at most two provider attempts. Crash recovery cannot publish for a stale
-claim, deleted book or deleted account. Cached local replay is free. Audio expires
-after 30 days through bucket lifecycle plus checked delivery expiration. Raw
-prose is removed at terminal completion; abandoned inputs have a 24-hour Firestore
-TTL policy. Firestore cleanup is asynchronous. Allowance reads reclaim expired
-unsubmitted reservations in batches of up to 100.
-
-Do not enable rollout until signed iOS and macOS authentication/App Check,
-background playback, media controls and listening quality are verified. No live
-provider calls or cloud applies are part of the automated tests.
-
-## Account usage
-
-`GET /v1/account/usage` requires the same verified Firebase ID token and App Check
-token as generation. It remains readable with both feature rollout flags disabled.
-The authenticated token determines ownership; query parameters cannot select an
-account. Responses are marked `Cache-Control: no-store` and contain:
-
-- `asOf`: server UTC ISO timestamp.
-- `narrationEnabled`, `illustrationsEnabled`: independent rollout flags.
-- `narrationMonthlyLimit`, `narrationRemaining`: UTF-16 monthly allowance and
-  remaining units, including outstanding reservations in the charged usage.
-- `narrationResetAt`: first instant of the next UTC month.
-- `illustrationCreditsRemaining`, `illustrationCreditsReserved`: total unspent
-  credits and those held by jobs. Both are null when credits are not activated.
-
-This endpoint performs only reads. It never initializes illustration credits,
-registers books, changes illustration consent, enqueues generation, or reclaims reservations.
-Existing narration configuration/generation cleanup owns reservation recovery;
-the Settings snapshot can conservatively include expired reservations until that
-cleanup runs. Missing monthly usage means the full configured monthly allowance.
-
-## Approved dev live smoke
-
-Use a disposable, authenticated dev account only, after deployment/provider-spend
-approval. Never run account deletion against a restored user's real identity.
-Every `/v1` request requires both `Authorization: Bearer <Firebase ID token>` and
-`X-Firebase-AppCheck: <App Check token>`; do not log those headers, provider keys,
-passage bodies or signed URLs. No public test bypass is available. Both rollout
-flags must be enabled for the full recipe. Native macOS dev credentials have
-passed Firebase ID-token and registered-debug App Check signature verification;
-this does not substitute for the deferred native production listening checks.
-
-Local checks (no provider calls or cloud changes), from the repository root:
+Commands (local only; never apply cloud changes):
 
 ```sh
 npm --prefix backend ci
@@ -235,32 +15,189 @@ npm --prefix backend test
 docker build --platform linux/amd64 -t reader-backend-dev backend
 ```
 
-Public API recipe (JSON request bodies shown below; empty-body calls need no JSON):
+## Source map
+
+- `src/index.ts`: composition, public routes, identity, task authorization,
+  rollout gates, error translation. `src/http.ts`: bounded validation and
+  expected HTTP errors.
+- `src/illustration-books.ts` (registration/deletion, pilot credits),
+  `illustration-jobs.ts` (`/v1` profile/job routes), `illustration-scenes.ts`
+  (scene delivery, regeneration, cleanup), `illustration-worker.ts` (claims,
+  planning, settlement, moderation, guarded publication),
+  `illustration-credits.ts`, `fences.ts` (deletion-fence lookups).
+- `src/openai.ts`, `narration.ts`, `narration-provider.ts`, `account.ts`:
+  provider calls, narration lifecycle, account routes.
+- `src/illustration-worker.test.ts` runs lifecycle regressions over local HTTP
+  with isolated storage and deterministic provider barriers.
+
+## Configuration
+
+Required: `OPENAI_API_KEY`, `FINGERPRINT_SECRET`, `GOOGLE_CLOUD_PROJECT`,
+`ILLUSTRATION_BUCKET`, `TASK_LOCATION`, `TASK_QUEUE`, `TASK_SERVICE_ACCOUNT`,
+`WORKER_URL`, `SERVICE_ROLE`. `ILLUSTRATIONS_ENABLED=true` opens the
+illustration flag (default off). Optional: `OPENAI_SCENE_MODEL`,
+`OPENAI_IMAGE_MODEL`, `OPENAI_IMAGE_ORCHESTRATOR_MODEL`, `PILOT_CREDITS`.
+The mobile build supplies Firebase/API values with `--dart-define`.
+
+- The OpenAI organization behind the key must have funded API usage; a ChatGPT
+  subscription does not. Successful model discovery/moderation does not prove
+  generation allowance; `credit_balance_exhausted` / `insufficient_quota` is
+  provider billing, not IAM. Fund the organization before replacing a key.
+- Firestore: TTL on `illustrationJobInputs.expiresAt`; deny all direct client
+  access to Firestore and Storage; grant service accounts least privilege.
+- Bucket lifecycle deletes `users/**/scenes/**` after 30 days. Scenes carry
+  `assetExpiresAt`; `/unlock` queues an uncharged refresh within 24 hours of
+  expiry. Storage stays private: clients get only ten-minute signed URLs.
+
+## Deployment
+
+Terraform owns indexes, TTL, Security Rules, service identities and Cloud Run
+services. Do not run `firebase deploy`; use the root entry point:
+
+```sh
+tool/deploy_backend dev
+```
+
+`--scope core` deploys accounts/shared infrastructure; `--scope illustrations`
+requires core to exist already; omitting scope runs both. Existing foundation
+state must migrate before either path is applied. See
+[`../infra/README.md`](../infra/README.md) for state bootstrap, migration
+safeguards, secrets and drift review.
+
+## Illustration privacy and lifecycle guarantees
+
+- The API never accepts an EPUB, only one normalized chapter at a time. It is
+  analyzed once into append-only, paragraph-anchored entity revisions and scene
+  candidates, then the prose is deleted. Image generation sees only the selected
+  scene range and the world state established before it. OpenAI Responses
+  storage is disabled.
+- Optional absent fields (`title`, `language`, `WorldSnapshot.referenceObject`)
+  are omitted, never written as `undefined`, to keep Firestore strict field
+  validation on.
+- Text moderation runs before image generation; image moderation before asset
+  commit. Credits are reserved transactionally and charged in the transaction
+  that publishes a usable scene and its world reference.
+- Lease fencing: a unique claim token is checked against the current job/scene,
+  book tombstone and `narrationAccountTombstones` before any history, status,
+  accounting or publication write. Stale claims cannot refund newer
+  reservations or touch newer objects; each attempt writes immutable
+  `.claim-<token>` objects and removes its own on cancellation. An expired,
+  still-owned lease returns 409 for task retry; the next claim transfers the
+  reservation exactly once.
+- Job documents temporarily hold a `plan` (bounded anchors, paraphrased facts,
+  specs/world snapshots). Raw chapter text lives only in the 24-hour-TTL input
+  until the guarded analysis commit deletes it. Terminal states remove the plan.
+- Regeneration persists `regenerationTarget`, `regenerationRefresh` and
+  `regenerationTaskId` before enqueue; retries (including `/unlock`) resubmit the
+  same identity, cannot change paid/free intent or double-charge, and stale task
+  identities cannot claim newer requests.
+- Deletion: scene delete fences, refunds, removes assets, leaves a `deleted`
+  tombstone (delivery 404). Book delete writes a durable tombstone first, then
+  purges everything owned (profile/jobs/registration then return 410).
+  `DELETE /v1/account` purges prose, jobs, scenes, history, reservations, user
+  records, storage prefix and narration data, leaving only the account tombstone
+  that fences delayed workers; shared daily usage keeps submitted charges.
+  Firebase identity deletion is the native client's job after HTTP success.
+  Deletion works with rollout off.
+- The first illustration registration initializes pilot credits; later
+  registrations keep balances. Deleted account/book fences reject registration
+  with 410.
+
+## AI narration (disabled by default)
+
+Reuses the API/worker deployments, Firebase Auth, App Check, Firestore, Secret
+Manager key and private bucket; it does not touch illustration credits.
+Registration needs no consent and accepts only the account-scoped fingerprint;
+auth and App Check stay mandatory. Both iOS and macOS use this cloud path by
+default (Apple on-device narration is off unless the client is built with
+`--dart-define=ON_DEVICE_NARRATION_ENABLED=true`), so generation is refused
+until `NARRATION_ENABLED=true` here.
+
+Terraform variables `narration_enabled`, `narration_monthly_characters`,
+`narration_daily_characters` inject `NARRATION_ENABLED` (default false),
+`NARRATION_MONTHLY_CHARACTERS` (500000), `NARRATION_DAILY_CHARACTERS` (200000)
+and `NARRATION_TASK_QUEUE` (`reader-narration`). Foundation owns the Apple
+Firebase registrations; the feature stack owns the queue, input TTL and indexes.
+
+Authenticated routes:
+
+- `GET /v1/narration/config`: rollout, model/voices, remaining UTC-month allowance.
+- `POST /v1/narration/books`: fingerprint only; no prose.
+- `POST /v1/narration/books/:bookId/jobs`: exact prose, SHA-256 digest, chunk ID,
+  document/chunk versions, `marin`/`cedar` voice. Idempotent.
+- `GET /v1/narration/jobs/:jobId`: status plus a ten-minute download URL for live,
+  unexpired audio owned by the caller.
+- `DELETE /v1/narration/books/:bookId`: tombstone and purge; works with rollout off.
+- `DELETE /v1/account`: purges narration before the client deletes identity.
+
+Worker `/internal/narration/:jobId` claims a job with a four-minute lease and
+claim token, then calls OpenAI Realtime (`gpt-realtime-2.1-mini`, fixed
+instructions, no tools, isolated input, 24 kHz mono PCM, three-minute timeout).
+Refusal, incomplete, empty, misaligned or oversized PCM publishes nothing.
+Transcript events are ignored; the service does not verify spoken-text fidelity.
+
+Quota: UTF-16 input characters are reserved against the user's UTC month and the
+environment's UTC day. Submission is recorded durably before the provider
+request; pre-submission failures release the reservation, submitted failures stay
+charged. A user retry gets a new reservation/task identity, with at most two
+provider attempts. Stale claims, deleted books and deleted accounts cannot
+publish. Cached local replay is free. Audio expires after 30 days (bucket
+lifecycle plus checked delivery expiration). Raw prose is removed at terminal
+completion; abandoned inputs hit a 24-hour Firestore TTL (asynchronous).
+Allowance reads reclaim expired unsubmitted reservations in batches of 100.
+
+Do not enable rollout until signed iOS and macOS auth/App Check, background
+playback, media controls and listening quality are verified. Automated tests make
+no live provider calls.
+
+## Account usage
+
+`GET /v1/account/usage` needs the verified Firebase ID token and App Check token,
+stays readable with both rollout flags off, derives ownership from the token
+only, and returns `Cache-Control: no-store` with:
+
+- `asOf`; `narrationEnabled`, `illustrationsEnabled`.
+- `narrationMonthlyLimit`, `narrationRemaining` (outstanding reservations
+  count as used), `narrationResetAt` (next UTC month start).
+- `illustrationCreditsRemaining`, `illustrationCreditsReserved` (null when
+  credits are not activated).
+
+Read-only: it never initializes credits, registers books, changes consent,
+enqueues work or reclaims reservations, so it may conservatively include expired
+reservations until cleanup runs. Missing monthly usage means the full allowance.
+
+## Approved dev live smoke
+
+Use only a disposable, authenticated dev account, after deployment/provider-spend
+approval. Never run account deletion against a real user's identity. Every `/v1`
+request needs `Authorization: Bearer <Firebase ID token>` and
+`X-Firebase-AppCheck: <App Check token>`; never log those, provider keys, passage
+bodies or signed URLs; never fabricate App Check tokens. No public test bypass
+exists. Both rollout flags must be on for the full recipe.
 
 | Request | Body / assertion |
 | --- | --- |
-| `GET /health` | HTTP 200, `{"ok":true}`; no auth required. Cloud Run reserves some paths ending in `z`, so health uses a non-reserved path. |
-| `GET /v1/account/usage` | HTTP 200, `Cache-Control: no-store`; independent flags true, UTC timestamps, nonnegative narration allowance; fresh illustration credits null. Retain baseline. |
-| `GET /v1/fingerprint-key` | HTTP 200, nonempty base64 `key`. Derive account-scoped HMAC-SHA256 fingerprint for a disposable book identifier with the decoded key. |
-| `POST /v1/books` | `{"fingerprint":"<64-hex fingerprint>","title":"The Lantern Courtyard","authors":["Dev smoke"],"language":"en","chapterCount":1}` → HTTP 200, 40-hex `id`, suggested style, two alternatives, `estimatedCredits:3`. |
-| `PUT /v1/books/:bookId/profile` | `{"style":"<suggestedStyle>","density":1,"styleVersion":1,"analysisVersion":2}` → HTTP 204. |
-| `POST /v1/books/:bookId/chapters/0/jobs` | Chapter payload below → HTTP 202, 40-hex job `id`. Repeat exactly: same ID, no duplicate charge. |
-| `GET /v1/jobs/:jobId` | Poll up to the configured task deadline/retry window: `queued`/`analyzing` → `complete`; require at least one `ready_locked` scene (a scene-less `complete` is not a successful provider smoke). Assert anchor `href`, paragraph ID, selector and progression correspond to submitted paragraphs. |
-| `POST /v1/scenes/:sceneId/unlock` | HTTP 200, image/thumbnail signed URLs, nonempty alt text, caption and `generationVersion:1`. Fetch URLs privately: valid nonempty WebP, landscape original, thumbnail width at most 640. Signed URLs use a ten-minute lifetime; bare object URLs must remain inaccessible. |
-| `POST /v1/scenes/:sceneId/regenerate` | HTTP 202. Poll original job's scenes until `ready_locked`; unlock again → HTTP 200 and `generationVersion:2`, valid replacement WebP. |
-| `GET /v1/account/usage` | Initial density-one success plus paid regeneration spend exactly two credits; reserved credits return to zero. Repeat illustration book registration and register another fingerprint: no credit reset or extra grant. |
-| `GET /v1/narration/config` | HTTP 200, `enabled:true`, model `gpt-realtime-2.1-mini`, voices Marin/Cedar (`marin`, `cedar`), limits and remaining allowance. |
-| `POST /v1/narration/books` | `{"fingerprint":"<64-hex account-scoped fingerprint>"}` → HTTP 200, 64-hex `id`, matching authenticated `account`, remaining allowance; illustration balances unchanged. |
-| `POST /v1/narration/books/:bookId/jobs` | Narration payload below → HTTP 200, 64-hex `id`. Repeat exactly: same ID, no duplicate reservation. |
-| `GET /v1/narration/jobs/:jobId` | Poll `queued`/`generating` → `ready` with ten-minute signed `url`; privately fetch nonempty RIFF/WAVE, 24 kHz mono 16-bit PCM, then listen for exact passage and no introduction. Repeat using `voice:"cedar"` and a distinct chunk ID. |
-| `GET /v1/account/usage` | For two successful voice jobs, remaining narration units decrease by twice the passage's UTF-16 length; illustration credits unchanged. GET configuration should agree. |
-| `DELETE /v1/scenes/:sceneId` | HTTP 204; unlock afterward → 404; associated reference/private objects removed. |
-| `DELETE /v1/books/:bookId` | HTTP 204; subsequent profile/job submission or same-fingerprint registration → 410; minimal book fence remains, while owned illustration jobs, inputs, scenes, revisions, references and assets are removed. Delete the second registration too. |
-| `DELETE /v1/narration/books/:bookId` | HTTP 204; old ready job delivery → 410; new submission → 410; book audio removed, submitted allowance remains charged. |
-| `DELETE /v1/account` | HTTP 204; inspect dev-owned Firestore/bucket records privately for full purge except account tombstone and shared submitted daily usage. Delete Firebase identity only after this succeeds. Old job delivery → 404; fresh illustration/narration registration with the still-valid old token → 410. |
+| `GET /health` | 200 `{"ok":true}`, no auth (Cloud Run reserves some `z`-suffixed paths). |
+| `GET /v1/account/usage` | 200, `no-store`; flags true, nonnegative narration allowance; fresh illustration credits null. Keep as baseline. |
+| `GET /v1/fingerprint-key` | 200, base64 `key`; derive the account-scoped HMAC-SHA256 fingerprint of a disposable book identifier. |
+| `POST /v1/books` | `{"fingerprint":"<64-hex>","title":"The Lantern Courtyard","authors":["Dev smoke"],"language":"en","chapterCount":1}` → 200, 40-hex `id`, suggested style, two alternatives, `estimatedCredits:3`. |
+| `PUT /v1/books/:bookId/profile` | `{"style":"<suggestedStyle>","density":1,"styleVersion":1,"analysisVersion":2}` → 204. |
+| `POST /v1/books/:bookId/chapters/0/jobs` | Chapter body below → 202, 40-hex job `id`; exact repeat returns same ID, no second charge. |
+| `GET /v1/jobs/:jobId` | Poll `queued`/`analyzing` → `complete` with at least one `ready_locked` scene (scene-less `complete` is not success). Anchor `href`, paragraph ID, selector, progression match the submission. |
+| `POST /v1/scenes/:sceneId/unlock` | 200, signed image/thumbnail URLs, alt text, caption, `generationVersion:1`. Private fetch: valid WebP, landscape original, thumbnail width ≤ 640; bare object URLs inaccessible. |
+| `POST /v1/scenes/:sceneId/regenerate` | 202; poll to `ready_locked`; unlock → 200, `generationVersion:2`, valid new WebP. |
+| `GET /v1/account/usage` | Initial + paid regeneration spend exactly two credits; reserved returns to 0. Re-registering the book or registering another fingerprint grants/resets nothing. |
+| `GET /v1/narration/config` | 200, `enabled:true`, model `gpt-realtime-2.1-mini`, voices `marin`/`cedar`, limits, allowance. |
+| `POST /v1/narration/books` | `{"fingerprint":"<64-hex>"}` → 200, 64-hex `id`, matching `account`; illustration balances unchanged. |
+| `POST /v1/narration/books/:bookId/jobs` | Narration body below → 200, 64-hex `id`; exact repeat: same ID, no second reservation. |
+| `GET /v1/narration/jobs/:jobId` | Poll to `ready` with ten-minute `url`; fetch RIFF/WAVE 24 kHz mono 16-bit PCM; listen for the exact passage, no introduction. Repeat with `voice:"cedar"` and a new chunk ID. |
+| `GET /v1/account/usage` | Two voice jobs reduce narration remaining by twice the passage UTF-16 length; credits unchanged; agrees with config. |
+| `DELETE /v1/scenes/:sceneId` | 204; unlock → 404; reference/objects removed. |
+| `DELETE /v1/books/:bookId` | 204; profile/job/same-fingerprint registration → 410; only the tombstone remains. Delete the second registration too. |
+| `DELETE /v1/narration/books/:bookId` | 204; old job delivery and new submission → 410; audio removed, submitted allowance stays charged. |
+| `DELETE /v1/account` | 204; privately verify full purge except account tombstone and shared daily usage. Delete Firebase identity only afterward. Old job delivery → 404; new registrations with the old token → 410. |
 
-Minimal chapter body deliberately omits optional metadata to exercise strict
-Firestore serialization:
+Chapter body (omits optional metadata to exercise strict Firestore serialization):
 
 ```json
 {
@@ -288,7 +225,7 @@ Firestore serialization:
 ```
 
 Narration body (`digest` = lowercase SHA-256 of exact UTF-8 `text`; `chunkId` =
-lowercase SHA-256 of a stable disposable anchor; `.length` = UTF-16 units):
+lowercase SHA-256 of a stable disposable anchor; length counts UTF-16 units):
 
 ```json
 {
@@ -301,22 +238,19 @@ lowercase SHA-256 of a stable disposable anchor; `.length` = UTF-16 units):
 }
 ```
 
-Additional checks with the same disposable records:
+Additional checks:
 
-- Missing either authentication header → 401; a second dev account cannot read
-  another account's jobs/scenes (404). Invalid narration digest/version → 400
-  with no usage increase. Never send a fabricated App Check token.
-- API-service `/internal/*` → 404, and private worker anonymous invocation must
-  be rejected by Cloud Run IAM. Task delivery must use the configured OIDC identity.
-- Narration `failed` is a failed live smoke, not successful asynchronous handling.
-  An explicit retry may create a second provider attempt/reservation; after two
-  provider attempts another retry returns 409. Submitted failures stay charged.
-- To exercise uncharged illustration refresh without waiting 29 days, use a
-  parent-approved dev-only fixture on a separate disposable scene, setting its
-  `assetExpiresAt` within 24 hours. Unlock → 409 while refresh is queued; poll
-  ready and unlock → a newer generation, valid private assets and no credit loss.
-- A controlled dev rollout-off check must still allow usage, narration config
-  and privacy deletion while generation endpoints return 503; do not mutate
-  shared rollout settings without approval.
-- Inspect terminal jobs for deleted temporary prose; narration may retain failed
-  submitted usage, and account deletion must not refund shared daily charges.
+- Missing either auth header → 401; a second dev account cannot read another's
+  jobs/scenes (404). Invalid narration digest/version → 400 with no usage change.
+- API-service `/internal/*` → 404; anonymous worker invocation rejected by Cloud
+  Run IAM; task delivery uses the configured OIDC identity.
+- Narration `failed` is a failed smoke. An explicit retry may make a second
+  provider attempt/reservation; after two attempts, retry → 409. Submitted
+  failures stay charged.
+- Uncharged illustration refresh: on a separate disposable scene, use a
+  parent-approved dev-only fixture setting `assetExpiresAt` within 24 hours.
+  Unlock → 409 while queued; after ready, unlock → newer generation, no credit loss.
+- Rollout-off check (needs approval to change shared settings): usage, narration
+  config and privacy deletion still work; generation endpoints → 503.
+- Terminal jobs have no raw prose; account deletion must not refund shared daily
+  charges.

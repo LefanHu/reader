@@ -1,26 +1,18 @@
 # Reader
 
-An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and TXT imports are normalized by our Dart parser and displayed by a custom viewport using Flutter's text shaping and layout engine.
+An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and TXT imports (up to 100 MB each) are normalized by our Dart parser and displayed by a custom viewport using Flutter's text layout engine.
 
-- Import several EPUB or TXT files from the native document picker, up to 100 MB each.
-- Search by title or author; filter All / Reading / Finished; sort by recent activity or title. The macOS library uses cover tiles with details on hover or keyboard focus; iPhone and iPad use lists with metadata alongside cover thumbnails. Both retain a compact resume card.
-- Subtle approximate word counts use the same normalized text as the reader. New imports count immediately; older books backfill in the background without changing reading positions. Unicode letter/number runs and individual Han/kana graphemes form a deterministic estimate; unspaced Thai and similar scripts can undercount.
-- Choose Paper, Sepia, or Dark from the library Appearance menu or reading settings. One saved palette applies immediately to the whole app, including menus and dialogs; typography controls affect book text only.
-- Open Settings from the library gear or macOS Settings… (Command-comma) to manage account, appearance, reading, global narration preferences, library defaults, usage, storage, privacy, and app information. Preferences stay local and work without an account; payments and cross-device synchronization are not included.
-- Switch Page flip / Pages / Scroll, typography, themes, and window sizes while retaining a grapheme-safe text position.
-- Select visible book text in every reading mode: long-press and move selection handles on iOS, or mouse-drag on macOS. Copy preserves the selected normalized text; Look Up opens the operating system's dictionary. Read from here starts narration at the beginning of the paragraph containing the selection's first character and continues through the book. Selecting or starting playback never commits reading progress. Dictionary availability and installed languages are managed by the OS, not the app.
-- Swipe right from the physical leftmost 20 logical pixels in Reader or Settings to go Back on release (at least 64 pixels). Reader flushes its complete committed text position before exiting, even with controls hidden. Compact Settings returns from detail to categories before exiting; wide Settings exits directly. Cancelled swipes, covered routes, and trackpad pan/zoom do not trigger this action.
-- Preserve EPUB chapter structure, nested tables of contents, headings, paragraphs, and explicit line breaks. Publisher CSS, inline images, interactive links, and rich styling are omitted; local covers remain in the library.
-- Read horizontal Unicode text, including RTL and mixed-direction passages, CJK, Indic scripts, Thai, combining marks, and emoji. Font coverage uses platform fallback. Vertical writing is not supported.
-- Import strict UTF-8 TXT (with optional BOM) or BOM-marked UTF-16 LE/BE. Form feeds separate sections; large sections and paragraphs split deterministically at paragraph/grapheme boundaries to fit illustration API limits.
-- Opt in per book to spoiler-safe AI illustrations, using exactly the text the viewport displays. Illustrations unlock after the leading reading position passes their ending paragraph, and persist in a local gallery.
-- Persist source files, normalized sections, and the catalog under Application Support; global reading preferences remain in SharedPreferences.
+- Library: search by title/author, filter All / Reading / Finished, sort by recent activity or title. macOS uses cover tiles; iPhone/iPad use lists. Approximate word counts use the same normalized text as the reader; older books backfill in the background.
+- Reading: Page flip (interactive paper curl) / Pages / Scroll, Paper / Sepia / Dark palettes applied app-wide, typography controls for book text only. Switching modes, themes, or window sizes retains a grapheme-safe text position.
+- Text selection works in every mode (long-press and handles on iOS, mouse-drag on macOS). Copy keeps normalized text; Look Up opens the OS dictionary; Read from here starts narration at the start of the selection's first paragraph. Selecting never commits reading progress.
+- Edge Back: swiping right from the leftmost 20 logical pixels (at least 64 px) goes Back in Reader and Settings. Reader flushes its full committed position first.
+- EPUB structure (chapters, nested TOC, headings, paragraphs, line breaks) is preserved. Publisher CSS, inline images, links, and rich styling are omitted; covers stay in the library. Scripted, remote-resource, fixed-layout, and encrypted/DRM EPUBs are rejected, with archive traversal, expansion, entry-count, and markup limits.
+- Text: horizontal Unicode incl. RTL, CJK, Indic, Thai, emoji (platform font fallback); vertical writing is unsupported. TXT must be strict UTF-8 (optional BOM) or BOM-marked UTF-16; form feeds separate sections.
+- Optional per-book, spoiler-safe AI illustrations built from exactly the displayed text; they unlock once the leading reading position passes their ending paragraph and persist in a local gallery.
+- Settings (library gear, or Command-comma on macOS) hold account, appearance, reading, global narration, library defaults, usage, storage, privacy, and app info. Preferences are local and need no account; payments and sync are not included.
+- Storage: source files, normalized sections, and the catalog live under Application Support; reading preferences in SharedPreferences.
 
-Scripted, remote-resource, fixed-layout, and encrypted/DRM publications are rejected. Archive traversal, expansion, entry-count, and markup limits apply to every EPUB import. Import parsing and sidecar serialization run outside the UI isolate. The viewport retains at most two measured section layouts. Page flip uses those same layouts for an interactive paper curl, retaining at most two page textures (twice logical resolution, capped at 2048 pixels). Horizontal drags may start anywhere inside the padded page content, separate from the screen-edge Back band: the fold follows horizontal travel, grab height, and live vertical movement, then settles from the last held shape. Vertical-only gestures do not turn pages. Tap the outer 20% to turn; center taps toggle controls. RTL sections mirror physical page navigation; edge Back stays at the physical left. Positions and illustration gates advance only after completed turns; reflow, chapter jumps, suspension, and exit cancel unfinished turns. Reduced-motion settings use immediate page changes without curl textures. Unicode direction ranges are generated from Unicode 17.0.0; regeneration instructions are in `tool/generate_direction.py`.
-
-Selection borrows the existing measured text painters and never commits reading progress. Active selection fences page gestures, scrolling progress reports, and reader navigation shortcuts; explicit navigation or reflow clears it. Mouse drags select text rather than curling pages. Paragraph-aware selection aggregation lives inside scrolling content so Flutter's scroll selection container cannot hide stable block identities.
-
-Catalog version 2 intentionally discards legacy imported books and Readium reading positions on first launch. Global preferences survive. A durable reset marker makes cleanup restartable; known cloud illustration book IDs are queued for deletion before local data is removed. Startup retries use an existing identity session and never prompt for sign-in.
+Catalog version 2 intentionally discards legacy imported books and Readium reading positions on first launch; global preferences survive. A durable reset marker makes cleanup restartable, and known cloud illustration book IDs are queued for deletion before local data is removed. Startup retries use an existing identity session and never prompt for sign-in.
 
 ## Development
 
@@ -32,14 +24,40 @@ flutter devices
 flutter run -d <ios-device-id>
 ```
 
+The iOS deployment target is 15.0 and macOS is 12.0. Apple targets use CocoaPods (Firebase, file picker). Install and validate with:
+
+```sh
+cd ios && pod install && cd ..
+cd macos && pod install && cd ..
+flutter build ios --simulator --no-codesign
+flutter build macos
+flutter test integration_test/reader_test.dart -d macos
+flutter test integration_test/reader_test.dart -d <ios-simulator-id>
+```
+
+Check dependencies with `flutter pub outdated` and `flutter pub upgrade --dry-run`. Validate EPUB fixtures with the official EPUBCheck: `java -jar /path/to/epubcheck.jar path/to/book.epub`.
+
+### Cloud features
+
+AI illustrations and cloud narration are inert unless the build supplies Firebase/Google OAuth and API values. Provision and deploy the whole Firebase/Google Cloud backend with `tool/deploy_backend dev`; infrastructure is tracked in [`infra/`](infra/README.md) (`tool/plan_infra dev` reviews drift without applying). Deployment generates the ignored `.dart-defines/dev.json`:
+
+```sh
+flutter run -d <ios-device-id> --dart-define-from-file=.dart-defines/dev.json
+flutter run -d macos --dart-define-from-file=.dart-defines/dev.json
+```
+
+Defines can also be passed individually: `FIREBASE_API_KEY`, `FIREBASE_APP_ID`, `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_PROJECT_ID`, `FIREBASE_STORAGE_BUCKET`, `FIREBASE_GOOGLE_CLIENT_ID`, `FIREBASE_GOOGLE_SERVER_CLIENT_ID`, `ILLUSTRATION_API_BASE_URL`. macOS has its own Firebase registration and `FIREBASE_GOOGLE_MACOS_CLIENT_ID`; iOS still needs its own `FIREBASE_GOOGLE_CLIENT_ID`. Regenerate the defines for the selected environment before switching builds.
+
+- `--dart-define=FIREBASE_APP_CHECK_DEBUG=true` uses a registered App Check debug token on the iOS simulator or macOS in development. Never set it in release builds.
+- Protected generation on macOS requires macOS 14+ and a supported installation producing valid App Check tokens; OS version and signing alone do not establish App Attest support. Local reading works on older systems.
+- Illustrations sign in with Google only when the reader taps the illustration control, and need per-book consent before chapter prose is uploaded. Configure the native Google OAuth client, Firebase Authentication, App Check/App Attest, and the services in [`backend/README.md`](backend/README.md) before enabling the server-side rollout flag.
+- Local macOS builds need development signing and a matching provisioning profile for the Keychain groups used by Google sign-in.
+
 ### Headless iPhone builds and private QR installation
 
-A paid Apple Developer Program membership permits Ad Hoc installation on registered
-iPhones without a live Xcode connection. The phone and build Mac can be on different
-networks. Tailscale is used for private HTTPS downloads, not remote device debugging.
+A paid Apple Developer Program membership permits Ad Hoc installation on registered iPhones without a live Xcode connection. Tailscale provides private HTTPS downloads only.
 
-On the build Mac, select the full Xcode installation globally. Native Dart build hooks
-also need to discover its SDK; a per-command `DEVELOPER_DIR` alone may not suffice:
+Select the full Xcode globally (Dart native build hooks need to find its SDK; per-command `DEVELOPER_DIR` may not suffice):
 
 ```sh
 sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
@@ -47,10 +65,7 @@ xcrun --sdk iphoneos --show-sdk-path
 brew install cocoapods qrencode
 ```
 
-Create a distribution key and certificate signing request (CSR) once. Do not overwrite
-an existing key; the certificate returned by Apple must match the key that made its CSR.
-Keep all downloaded credentials in the ignored `.credentials/` directory with
-owner-only permissions:
+Create a distribution key and CSR once. Do not overwrite an existing key: Apple's certificate must match the key that made its CSR. Keep all credentials in the ignored `.credentials/` directory with owner-only permissions:
 
 ```sh
 mkdir -p .credentials
@@ -61,26 +76,14 @@ openssl req -new -newkey rsa:2048 -nodes \
 chmod 600 .credentials/ios-distribution.*
 ```
 
-Use a browser on another computer for [Apple Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources):
+In [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources):
 
-1. Create an **Apple Distribution** certificate using the CSR. Download it as
-   `.credentials/ios-distribution.cer` on the build Mac.
-2. Register the explicit App ID `com.leafmealone.reader`, including **App Attest**
-   for the existing production entitlement.
-3. Register the iPhone's UDID. Finder or Xcode on a Mac physically near the phone can
-   provide it; it is not the serial number or IMEI.
-4. Create an **Ad Hoc** profile for that App ID, distribution certificate, and
-   registered iPhone. Save it as `.credentials/ReaderAdHoc.mobileprovision`.
-   [Apple's profile instructions](https://developer.apple.com/help/account/provisioning-profiles/create-an-ad-hoc-provisioning-profile/).
+1. Create an **Apple Distribution** certificate from the CSR; save it as `.credentials/ios-distribution.cer`.
+2. Register App ID `com.leafmealone.reader` with **App Attest** (enable it before generating the profile; a profile downloaded earlier lacks the production entitlement and Xcode rejects it).
+3. Register the iPhone's UDID (from Finder or Xcode; not the serial or IMEI).
+4. Create an **Ad Hoc** profile for that App ID, certificate, and iPhone; save it as `.credentials/ReaderAdHoc.mobileprovision`.
 
-Enable App Attest before generating the profile. If the profile was downloaded
-before enabling that capability, regenerate and download it again; Xcode rejects
-the old profile because it does not authorize the app's production entitlement.
-
-Import the certificate and matching private key into a dedicated build keychain.
-These are one-time **Bash** commands in an interactive SSH terminal. Passwords stay
-in local shell variables, never source files or chat; disable shell tracing first.
-The keychain search-list update preserves existing keychains.
+Import the certificate and key into a dedicated build keychain (one-time, in an interactive **Bash** SSH terminal). Passwords stay in local shell variables, never in files or chat; tracing must be off. The search-list update preserves existing keychains.
 
 ```bash
 set +x
@@ -109,8 +112,7 @@ unset P12_PASSWORD KEYCHAIN_PASSWORD
 security find-identity -v -p codesigning
 ```
 
-Remember the build keychain password privately. If it has locked, unlock it before
-later builds using these **Bash** commands; do not rely on a GUI password dialog:
+If the keychain has locked, unlock it before later builds (no GUI dialog):
 
 ```bash
 set +x
@@ -120,17 +122,11 @@ security unlock-keychain -p "$KEYCHAIN_PASSWORD" \
 unset KEYCHAIN_PASSWORD
 ```
 
-`security` accepts passwords as process arguments; run this only on a trusted build
-Mac and never enable command tracing or log expanded commands.
-No Apple Account GUI sign-in or App Store Connect API key is needed for manual signing.
+`security` takes passwords as process arguments: use only on a trusted build Mac and never enable command tracing. No Apple Account GUI sign-in or App Store Connect API key is needed for manual signing.
 
-On a preconfigured build Mac, the tool also supports the dedicated
-`~/Library/Keychains/reader-ota-build.keychain-db` keychain. If its password is stored in
-`.credentials/ios-build-keychain.password`, builds unlock it automatically. That file
-must belong to the current user and have owner-only permissions; never commit, print,
-or share it. Existing keychains and their passwords are not modified.
+The tool also supports a preconfigured `~/Library/Keychains/reader-ota-build.keychain-db`; if its password is in `.credentials/ios-build-keychain.password` (current-user-owned, owner-only permissions; never commit, print, or share), builds unlock it automatically. Existing keychains and passwords are not modified.
 
-Build and generate the installer, substituting the Mac's Tailscale DNS name:
+Build and publish the installer, substituting the Mac's Tailscale DNS name (add `--defines .dart-defines/dev.json` to enable cloud features; local reading does not need it):
 
 ```sh
 python3 tool/build_ios_ota.py \
@@ -138,191 +134,37 @@ python3 tool/build_ios_ota.py \
   --base-url https://YOUR-MAC.YOUR-TAILNET.ts.net:8443
 ```
 
-The command installs the supplied profile for Xcode, temporarily applies manual signing
-to Runner only, builds a release IPA, and publishes it under `build/ota/site/`. Each
-build increments the number after `+` in `pubspec.yaml`'s `version:` and passes it as
-`--build-number`, so the iOS build number rises on every build (commit the bumped
-`pubspec.yaml`). The number is consumed once an IPA is exported, even if publishing then
-fails. Republishing with `--ipa` never changes it.
+- The tool installs the profile for Xcode, temporarily applies manual signing to Runner only, builds a release IPA, and publishes it under `build/ota/site/`. It rejects expired, development, and App Store profiles and never publishes a stale IPA after a failed export.
+- Each build increments the number after `+` in `pubspec.yaml`'s `version:` and passes it as `--build-number`; commit the bumped `pubspec.yaml`. The number is consumed once an IPA is exported, even if publishing fails. `--ipa /path/to/export.ipa` republishes an existing Ad Hoc export without rebuilding or changing the number.
+- The installation page, `manifest.plist`, and QR code are always served from `<base-url>/`, so the QR stays valid across builds. Each build adds an immutable `<build-id>/reader.ipa` and atomically repoints the page and manifest; older builds are kept. Responses use `Cache-Control: no-store` (restart `--serve` after updating the tool).
+- `.credentials/ios-signing.xcconfig` is removed on exit; if the process is killed, delete it before the next build.
 
-The installation page, `manifest.plist` and QR code are always served from the base URL
-itself (`<base-url>/`), so the printed QR code stays valid across builds; each build only
-adds an immutable `<build-id>/reader.ipa` and then atomically repoints the page and
-manifest to it. Responses are sent with `Cache-Control: no-store`. Restart `--serve`
-once after updating the tool so the header applies. Older build directories are kept.
-It rejects expired, development, and App Store profiles, and never
-publishes a stale IPA after failed export. `--ipa /path/to/export.ipa` republishes an
-existing Ad Hoc export instead of rebuilding. Optional `--defines .dart-defines/dev.json`
-enables the configured cloud features; local reading does not require it.
-The build override `.credentials/ios-signing.xcconfig` is removed on exit; if the process
-is forcibly killed, remove that generated file before starting another build.
-
-Keep the installer server running in an SSH terminal or persistent terminal session.
-The built-in server binds loopback and uses Apple's required XML manifest MIME type:
+Keep the installer server running (it binds loopback and serves Apple's XML manifest MIME type), then expose only the generated site through private HTTPS from another terminal:
 
 ```sh
 python3 tool/build_ios_ota.py --serve
-```
-
-In another terminal, expose only that generated site through private HTTPS:
-
-```sh
 /Applications/Tailscale.app/Contents/MacOS/Tailscale serve \
   --bg --https=8443 http://127.0.0.1:8765
 ```
 
-If Serve is disabled, approve the setup URL printed by Tailscale in a browser.
-Do not use Funnel unless you intentionally want public hosting. Connect the iPhone
-to the same tailnet, scan the emitted QR code, open the page in Safari, and tap
-**Install on iPhone**. The QR code opens the installation page, not a bare IPA download.
-Keep the Mac awake until installation finishes. The server must remain running;
-`--bg` persists the HTTPS proxy but does not keep the Python server alive.
+If Serve is disabled, approve the setup URL Tailscale prints. Do not use Funnel unless you intend public hosting. On a phone in the same tailnet, scan the QR, open the page in Safari, and tap **Install on iPhone**. Keep the Mac awake until installation finishes; `--bg` persists the proxy but not the Python server.
 
-The served site contains only generated installer assets and IPAs, not credential
-files or the repository. An IPA itself necessarily includes its signed provisioning
-profile; keep access restricted to trusted tailnet members. Adding another phone
-requires registering its UDID and regenerating the Ad Hoc profile before rebuilding.
-To stop the HTTPS endpoint without disturbing other Serve endpoints:
+The site contains only installer assets and IPAs, but an IPA includes its signed provisioning profile: restrict access to trusted tailnet members. Adding another phone requires registering its UDID and regenerating the profile. Stop the endpoint without disturbing other Serve endpoints with:
 
 ```sh
 /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --https=8443 off
 ```
 
-Library themes have desktop, hover-overlay, and compact iOS-list visual baselines in `test/goldens/`. After intentional design changes, regenerate them with `flutter test test/library_theme_test.dart --update-goldens` and inspect all nine images before committing.
+### Native integration tests
 
-The library, Settings, and narration-control baselines were visually reviewed and
-refreshed with Flutter **3.47.7** (framework
-`abaf9c523780a608bd46686fd5e53740a07077f8`, engine
-`deb287481e3ce9468f3434937ced4240a70539ca`), Dart **3.13.5**, and
-**macOS 27.0.1 / 26A434 on arm64**. Use this environment and the stock software/
-deterministic Skia test renderer (`flutter test --no-enable-impeller`) for exact
-pixel comparisons. Widget platform overrides do not replace the host renderer.
-Changing the Flutter engine or host may change glyph-edge rasterization even
-when layouts are identical; review every affected reference/current pair before
-refreshing images for a new canonical environment. Keep exact comparison rather
-than hiding drift behind a tolerance.
-
-For manual UI performance work, follow [Flutter's profiling guidance](https://docs.flutter.dev/perf/ui-performance): run `flutter run --profile -d macos` or `flutter run --profile -d <physical-ios-device-id>`, open the printed DevTools URL, and record the Performance view while opening a book, scrolling, turning pages, and navigating chapters. Diagnose UI and raster times separately against the display's frame budget. Debug builds and iOS simulators are not performance evidence.
-
-Prefer removing redundant work over adding caches or custom infrastructure. Only optimize measured paths causing missed frames or accounting for at least 10% of frame time or allocations. Preserve complete narration/reading anchors, first-frame restoration, paragraph semantics, and explicit end-of-book completion before accepting an optimization.
-
-The reusable native profiler imports a fixed 300-paragraph mixed-script EPUB into a fresh temporary catalog. Each of two repetitions resets to the same complete logical anchor, then measures library → open → twelve 450-pixel scroll gestures → eight page turns → contents navigation. The first and second repetitions remain separate: first-use and warmed costs must not be pooled. Import, mode changes, setup, screenshot readback, and artifact writing are outside the measured phases. Picker input, preferences, and cloud services are fake; parsing, storage, routes, and rendering are real and offline.
-
-The runner uses Flutter's `benchmarkLive` frame policy: app/engine frame requests run normally, while artificial pump frames and extra pointer-fade debugging frames do not contaminate measurement. This also avoids artificial frame waits during timed gestures. Delayed raster timings are joined by engine frame number to frames observed during the action; frames from the two-second buffer flush are excluded from statistics. The policy is recorded in capture metadata; compare only matching policies. Each gesture/turn must advance its logical anchor, so skipped input cannot appear as a performance gain.
-
-```sh
-PROFILE_LABEL=baseline flutter drive --profile -d macos --no-dds \
-  --target integration_test/performance_test.dart \
-  --driver test_driver/performance_test.dart
-
-# Use a new label after a code change, with the same device/window/settings.
-PROFILE_LABEL=candidate flutter drive --profile -d macos --no-dds \
-  --target integration_test/performance_test.dart \
-  --driver test_driver/performance_test.dart
-```
-
-Replace `macos` with a physical iOS device ID for device measurements. Keep the macOS app frontmost; if Flutter reports that foregrounding failed, activate its window manually. `--no-dds` permits the in-app VM service connection. The dedicated runner rejects debug/release mode and is deliberately not registered in `reader_test.dart` or the normal unit suite. `vm_service` is an explicit development dependency, already supplied transitively by Flutter's integration-test tooling; it does not change app behavior.
-
-The host driver writes `build/performance/<label>/` (Git-ignored). Omit `PROFILE_LABEL` for a timestamped label; labels cannot contain path separators, and existing captures are never overwritten.
-
-- `raw.json`: versioned workload/device/settings metadata, a completion flag, and each phase's VM timeline, CPU samples, and raw engine frame timings in microseconds. Unreferenced CPU symbols are removed and stack indices remapped; every sample and stack frame is preserved.
-- `summary.json`: the same metadata and completion flag, plus per-phase frame count; UI, raster, and total-span median/p95/maximum in milliseconds; and UI/raster/either-thread over-budget counts. p95 uses nearest rank. A frame exceeding both thread budgets counts once in `either_over_budget`; total-span scheduling latency is not treated as thread work.
-- `<phase>_<repetition>_timeline.json`: individual raw VM timelines for trace inspection. CPU function/stack tables remain in `raw.json` for attribution; these are VM-service JSON, not DevTools session exports.
-
-The budget uses the recorded display refresh rate, or an explicitly flagged 60 Hz reference if unknown. These are instrumented samples, not proof of physical presentation/dropped frames or release performance. There is no timing pass/fail threshold: correctness assertions and missing measurement data fail the run, while performance values are reported for comparison. Available data from a failed test is saved with `complete: false`; never compare it as a completed capture. A host-side timeout bounds connection, measurement, and export at three minutes (excluding build time); VM disconnections/timeouts fail and may prevent artifact export. Phase progress is printed so a stalled run can be located. CPU samples are time samples, not allocation counts.
-
-Compare matching phase/repetition names only when fixture/source hash, normalization version, device, OS/Flutter version, actual window dimensions, scale, refresh rate, and settings match. Metadata records platform, OS/Dart versions, window/display properties, fixture identity, and settings; save the device model/ID and `flutter --version` alongside it. The fixed archive timestamp keeps fixture hashes stable across launches. On the second repetition, scroll/chapter PNG paths are printed; iOS screenshots reside in the device's app container. Fixture teardown unmounts, flushes serialized persistence, and deletes only its own temporary catalog. Keep captures while investigating; delete only the chosen `build/performance/<label>/` directory when finished.
-
-The earlier experimental lazy list was rolled back because narration-anchor verification failed despite faster scrolling. That optimization is not shipped, and its old `profile_baseline.json`/`profile_lazy.json` captures are not directly comparable with this runner's reset-to-start repetitions.
-
-AI illustrations are available on configured iOS and macOS builds. They remain
-inert unless the build supplies platform-specific Firebase/Google OAuth and API
-values:
-
-```sh
-flutter run -d <ios-device-id> \
-  --dart-define=FIREBASE_API_KEY=... \
-  --dart-define=FIREBASE_APP_ID=... \
-  --dart-define=FIREBASE_MESSAGING_SENDER_ID=... \
-  --dart-define=FIREBASE_PROJECT_ID=... \
-  --dart-define=FIREBASE_STORAGE_BUCKET=... \
-  --dart-define=FIREBASE_GOOGLE_CLIENT_ID=... \
-  --dart-define=FIREBASE_GOOGLE_SERVER_CLIENT_ID=... \
-  --dart-define=ILLUSTRATION_API_BASE_URL=https://YOUR_API_HOST
-```
-
-For a registered Firebase App Check debug token in development on an iOS
-simulator or macOS, add `--dart-define=FIREBASE_APP_CHECK_DEBUG=true`. Never set it
-in release builds. Production macOS protected generation requires macOS 14+ and
-a supported installation producing valid App Check tokens; OS version and
-signing alone do not establish App Attest support. Local reading remains
-available on older supported systems.
-
-The feature signs in with Google only after the reader taps the illustration
-control; per-book consent is required before chapter prose is uploaded.
-Importing and reading remain account-free and offline. Configure the selected
-platform's native Google OAuth client, Firebase Authentication, App Check/App
-Attest, and the services described in [`backend/README.md`](backend/README.md)
-before enabling the server-side rollout flag. macOS uses its separate Firebase
-registration and `FIREBASE_GOOGLE_MACOS_CLIENT_ID`; iOS still requires its own
-`FIREBASE_GOOGLE_CLIENT_ID`.
-
-Provision and deploy the complete Firebase/Google Cloud backend with
-`tool/deploy_backend dev`. Infrastructure is tracked in [`infra/`](infra/README.md);
-use `tool/plan_infra dev` to review drift without applying it. The deployment
-generates the ignored `.dart-defines/dev.json` file used by:
-
-```sh
-flutter run -d <ios-device-id> --dart-define-from-file=.dart-defines/dev.json
-flutter run -d macos --dart-define-from-file=.dart-defines/dev.json
-```
-
-Check package updates with:
-
-```sh
-flutter pub outdated
-flutter pub upgrade --dry-run
-```
-
-Apple dependencies use CocoaPods for the remaining Firebase and file-picker integration. Install and validate with:
-
-```sh
-cd ios && pod install && cd ..
-cd macos && pod install && cd ..
-flutter build ios --simulator --no-codesign
-flutter build macos
-flutter test integration_test/reader_test.dart -d macos
-flutter test integration_test/reader_test.dart -d <ios-simulator-id>
-```
-
-The native integration runner registers independent **Library**, **Reading**,
-**Reader controls**, **Page flip**, **Narration**, **Accounts**, **Settings**, and
-**Text selection and dictionary lookup** groups from `integration_test/scenarios/`.
-Each test creates its own temporary catalog through
-`integration_test/support/native_test_app.dart`; cleanup runs even
-on failure. Import parsing, file storage, rendering, and narration playback are
-real; picker input, preferences, and cloud services use fakes. Settings flows cover
-global controls, playback reset, cache removal, complete committed anchors, and
-compact/wide edge-Back hierarchy. Reader controls also verify edge exits and disk/
-reopened anchor equality in every reading mode with visible and hidden controls.
-Selection scenarios use real mouse/long-press/handle gestures, the platform
-clipboard, and native dictionary presentation in all three modes. Exact clipboard
-contents, native errors, complete reading anchors, and resource limits are checked
-automatically; screenshots and manual dictionary UI review are not required.
-EPUB fixtures live in `test/fixtures/` instead of importing another test suite.
-Platform screenshots are written to the test app's temporary directory and their
-paths are printed. Add `--no-uninstall` on iOS when inspecting those PNGs after
-the command exits; the default uninstall removes their app container.
-
-Run one group or scenario without changing the entry point:
+`integration_test/reader_test.dart` registers independent **Library**, **Reading**, **Reader controls**, **Page flip**, **Narration**, **Accounts**, **Settings**, and **Text selection and dictionary lookup** groups from `integration_test/scenarios/`. Each test builds its own temporary catalog via `integration_test/support/native_test_app.dart` and cleans up even on failure. Import, storage, rendering, and audio playback are real; picker, preferences, and cloud services are fakes. EPUB fixtures live in `test/fixtures/`. Screenshots go to the test app's temporary directory and their paths are printed; on iOS add `--no-uninstall` to keep them after the run.
 
 ```sh
 flutter test integration_test/reader_test.dart -d macos --plain-name 'Reader controls'
 flutter test integration_test/reader_test.dart -d <ios-simulator-id> --plain-name 'nested EPUB contents'
 ```
 
-If a Mac App Development profile is unavailable, offline native scenarios can
-still be built with command-local signing overrides:
+Without a Mac App Development profile, offline scenarios can be built with command-local signing overrides:
 
 ```sh
 env FLUTTER_XCODE_CODE_SIGNING_ALLOWED=NO \
@@ -331,162 +173,77 @@ env FLUTTER_XCODE_CODE_SIGNING_ALLOWED=NO \
   flutter test integration_test/reader_test.dart -d macos
 ```
 
-This exercises real local rendering, storage, and audio with fake cloud services;
-it does **not** validate Google Keychain access, App Check, or a signed
-distribution. Do not export these overrides globally or use them for release/
-OTA builds. Full dictionary scenarios additionally require a visible, active
-native Flutter window; the bridge reports `No active Flutter view` rather than
-pretending dictionary presentation succeeded when that prerequisite is absent.
+This does **not** validate Google Keychain access, App Check, or a signed distribution. Never export these overrides globally or use them for release/OTA builds. Dictionary scenarios need a visible, active native Flutter window; otherwise the bridge reports `No active Flutter view`.
 
-Offline importing and reading work on iOS and macOS. Illustration authentication uses the shared Google/Firebase identity on both platforms, while protected generation still requires valid App Check. The iOS deployment target is 15.0 and macOS target is 12.0. No loopback web server or EPUB-specific App Transport Security exception is required.
+The **Narration** group exercises the retained on-device (Apple) provider directly, independent of the build switch, plus fake cloud generation for cloud/privacy regressions. Run: `flutter test integration_test/reader_test.dart -d <device> --no-uninstall --plain-name Narration`. Physical-device listening, background/locked continuation, media controls, interruptions, multilingual quality, and latency still need a connected signed device.
 
-Validate every EPUB fixture separately with the official EPUBCheck release:
+### Golden tests
+
+Library, Settings, and narration-control baselines live in `test/goldens/` (from `test/library_theme_test.dart`, `test/settings_test.dart`, `test/narration_reader_test.dart`). After intentional design changes, regenerate with `flutter test <file> --update-goldens`, then inspect every changed image before committing.
+
+Baselines were refreshed with Flutter **3.47.7** (engine `deb287481e3ce9468f3434937ced4240a70539ca`), Dart **3.13.5**, and **macOS 27.0.1 / 26A434 on arm64**. Use that environment and the software Skia renderer (`flutter test --no-enable-impeller`) for exact pixel comparison; widget platform overrides do not replace the host renderer. A new engine or host may change glyph-edge rasterization: review each pair before refreshing, and keep exact comparison rather than adding a tolerance.
+
+### Performance profiling
+
+Debug builds and iOS simulators are not performance evidence. Profile with `flutter run --profile -d macos` (or a physical iOS device) and [DevTools](https://docs.flutter.dev/perf/ui-performance), judging UI and raster times separately against the frame budget. Prefer removing redundant work over adding caches; optimize only paths that miss frames or account for at least 10% of frame time or allocations, and preserve complete narration/reading anchors, first-frame restoration, paragraph semantics, and end-of-book completion. (A lazy-list optimization was rolled back because narration-anchor verification failed.)
+
+The reusable native profiler imports a fixed 300-paragraph mixed-script EPUB into a fresh temporary catalog and, in two repetitions (first-use and warmed costs are never pooled), measures library → open → twelve 450-px scrolls → eight page turns → contents navigation, with fake picker/preferences/cloud and real parsing, storage, routes, and rendering. It uses `benchmarkLive`; each gesture must advance its logical anchor.
 
 ```sh
-java -jar /path/to/epubcheck.jar path/to/book.epub
+PROFILE_LABEL=baseline flutter drive --profile -d macos --no-dds \
+  --target integration_test/performance_test.dart \
+  --driver test_driver/performance_test.dart
 ```
+
+Use a new label after each code change with the same device/window/settings; omit `PROFILE_LABEL` for a timestamp. Labels are 1–96 letters, digits, underscores, or hyphens, and existing captures are never overwritten. Replace `macos` with a physical iOS device ID if needed; keep the macOS app frontmost. The runner rejects debug/release mode and is not part of `reader_test.dart` or the normal suite.
+
+Output goes to Git-ignored `build/performance/<label>/`: `raw.json` (workload/device metadata, completion flag, per-phase VM timelines, CPU samples, raw frame timings), `summary.json` (per-phase frame count, UI/raster/total median, p95, max, and over-budget counts), and `<phase>_<repetition>_timeline.json`. The budget uses the display refresh rate (or a flagged 60 Hz reference). There is no pass/fail timing threshold; correctness failures or missing data fail the run, and a failed run's data is saved with `complete: false` and must not be compared. A three-minute host timeout excludes build time. Compare captures only when fixture hash, normalization version, device, OS/Flutter version, window, scale, refresh rate, and settings match; record the device and `flutter --version` alongside them.
 
 ## Organization
 
-- `lib/catalog/` owns catalog records, serial imports, recency, complete text-position persistence, serialized atomic catalog writes, and restartable legacy reset.
-- `lib/preferences/` owns device-local reader settings and their serialized persistence/native-audio application queue; `lib/importing/` owns selection, isolated parsing, hashing, and atomic import staging.
-- `lib/text/` contains the shared normalized document pipeline, EPUB/TXT parsing, Unicode direction detection, lazy section loading, and logical navigation. `lib/text/layout/` owns measured section painters; curl turns own their two preview textures, and navigation callbacks attach/detach by viewport identity.
-- `lib/app/reader_controller.dart` remains the single shared `ChangeNotifier` and coordinates catalog, preferences, illustrations, narration, and account transactions. Feature coordinators own their state without importing the controller or one another. `lib/app/reader_app.dart` owns theme/lifecycle/native Settings routing; `lib/main.dart` initializes and runs it.
-- `lib/identity/` owns shared lazy Google/Firebase identity. `lib/account/usage_coordinator.dart` owns usage snapshots and request fencing; `lib/account/api.dart` declares the interface and `lib/account/http_account_api.dart` owns authenticated transport and response validation.
-- `lib/illustrations/` owns normalized text indexing, spoiler gating, authenticated REST, atomic sidecars, local assets, and durable deletion retries. `lib/narration/` owns registration, speech transport, private audio persistence, the app-lifetime player/session, and listening controls.
-- `lib/theme.dart` defines shared app-wide palettes; focused widgets under `lib/library/`, `lib/reader/`, and `lib/settings/` preserve their screen's state and callback ownership.
-- Shared test doubles/helpers live under `test/support/`, reusable values under `test/fixtures/`, and page-flip behavior suites run independently. `integration_test/support/frame_summary.dart` is shared by the profile driver and its arithmetic tests; tests do not import other test entrypoints.
-- Handwritten Dart files stay below 1,000 lines with headroom, with one focused component per file and private widget State/owned enum/helper exceptions. The sole line-cap exception is `lib/text/direction.dart`, whose Unicode 17.0.0 table remains generated by `tool/generate_direction.py`. Callers import declarations directly, without compatibility exports or `part` splits.
-- `backend/src/index.ts` composes the API and worker, authentication, rollout gates, and task delivery. `backend/src/illustration-worker.ts` owns illustration execution, world-history loading, credit reservations, moderation, and private asset publication/cleanup. Provider logic remains in `backend/src/openai.ts`; narration and account services remain separate feature boundaries.
+- `lib/catalog/`: catalog records, serial imports, recency, complete text-position persistence, serialized atomic catalog writes, restartable legacy reset.
+- `lib/preferences/`: device-local reader settings with serialized persistence and native-audio application queue. `lib/importing/`: selection, isolated parsing, hashing, atomic import staging.
+- `lib/text/`: shared normalized document pipeline, EPUB/TXT parsing, direction detection, lazy section loading, logical navigation. `lib/text/layout/` owns measured section painters (at most two section layouts retained; curl turns keep at most two page textures).
+- `lib/app/reader_controller.dart` is the single shared `ChangeNotifier` coordinating catalog, preferences, illustrations, narration, and account transactions; feature coordinators do not import it or each other. `lib/app/reader_app.dart` owns theme/lifecycle/Settings routing; `lib/main.dart` runs it.
+- `lib/identity/`: shared lazy Google/Firebase identity. `lib/account/`: usage coordinator, API interface (`api.dart`), authenticated transport (`http_account_api.dart`).
+- `lib/illustrations/`: text indexing, spoiler gating, REST, atomic sidecars, local assets, durable deletion retries.
+- `lib/narration/`: registration, speech transport, private audio persistence, app-lifetime player/session, listening controls. `narration_provider.dart` (`selectNarrationProvider`) picks the provider.
+- `lib/theme.dart` holds palettes; widgets under `lib/library/`, `lib/reader/`, `lib/settings/` own their screen's state and callbacks.
+- Tests: doubles/helpers in `test/support/`, values in `test/fixtures/`; tests never import other test entrypoints. `integration_test/support/frame_summary.dart` is shared by the profile driver and its tests.
+- Handwritten Dart files stay under 1,000 lines, one focused component per file; callers import declarations directly (no compatibility exports or `part` splits). The sole exception is `lib/text/direction.dart`, generated by `tool/generate_direction.py` from Unicode 17.0.0.
+- `backend/src/index.ts` composes API, worker, auth, rollout gates, and task delivery; `backend/src/illustration-worker.ts` runs illustration jobs (credits, moderation, asset publication/cleanup); `backend/src/openai.ts` holds provider logic; narration and account services are separate.
 
-Lora and DM Sans are bundled under the SIL Open Font License. Remaining dependency and Unicode data notices are recorded in `THIRD_PARTY_NOTICES.md`.
+Lora and DM Sans are bundled under the SIL Open Font License; other notices are in `THIRD_PARTY_NOTICES.md`.
 
 ## Google accounts
 
-Settings → Account signs in with Google independently of cloud generation.
-Signing in does not enable illustrations or upload prose. Reading and importing
-remain account-free; cloud requests require authentication and App Check.
-Sign out clears both Google and Firebase sessions without changing local books.
-Account deletion reauthenticates the same Google user and requires a successful
-cloud purge before deleting Firebase identity or clearing illustration consent,
-narration registrations and audio. Missing or failed purge endpoints leave those local records intact.
-Local books and complete reading positions survive deletion; Settings reflects
-the actual identity even if post-purge local cleanup reports an error.
+Settings → Account signs in with Google independently of cloud generation; signing in does not enable illustrations or upload prose. Reading and importing remain account-free; cloud requests require authentication and App Check. Sign out clears Google and Firebase sessions without touching local books. Account deletion reauthenticates the same Google user and needs a successful cloud purge before deleting the Firebase identity or clearing illustration consent, narration registrations, and audio; if the purge endpoint is missing or fails, those local records stay intact. Local books and reading positions survive deletion.
 
-Deploy authentication with `tool/deploy_backend dev --scope core` after configuring
-Google OAuth clients. It requires no OpenAI key or feature API deployment. Supply
-web OAuth credentials privately through `TF_VAR_google_client_id` and
-`TF_VAR_google_client_secret`; never commit them. See [infrastructure setup](infra/README.md).
-Build with `--dart-define-from-file=.dart-defines/dev.json` after generating the
-matching iOS/macOS callback settings. Regenerate the selected environment before
-switching builds. Google sign-in replaces Apple authentication; native Firebase
-registrations and App Attest remain in place.
+Deploy authentication with `tool/deploy_backend dev --scope core` after configuring Google OAuth clients; it needs no OpenAI key or feature API. Supply the web OAuth credentials privately via `TF_VAR_google_client_id` and `TF_VAR_google_client_secret` and never commit them ([infrastructure setup](infra/README.md)). Build with `--dart-define-from-file=.dart-defines/dev.json` after generating the matching iOS/macOS callback settings. Google sign-in replaces Apple authentication; native Firebase registrations and App Attest remain.
 
 ## Settings and usage
 
-Settings stays single-pane on iOS, including tablet widths. macOS uses a sidebar
-at widths of at least 700 pixels when text scale is at most 1.5; narrower windows
-or larger type use compact navigation. Choices support keyboard activation and
-announce selection on the actionable control.
+Settings is single-pane on iOS (including tablets); macOS uses a sidebar at widths of at least 700 px with text scale at most 1.5, otherwise compact navigation.
 
-Voice and listening speed are global across books. Settings and the listening
-sheet edit the same saved values. iOS lists installed ordinary Apple voices;
-macOS retains Marin/Cedar. Speed changes immediately without regenerating audio.
-Changing voice pauses playback, invalidates the old audio offset, and waits for
-Play. Missing saved Apple voices remain visibly unavailable until explicitly
-replaced; unrelated preference edits still work. Existing cloud registrations,
-cached audio, and complete text anchors remain intact. Legacy narration sidecar
-voice values identify cached/resumable audio, not per-book preference overrides.
+Voice and listening speed are global across books; Settings and the listening sheet edit the same values. Speed changes apply immediately without regenerating audio. Changing voice pauses playback, invalidates the old audio offset, and waits for Play. Saved voices unavailable in the active provider stay visibly unavailable until replaced, but other preference edits still work. Legacy sidecar voice values identify cached/resumable audio, not per-book overrides. At startup a saved `apple:` voice is migrated to the cloud default when the active source is cloud (and a saved cloud voice to the Apple default when it is on-device).
 
-Library filter/sort defaults are saved separately from temporary library choices.
-Reset preferences restores the app-wide defaults without deleting books, account,
-illustration consent, registrations, or caches. Clearing narration audio stops
-playback and invalidates audio resume offsets while preserving books, registrations,
-and complete text anchors.
-The displayed cache size refreshes after clearing finishes.
+Library filter/sort defaults are saved separately from temporary choices. Reset preferences restores app-wide defaults without deleting books, account, illustration consent, registrations, or caches. Clearing narration audio stops playback and invalidates audio resume offsets while preserving books, registrations, and text anchors.
 
-Usage & allowance displays only server-reported balances, includes outstanding
-generation reservations, and shows unavailable/offline states when no snapshot
-can be obtained. The read-only `/v1/account/usage` endpoint requires Firebase Auth
-and App Check even while generation is disabled; viewing it neither initializes
-credits nor registers books. A core-only build can sign in and change
-local settings without an API deployment. Payments and subscriptions are deferred.
+Usage & allowance shows only server-reported balances (including outstanding reservations) and unavailable/offline states otherwise. The read-only `/v1/account/usage` endpoint requires Firebase Auth and App Check even while generation is disabled; viewing it neither initializes credits nor registers books. A core-only build can sign in and change local settings without an API deployment.
 
 ## Listening to books
 
-The Listen toolbar action opens listening controls. On iOS, installed Apple voices
-synthesize exact normalized prose on-device: no Google sign-in, App Check, book
-registration, allowance request, or cloud generation is needed. Local synthesis
-errors never fall back to cloud. The first short sentence clip starts playback
-before the rest of its paragraph is synthesized; overlong sentences split near
-300 UTF-16 units at clause, whitespace, or complete-grapheme boundaries.
+The Listen toolbar action opens listening controls. The provider is chosen by `selectNarrationProvider` in `lib/narration/narration_provider.dart`:
 
-macOS retains the real cloud engine. Opening its listening controls automatically
-registers the book when needed, with Google sign-in and valid App Check required
-for cloud requests. Narration has no consent dialog; illustration consent is
-unchanged. Both engines support 0.75–2× speed, chapter selection, play/pause,
-±15-second audio seeking, and local cache clearing. Only cloud controls show
-generation allowance and cloud-account actions.
+- **Cloud (default on iOS and macOS):** opening the controls registers the book when needed; cloud requests need Google sign-in and valid App Check. Narration has no consent dialog (illustration consent is unchanged). Only cloud controls show generation allowance and cloud-account actions. The server stays gated by `NARRATION_ENABLED` (default false), so generation is refused until the backend flag is on; see [backend configuration](backend/README.md#ai-narration-disabled-by-default).
+- **Apple on-device (iOS only, disabled by default):** the Apple voices were judged too poor to ship, but the implementation is retained. Re-enable with `--dart-define=ON_DEVICE_NARRATION_ENABLED=true`. It synthesizes locally with installed ordinary Apple voices: no sign-in, App Check, registration, or allowance, and errors never fall back to cloud. Short first sentence clips start playback early; overlong sentences split near 300 UTF-16 units at clause, whitespace, or grapheme boundaries. iOS highlights native word bounds only where marker offsets are verified for the voice, OS, and PCM format (verified on the iOS 27.0 simulator with Samantha, mono Float32/22,050 Hz); otherwise it uses native-tokenized sentence fallback, never estimated word times.
 
-The themed listening sheet appears before attachment or registration finishes,
-shows loading inline, and keeps recoverable errors and Retry beside labeled
-transport controls. Voice and speed remain global preferences.
-During playback, iOS highlights native spoken-word bounds where marker offsets
-have been verified for the installed voice, OS, and source PCM format. Other
-combinations use native-tokenized sentence fallback, never estimated word times;
-macOS retains paragraph fallback. Range painting clips to measured glyph boxes,
-including RTL and page fragments. Silent following keeps the current native cue
-or actual clip start visible without committing progress or curling the page.
-Playing, paused, and buffering status remain visible in reserved bottom chrome
-even when reading controls are hidden; status changes never resize the viewport.
-Pausing or buffering removes the highlight. The mini-player reports actual state.
-One audio handler continues playback in the library and while the device is
-locked; the library includes a mini-player. Opening another book or navigating
-manually pauses narration and invalidates the old audio offset.
-The native service is initialized once per Flutter engine. Closing a controller
-stops its audio and unbinds callbacks without replacing the shared handler; a
-speed-only edit immediately updates native media state as well as playback.
-The macOS narration sheet's Cloud account menu supports signing out and deleting
-cloud data. Settings retains shared account/privacy actions on both platforms,
-including old iOS cloud registrations. Deletion purges server data first and
-clears narration audio while preserving local books and complete reading positions.
+Both providers support 0.75–2× speed, chapter selection, play/pause, ±15-second seeking, and local cache clearing; macOS highlights at paragraph granularity. Guarantees are in [AGENTS.md](AGENTS.md#narration-guarantees); highlights:
 
-By default, listening starts at the committed logical reading position. Read from here in
-the text-selection menu instead starts at the beginning of the paragraph containing
-the selection's first character and continues through subsequent paragraphs and
-chapters to the end of the book. It replaces prior audio and discards its offset
-without changing the catalog anchor merely for selecting or starting narration.
-Only naturally completed chunks advance prose or unlock illustrations. Downloads,
-prefetch and audio seeking never advance progress. After seeking, replay from the
-committed passage to grant completion. Pausing restores the committed listening
-anchor. Following or highlighting a playing range never commits progress.
-Interrupted chunks retain the complete committed position, separate complete
-playback start, chunk identity and audio offset, including selected playback that
-has not yet completed.
-Cached replay works offline and consumes no cloud generation allowance; a 250 MiB
-LRU bounds audio and optional timing companions, pinning the active clip plus at
-most two lookahead clips. Changing speed reuses audio; changing voice synthesizes
-new speech. Interrupted local audio offsets are invalidated when the engine,
-sentence policy, OS synthesis identity, or voice changes; complete anchors survive.
-
-Cloud narration remains remotely disabled by default; local iOS listening does
-not depend on that flag. See [backend configuration](backend/README.md#ai-narration-disabled-by-default)
-and the guarantees in [AGENTS.md](AGENTS.md#narration-guarantees). Generated Firebase
-Dart defines include separate iOS/macOS app identifiers and API keys under one
-project. Local macOS builds use development signing and a matching provisioning
-profile for the Keychain groups required by Google sign-in. Protected generation additionally
-requires a valid App Check token from a supported installation on macOS 14 or
-later; the OS version alone does not guarantee App Attest availability. Validate
-attestation on the intended distribution before enabling rollout. Existing
-offline reading remains available on supported older systems.
-
-The **Narration** native test group uses real imports, storage, rendering, decoding,
-Apple sentence tokenization and on-device synthesis for local flows, plus fake
-cloud generation for cloud/privacy regressions. Run it with
-`flutter test integration_test/reader_test.dart -d <device> --no-uninstall --plain-name Narration`.
-Marker timing has been probed on the iOS 27.0 simulator with the installed
-Samantha voice and mono Float32/22,050 Hz source buffers. Other combinations
-retain sentence fallback until their offset origin and format are verified.
-Physical-device offline listening, locked/background continuation beyond the
-buffer window, media controls, interruptions/headphone removal, multilingual
-audio quality, and cold/warm latency still require a connected signed device.
+- The themed sheet appears before attachment/registration finishes, shows loading inline, and keeps recoverable errors and Retry beside the transport controls.
+- Range painting clips to measured glyph boxes (RTL and page fragments included). Silent following keeps the cue visible without committing progress or curling the page. Pausing or buffering removes the highlight. Playing/paused/buffering status stays in reserved bottom chrome, even with controls hidden, and never resizes the viewport.
+- One audio handler continues playback in the library and while locked; the library has a mini-player. Opening another book or navigating manually pauses narration and invalidates the old audio offset. The native service initializes once per Flutter engine; closing a controller stops its audio and unbinds callbacks without replacing the shared handler.
+- Listening starts at the committed logical position. Read from here instead starts at the selection's paragraph, continues to the end of the book, replaces prior audio, and discards its offset, without changing the catalog anchor merely by starting.
+- Only naturally completed chunks advance prose or unlock illustrations. Downloads, prefetch, seeking, following, and highlighting never advance progress; after seeking, replay from the committed passage to grant completion. Pausing restores the committed listening anchor. Interrupted chunks keep the complete committed position separate from playback start, chunk identity, and audio offset.
+- Cached replay works offline and uses no cloud allowance; a 250 MiB LRU bounds audio and timing companions, pinning the active clip plus at most two lookahead clips. Speed changes reuse audio; voice changes synthesize new speech. Interrupted audio offsets are invalidated when the engine, sentence policy, OS synthesis identity, or voice changes; complete anchors survive.
+- The macOS sheet's Cloud account menu supports signing out and deleting cloud data; Settings keeps shared account/privacy actions on both platforms. Deletion purges server data first, then clears narration audio, preserving local books and reading positions.
