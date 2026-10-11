@@ -102,6 +102,25 @@ void main() {
     },
   );
 
+  test('startup replaces a saved Apple voice with the cloud default', () async {
+    final store = MemorySettingsStore(
+      const ReaderSettings(
+        narrationVoice: 'apple:com.apple.voice.compact.en-US.Samantha',
+      ),
+    );
+    final controller = await _controller(settingsStore: store);
+    expect(controller.preferences.settings.narrationVoice, 'marin');
+    expect(store.settings.narrationVoice, 'marin');
+  });
+
+  test('startup keeps a saved cloud voice', () async {
+    final store = MemorySettingsStore(
+      const ReaderSettings(narrationVoice: 'cedar'),
+    );
+    final controller = await _controller(settingsStore: store);
+    expect(controller.preferences.settings.narrationVoice, 'cedar');
+  });
+
   test(
     'reset restores global preferences and retains books and identity',
     () async {

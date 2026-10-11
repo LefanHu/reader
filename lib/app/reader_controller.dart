@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -32,8 +31,7 @@ import '../importing/book_picker.dart';
 import '../importing/native_book_picker.dart';
 import '../narration/api.dart';
 import '../narration/source.dart';
-import '../narration/apple_narration_source.dart';
-import '../narration/cloud_narration_source.dart';
+import '../narration/narration_provider.dart';
 import '../narration/file_narration_store.dart';
 import '../narration/http_narration_api.dart';
 import '../narration/native_narration_player.dart';
@@ -203,9 +201,11 @@ class ReaderController extends ChangeNotifier {
     await store.root.create(recursive: true);
     final identity = FirebaseCloudIdentity();
     final narrationApi = HttpNarrationApi(identity: identity);
-    final source = Platform.isIOS
-        ? await AppleNarrationSource.create(root: store.root)
-        : CloudNarrationSource(narrationApi);
+    final source = await createNarrationSource(
+      selectNarrationProvider(defaultTargetPlatform),
+      root: store.root,
+      api: narrationApi,
+    );
     final controller = ReaderController(
       cloudIdentity: identity,
       accountApi: HttpAccountApi(identity: identity),
@@ -240,10 +240,18 @@ class ReaderController extends ChangeNotifier {
   /// Loads catalog, preferences, and book sidecars at startup.
   Future<void> initialize() async {
     await Future.wait([catalog.load(), preferences.load()]);
-    // Only old cloud defaults migrate; a removed saved Apple voice stays honest.
-    if (!narrationSource.requiresCloudRegistration &&
-        !preferences.settings.narrationVoice.startsWith('apple:') &&
+    if (!narrationSource.requiresCloudRegistration) {
+      // Only old cloud defaults migrate; a removed saved Apple voice stays honest.
+      if (!preferences.settings.narrationVoice.startsWith('apple:') &&
+          narrationSource.defaultVoice != null) {
+        await preferences.configure(
+          narrationVoice: narrationSource.defaultVoice,
+        );
+      }
+    } else if (preferences.settings.narrationVoice.startsWith('apple:') &&
         narrationSource.defaultVoice != null) {
+      // Cloud has no Apple voices; only the global preference is rewritten, so
+      // sidecars keep their voice identity.
       await preferences.configure(narrationVoice: narrationSource.defaultVoice);
     }
     await illustrations.loadManifests(catalog.books);
