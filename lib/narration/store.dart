@@ -8,7 +8,7 @@ abstract interface class NarrationStore {
   /// Recovers committed, temporary, then backup manifests for older catalogs.
   Future<NarrationManifest> load(CatalogBook book);
 
-  /// Serializes complete consent and resume state; never changes the catalog.
+  /// Serializes complete registration and resume state; never changes the catalog.
   Future<void> save(CatalogBook book, NarrationManifest manifest);
 
   /// Returns a validated local audio path and refreshes its LRU use time.
@@ -23,6 +23,6 @@ abstract interface class NarrationStore {
   /// Counts validated owned WAV files without refreshing their LRU timestamps.
   Future<int> cachedBytes(CatalogBook book);
 
-  /// Removes only audio; consent and reading position survive cache clearing.
+  /// Removes only audio; registration and reading position survive cache clearing.
   Future<void> clear(CatalogBook book);
 }

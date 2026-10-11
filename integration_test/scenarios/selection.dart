@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
@@ -7,8 +8,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/text/block_slice.dart';
 import 'package:reader/text/dictionary_lookup.dart';
+import 'package:reader/narration/session.dart';
+import 'package:reader/text/text_position.dart' as text;
 
 import '../../test/fixtures/selection_book.dart';
+import '../../test/fixtures/narration_audio.dart';
+import '../../test/support/fake_narration_api.dart';
 import '../support/native_test_app.dart';
 
 /// Each mode imports a fresh real document and verifies platform clipboard and
@@ -99,6 +104,63 @@ void registerSelectionTests() {
             .lastPosition,
         anchor,
       );
+    });
+    testWidgets('Selected paragraph starts native narration ${mode.name}', (
+      tester,
+    ) async {
+      final app = await NativeTestApp.launch(
+        tester,
+        narration: true,
+        textBytes: selectionBookFixture(),
+      );
+      final session = app.controller.narration!;
+      final api = session.api as FakeNarrationApi;
+      // Keep native completion outside the selection/start assertions.
+      api.gate = Completer<Uint8List>()..complete(testWav(samples: 24000 * 60));
+      await app.runWithFrames(
+        () => app.controller.preferences.configure(mode: mode, fontSize: 24),
+      );
+      await app.openBook('Unicode Test');
+      final committed = app.book('Unicode Test').lastPosition;
+      final leading = app.viewport.navigation.leadingPosition!;
+      final paragraph = find
+          .byWidgetPredicate(
+            (widget) =>
+                widget is BlockSlice &&
+                widget.block.block.text == selectionSecondParagraph,
+          )
+          .first;
+      final slice = tester.widget<BlockSlice>(paragraph);
+      final expected = text.TextPosition(
+        sectionId: leading.sectionId,
+        blockId: slice.block.block.id,
+      );
+      // Select inside the second paragraph, not its beginning or viewport anchor.
+      await _selectWord(
+        tester,
+        _sourceRect(slice, tester.renderObject<RenderBox>(paragraph), 7, 16),
+      );
+      await tester.tap(find.text('Read from here').first);
+      await app.runWithFrames(() async {
+        final deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (session.status != NarrationStatus.playing) {
+          if (DateTime.now().isAfter(deadline)) {
+            fail('Paragraph narration did not start: ${session.error}');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 25));
+        }
+      });
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(api.registrations, 1);
+      expect(api.requests.first.start, expected);
+      expect(api.requests.first.text, startsWith(selectionSecondParagraph));
+      expect(session.manifest.chunkStart, expected);
+      expect(session.manifest.anchor, committed);
+      expect(app.book('Unicode Test').lastPosition, committed);
+      expect(app.viewport.navigation.leadingPosition, leading);
+      expect(find.text('Read from here'), findsNothing);
+      await app.runWithFrames(session.pause);
+      expect(app.book('Unicode Test').lastPosition, committed);
     });
   }
 }

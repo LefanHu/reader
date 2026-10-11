@@ -15,7 +15,7 @@ import '../support/native_test_app.dart';
 /// Real importing, audio decoding, persistence and reader routes with offline cloud input.
 void registerNarrationTests() {
   testWidgets(
-    'consent, native media controls, offline replay and deletion preserve reading progress',
+    'registration, native media controls, offline replay and deletion preserve reading progress',
     (tester) async {
       final app = await NativeTestApp.launch(tester, narration: true);
       final book = app.book('Unicode Test');
@@ -26,12 +26,12 @@ void registerNarrationTests() {
       await app.openBook('Unicode Test');
       await tester.tap(find.byTooltip('Listen'));
       await tester.pumpAndSettle();
-      expect(find.text('Listen with AI narration?'), findsOneWidget);
-      await tester.tap(find.text('Cancel'));
-      await tester.pumpAndSettle();
-      expect(api.registrations, 0);
+      expect(find.text('AI narration'), findsOneWidget);
+      expect(find.text('Listen with AI narration?'), findsNothing);
+      expect(api.registrations, 1);
       expect(api.requests, isEmpty);
-      await app.runWithFrames(() => app.controller.consentToNarration(book));
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
       final initial = app.controller.catalog.books
           .firstWhere((item) => item.hash == book.hash)
           .lastPosition;

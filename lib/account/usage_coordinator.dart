@@ -46,7 +46,7 @@ class AccountUsageCoordinator {
     failure = null;
   }
 
-  /// Refreshes owned usage without prompting for sign-in or granting consent.
+  /// Refreshes owned usage without prompting for sign-in or registering books.
   Future<void> refresh() async {
     if (_disposed || loading || _accountBusy()) return;
     invalidate();

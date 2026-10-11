@@ -3,7 +3,7 @@
 import 'package:reader/identity/cloud_identity.dart';
 import 'package:reader/identity/cloud_identity_exception.dart';
 
-/// Offline account fake never grants per-book consent or invokes feature APIs.
+/// Offline account fake never registers books or invokes feature APIs.
 class FakeCloudIdentity implements CloudIdentity {
   @override
   bool configured = true;

@@ -38,6 +38,9 @@ class TextViewportHarness {
   /// Number of center taps forwarded by the viewport.
   int taps = 0;
 
+  /// Optional selection action observed without introducing a narration fake.
+  ValueChanged<text.TextPosition>? onReadFromHere;
+
   /// Rebuilds the same element hierarchy with optional replacement navigation.
   Widget app({TextReaderNavigation? navigation}) => MaterialApp(
     home: Scaffold(
@@ -60,6 +63,7 @@ class TextViewportHarness {
                 background: const Color(0xfffffbf0),
                 onPosition: (p, _, _) => reports.add(p),
                 onTap: () => taps++,
+                onReadFromHere: onReadFromHere,
               ),
             ),
           ),

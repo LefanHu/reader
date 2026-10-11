@@ -210,7 +210,7 @@ class FirebaseCloudIdentity implements CloudIdentity {
       await _google.signOut();
     } on Object {
       // Firebase deletion is already terminal. A failed native account-selector
-      // cleanup must not prevent local consent/audio cleanup or require retry.
+      // cleanup must not prevent local feature-record/audio cleanup or require retry.
     }
   }
 }

@@ -45,7 +45,7 @@ class StorageSettingsSection extends StatelessWidget {
       const Text('Cloud processing', style: TextStyle(fontSize: 20)),
       const SizedBox(height: 8),
       const Text(
-        'Narration requires consent for each book before prose is sent to OpenAI. AI-generated speech may contain mistakes. Cloud audio is private and retained for 30 days; temporary prose is removed after generation, with abandoned input cleaned up after 24 hours. Cached replay is free and works offline. Local audio uses a 250 MiB cache.',
+        'Cloud narration sends book passages to OpenAI and requires a signed-in account and device verification. AI-generated speech may contain mistakes. Cloud audio is private and retained for 30 days; temporary prose is removed after generation, with abandoned input cleaned up after 24 hours. Cached replay is free and works offline. Local audio uses a 250 MiB cache.',
       ),
     ],
   );

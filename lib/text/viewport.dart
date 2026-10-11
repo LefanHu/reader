@@ -41,6 +41,7 @@ class TextViewport extends StatefulWidget {
     this.initialPosition,
     this.onManualNavigation,
     this.onRestored,
+    this.onReadFromHere,
   });
 
   /// Immutable manifest used for navigation and source progress.
@@ -77,6 +78,10 @@ class TextViewport extends StatefulWidget {
 
   /// Pauses narration before a user page, chapter, gesture, or scroll can commit.
   final VoidCallback? onManualNavigation;
+
+  /// Starts narration from the selected paragraph without committing progress.
+  /// Source identities come from selection leaves, never a text search.
+  final ValueChanged<text.TextPosition>? onReadFromHere;
 
   /// Toggles reading chrome without intercepting drag navigation.
   final VoidCallback onTap;
@@ -119,9 +124,20 @@ class _TextViewportState extends State<TextViewport>
   Completer<void>? _restored;
   final _selection = GlobalKey<ReaderSelectionRegionState>();
   bool _selectionActive = false;
+  String? _selectedBlock;
+
+  void _readSelectedParagraph() {
+    final section = _section;
+    final block = _selectedBlock;
+    if (section == null || block == null || !_selectionActive) return;
+    widget.onReadFromHere?.call(
+      text.TextPosition(sectionId: section.id, blockId: block),
+    );
+  }
 
   void _clearSelection() {
     _selectionActive = false;
+    _selectedBlock = null;
     _selection.currentState?.clearSelection();
   }
 
@@ -757,6 +773,7 @@ class _TextViewportState extends State<TextViewport>
                       parent: AlwaysScrollableScrollPhysics(),
                     ),
                     child: ReaderSelectionContent(
+                      onSelectedBlock: (block) => _selectedBlock = block,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -795,6 +812,7 @@ class _TextViewportState extends State<TextViewport>
                       fit: StackFit.expand,
                       children: [
                         ReaderSelectionContent(
+                          onSelectedBlock: (block) => _selectedBlock = block,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: _pageSlices(layout.pages[_page]),
@@ -876,6 +894,9 @@ class _TextViewportState extends State<TextViewport>
               child: ReaderSelectionRegion(
                 key: _selection,
                 onSelectionChanged: _selectionChanged,
+                onReadFromHere: widget.onReadFromHere == null
+                    ? null
+                    : _readSelectedParagraph,
                 child: content,
               ),
             ),

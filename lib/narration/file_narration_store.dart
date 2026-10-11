@@ -83,7 +83,7 @@ class FileNarrationStore implements NarrationStore {
       _serial(() async {
         final directory = _directory(book);
         await directory.create();
-        // Bind consent/resume to the source; a copied sidecar cannot carry
+        // Bind registration/resume to the source; a copied sidecar cannot carry
         // another publication's registration into this owned directory.
         await AtomicJsonFile(File('${directory.path}/manifest.json'))
             .write({'bookHash': book.hash, ...manifest.toJson()});

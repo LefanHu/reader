@@ -8,6 +8,7 @@ import 'package:reader/app/reader_controller.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/narration/session.dart';
+import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/reader/reader_screen.dart';
 import 'package:reader/theme.dart';
 import 'package:reader/text/text_block.dart' as text;
@@ -39,7 +40,7 @@ void main() {
     }
   });
   testWidgets(
-    'Listen consent cancels without sign-in or prose; hidden button loses semantics',
+    'Listen opens registered controls without a consent dialog; hidden button loses semantics',
     (tester) async {
       final api = FakeNarrationApi(), player = FakeNarrationPlayer();
       final book = testBook();
@@ -78,19 +79,85 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Listen'));
       await tester.pumpAndSettle();
-      expect(find.text('Listen with AI narration?'), findsOneWidget);
-      expect(api.registrations, 0);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('AI narration'), findsOneWidget);
+      expect(api.registrations, 1);
       expect(api.requests, isEmpty);
-      await tester.tap(find.text('Cancel'));
+      expect(player.playing, isFalse);
+      await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
-      expect(api.registrations, 0);
-      expect(api.requests, isEmpty);
       final semantics = tester.ensureSemantics();
 
       await tester.tap(find.byTooltip('Hide reading controls'));
       await tester.pump();
       expect(find.bySemanticsLabel('Listen'), findsNothing);
       semantics.dispose();
+    },
+  );
+
+  testWidgets(
+    'explicit listening sheet start registers and plays without a dialog or an initial progress commit',
+    (tester) async {
+      const committed = text.TextPosition(
+        sectionId: 's0',
+        blockId: 'p0',
+        offset: 5,
+      );
+      const start = text.TextPosition(sectionId: 's0', blockId: 'p1');
+      final book = testBook(position: committed, progress: .1);
+      final api = FakeNarrationApi(), player = FakeNarrationPlayer();
+      final cache = MemoryNarrationStore();
+      final controller = ReaderController(
+        catalogStore: MemoryCatalogStore([book]),
+        settingsStore: MemorySettingsStore(),
+        importer: BookImporter(root: Directory.systemTemp),
+        picker: FakePicker([]),
+        illustrationApi: FakeIllustrationApi(),
+        illustrationStore: MemoryIllustrationStore(),
+        wordCounter: FakeWordCounter(),
+        narrationApi: api,
+        narrationPlayer: player,
+        narrationStore: cache,
+        narrationDocuments: MemoryDocumentStore(),
+      );
+      await controller.initialize();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        controller.dispose();
+        await tester.pumpAndSettle();
+        await controller.flush();
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () =>
+                    showNarrationSheet(context, controller, book, start: start),
+                child: const Text('Read from here'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Read from here'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('AI narration'), findsOneWidget);
+      expect(api.registrations, 1);
+      expect(api.requests.first.start, start);
+      expect(player.playing, isTrue);
+      expect(player.loadedOffset, Duration.zero);
+      expect(controller.catalog.books.single.lastPosition, committed);
+      expect(controller.catalog.books.single.progress, .1);
+      expect(controller.narration!.manifest.anchor, committed);
+      player.finish();
+      await tester.pumpAndSettle();
+      expect(
+        controller.catalog.books.single.lastPosition,
+        const text.TextPosition(sectionId: 's0', blockId: 'p1', offset: 19),
+      );
+      expect(controller.narration!.status, NarrationStatus.complete);
     },
   );
 
@@ -142,7 +209,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await controller.consentToNarration(book);
+      await controller.registerNarration(book);
       await controller.narration!.play();
       await tester.pump();
       player.finish();
@@ -262,7 +329,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await controller.consentToNarration(book);
+    await controller.registerNarration(book);
     await tester.tap(find.byTooltip('Listen'));
     await tester.pumpAndSettle();
     await expectLater(

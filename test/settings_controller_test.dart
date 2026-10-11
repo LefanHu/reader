@@ -135,7 +135,7 @@ void main() {
     },
   );
 
-  test('reset during playback retains consent and anchors and waits for preference persistence', () async {
+  test('reset during playback retains registration and anchors and waits for preference persistence', () async {
     final preferences = _DelayedSettingsStore(
       const ReaderSettings(narrationVoice: 'cedar', narrationSpeed: 1.75),
     );
@@ -162,7 +162,7 @@ void main() {
     );
     await controller.savePosition(controller.catalog.books.single, anchor, .3);
     final book = controller.catalog.books.single;
-    await controller.consentToNarration(book);
+    await controller.registerNarration(book);
     final session = controller.narration!;
     await session.play();
     expect(session.status, NarrationStatus.playing);

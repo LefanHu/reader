@@ -3,15 +3,17 @@ import 'package:flutter/material.dart';
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
 import '../text/document.dart';
-import 'narration_consent_dialog.dart';
+import '../text/text_position.dart';
 import 'session.dart';
 
-/// Accessible per-book opt-in before sign-in or any prose upload.
+/// Opens listening controls, registering through Auth/App Check when necessary.
+/// A complete [start] begins playback there without committing reading progress.
 Future<void> showNarrationSheet(
   BuildContext context,
   ReaderController controller,
-  CatalogBook book,
-) async {
+  CatalogBook book, {
+  TextPosition? start,
+}) async {
   final session = controller.narration;
   if (session == null) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -28,14 +30,14 @@ Future<void> showNarrationSheet(
       if (!session.api.configured) {
         throw StateError('Narration is not configured in this build.');
       }
-      final consent = await showDialog<bool>(
-        context: context,
-        builder: (_) => const NarrationConsentDialog(),
-      );
-      if (consent != true) return;
-      await controller.consentToNarration(book);
+      await controller.registerNarration(book);
     }
     if (!context.mounted) return;
+    if (session.book?.hash != book.hash) return;
+    if (start != null) {
+      await session.playFrom(start);
+      if (!context.mounted || session.book?.hash != book.hash) return;
+    }
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,

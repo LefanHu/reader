@@ -74,7 +74,7 @@ class HttpNarrationApi implements NarrationApi {
     final json = await _json(
       'POST',
       '/v1/narration/books',
-      body: {'fingerprint': fingerprint, 'consentVersion': 1},
+      body: {'fingerprint': fingerprint},
     );
     _bookId(json['id'] as String);
     return NarrationRegistration(

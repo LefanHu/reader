@@ -12,6 +12,7 @@ import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/narration/file_narration_store.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/session.dart';
+import 'package:reader/narration/narration_registration.dart';
 import 'package:reader/preferences/reader_settings.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/grapheme_boundary.dart';
@@ -133,9 +134,165 @@ void main() {
           commits.add(position);
         },
       );
-      await session.consent(book);
+      await session.register(book);
     });
     tearDown(() => session.dispose());
+
+    test(
+      'opening registered narration never registers it a second time',
+      () async {
+        await session.register(book);
+        expect(api.registrations, 1);
+        expect(api.requests, isEmpty);
+        expect(commits, isEmpty);
+      },
+    );
+
+    test('registration returning after detach is deleted without restoring local cloud state', () async {
+      await session.detach(book);
+      cache.manifests[book.hash] = const NarrationManifest();
+      final registration = Completer<NarrationRegistration>();
+      api.registrationGate = registration;
+      final registering = session.register(book);
+      await settle();
+      await session.detach(book);
+      registration.complete(
+        const NarrationRegistration('account', 'abandoned-book', 500000),
+      );
+      await registering;
+      expect(api.deleted, ['abandoned-book']);
+      expect(session.book, isNull);
+      expect(cache.manifests[book.hash]!.cloudBookId, isNull);
+      expect(commits, isEmpty);
+    });
+
+    test('explicit start overrides saved resume and commits only naturally completed selected chunks', () async {
+      await session.detach(book);
+      anchor = const TextPosition(sectionId: 's0', blockId: 'p0', offset: 5);
+      final committed = anchor;
+      cache.manifests[book.hash] = NarrationManifest(
+        account: 'account',
+        cloudBookId: 'cloud-book',
+        anchor: committed,
+        chunkId: narrationChunks(sections.first, from: committed).first.id,
+        offsetMs: 7000,
+      );
+      await session.attach(book);
+      const start = TextPosition(sectionId: 's0', blockId: 'p1');
+      await session.playFrom(start);
+      await settle();
+      expect(api.requests.first.start, start);
+      expect(api.requests.first.text, 'Second paragraph.');
+      expect(player.loadedOffset, Duration.zero);
+      expect(anchor, committed);
+      expect(session.manifest.anchor, committed);
+      expect(session.manifest.chunkStart, start);
+      expect(commits, isEmpty);
+      await session.flush();
+      expect(cache.manifests[book.hash]!.anchor, committed);
+      player.finish();
+      await settle();
+      expect(
+        commits.single,
+        const TextPosition(sectionId: 's0', blockId: 'p1', offset: 17),
+      );
+      expect(api.requests.last.start, sections.last.start);
+      player.finish();
+      await settle();
+      expect(session.status, NarrationStatus.complete);
+      expect(progress, 1);
+      expect(commits.length, 2);
+    });
+
+    test('explicit start fences active completion and resets offset for cached offline replay', () async {
+      await session.play();
+      await settle();
+      final oldToken = player.token;
+      final requests = api.requests.length;
+      player.position = const Duration(seconds: 7);
+      api.offline = true;
+      await session.playFrom(sections.first.start);
+      expect(player.token, isNot(oldToken));
+      expect(player.loadedOffset, Duration.zero);
+      expect(api.requests.length, requests);
+      player.finish(oldToken);
+      await settle();
+      expect(commits, isEmpty);
+      player.finish();
+      await settle();
+      expect(commits.single.blockId, 'p0');
+    });
+
+    test('explicit start replaces a buffering download even for the same chunk identity', () async {
+      final delayed = Completer<Uint8List>();
+      api.gate = delayed;
+      final oldPlayback = session.play();
+      await settle();
+      api.gate = null;
+      await session.playFrom(sections.first.start);
+      await settle();
+      expect(session.status, NarrationStatus.playing);
+      expect(api.requests[0].id, api.requests[1].id);
+      final newToken = player.token;
+      delayed.complete(testWav());
+      await oldPlayback;
+      expect(player.token, newToken);
+      expect(session.status, NarrationStatus.playing);
+      expect(commits, isEmpty);
+    });
+
+    test('explicit playback pause and reattach retain selected chunk offset without changing catalog anchor', () async {
+      final committed = anchor;
+      const start = TextPosition(sectionId: 's0', blockId: 'p1');
+      await session.playFrom(start);
+      await settle();
+      player.position = const Duration(seconds: 7);
+      await session.pause();
+      expect(cache.manifests[book.hash]!.anchor, committed);
+      expect(cache.manifests[book.hash]!.chunkStart, start);
+      await session.detach(book);
+      await session.attach(book);
+      api.offline = true;
+      await session.play();
+      expect(player.loadedOffset, const Duration(seconds: 7));
+      expect(session.manifest.chunkStart, start);
+      expect(anchor, committed);
+      expect(commits, isEmpty);
+      player.finish();
+      await settle();
+      expect(commits.single.blockId, 'p1');
+    });
+
+    test('failed explicit buffering retries the selected anchor rather than committed resume', () async {
+      const start = TextPosition(sectionId: 's0', blockId: 'p1');
+      final committed = anchor;
+      api.offline = true;
+      await session.playFrom(start);
+      expect(session.status, NarrationStatus.buffering);
+      expect(session.manifest.chunkStart, start);
+      expect(session.manifest.offsetMs, 0);
+      expect(anchor, committed);
+      expect(commits, isEmpty);
+      api.offline = false;
+      await session.play();
+      expect(api.requests.first.start, start);
+      expect(player.loadedOffset, Duration.zero);
+    });
+
+    test('seeking selected playback cannot commit and requires replay from committed anchor', () async {
+      const start = TextPosition(sectionId: 's0', blockId: 'p1');
+      final committed = anchor;
+      await session.playFrom(start);
+      await session.seek(const Duration(seconds: 30));
+      player.finish();
+      await settle();
+      expect(commits, isEmpty);
+      expect(anchor, committed);
+      expect(session.status, NarrationStatus.paused);
+      await session.play();
+      expect(session.manifest.chunkStart, committed);
+      expect(player.loadedOffset, Duration.zero);
+    });
 
     test('global preferences override legacy book values and mismatched voice offsets', () async {
       await session.detach(book);
@@ -277,46 +434,43 @@ void main() {
       },
     );
 
-    test(
-      'clearing all caches fences downloads and retains consent and anchors',
-      () async {
-        api.gate = Completer<Uint8List>();
-        final playing = session.play();
-        await settle();
-        final other = CatalogBook(
-          hash: 'b' * 64,
-          fileName: 'Other.txt',
-          path: '/Other.txt',
-          title: 'Other',
-          authors: const [],
-          addedAt: DateTime.utc(2026),
-        );
-        cache.manifests[other.hash] = NarrationManifest(
-          account: 'account',
-          cloudBookId: 'other',
-          voice: 'cedar',
-          anchor: anchor,
-          chunkId: 'interrupted',
-          offsetMs: 4321,
-        );
-        final clearing = session.clearAllCache([book, other]);
-        await settle();
-        api.gate!.complete(testWav());
-        await playing;
-        await clearing;
-        expect(cache.files, isEmpty);
-        expect(cache.manifests[book.hash]!.cloudBookId, 'cloud-book');
-        expect(cache.manifests[book.hash]!.anchor, anchor);
-        expect(cache.manifests[book.hash]!.chunkId, isNull);
-        expect(cache.manifests[book.hash]!.offsetMs, 0);
-        expect(cache.manifests[other.hash]!.cloudBookId, 'other');
-        expect(cache.manifests[other.hash]!.voice, 'cedar');
-        expect(cache.manifests[other.hash]!.anchor, anchor);
-        expect(cache.manifests[other.hash]!.chunkId, isNull);
-        expect(cache.manifests[other.hash]!.offsetMs, 0);
-        expect(commits, isEmpty);
-      },
-    );
+    test('clearing all caches fences downloads and retains registration and anchors', () async {
+      api.gate = Completer<Uint8List>();
+      final playing = session.play();
+      await settle();
+      final other = CatalogBook(
+        hash: 'b' * 64,
+        fileName: 'Other.txt',
+        path: '/Other.txt',
+        title: 'Other',
+        authors: const [],
+        addedAt: DateTime.utc(2026),
+      );
+      cache.manifests[other.hash] = NarrationManifest(
+        account: 'account',
+        cloudBookId: 'other',
+        voice: 'cedar',
+        anchor: anchor,
+        chunkId: 'interrupted',
+        offsetMs: 4321,
+      );
+      final clearing = session.clearAllCache([book, other]);
+      await settle();
+      api.gate!.complete(testWav());
+      await playing;
+      await clearing;
+      expect(cache.files, isEmpty);
+      expect(cache.manifests[book.hash]!.cloudBookId, 'cloud-book');
+      expect(cache.manifests[book.hash]!.anchor, anchor);
+      expect(cache.manifests[book.hash]!.chunkId, isNull);
+      expect(cache.manifests[book.hash]!.offsetMs, 0);
+      expect(cache.manifests[other.hash]!.cloudBookId, 'other');
+      expect(cache.manifests[other.hash]!.voice, 'cedar');
+      expect(cache.manifests[other.hash]!.anchor, anchor);
+      expect(cache.manifests[other.hash]!.chunkId, isNull);
+      expect(cache.manifests[other.hash]!.offsetMs, 0);
+      expect(commits, isEmpty);
+    });
 
     test('theme-only preferences do not mutate native playback or narration sidecars', () async {
       await session.play();
@@ -538,7 +692,7 @@ void main() {
     });
     tearDown(() => root.delete(recursive: true));
     test(
-      'LRU evicts oldest unpinned audio and clearing preserves consent',
+      'LRU evicts oldest unpinned audio and clearing preserves registration',
       () async {
         const manifest = NarrationManifest(
           account: 'account',
@@ -584,6 +738,7 @@ void main() {
         cloudBookId: 'cloud-book',
         anchor: anchor,
         chunkId: 'chunk',
+        chunkStart: TextPosition(sectionId: 's0', blockId: 'p1'),
         offsetMs: 1234,
       );
       await store.save(book, value);
@@ -593,6 +748,10 @@ void main() {
       await file.rename('${file.path}.tmp');
       await file.writeAsString('{bad');
       expect((await store.load(book)).anchor, anchor);
+      expect(
+        (await store.load(book)).chunkStart,
+        const TextPosition(sectionId: 's0', blockId: 'p1'),
+      );
       expect((await store.load(book)).offsetMs, 1234);
     });
   });

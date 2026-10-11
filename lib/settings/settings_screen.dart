@@ -399,7 +399,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _clearCache() => _action(() async {
     if (!await _confirm(
       'Clear narration cache?',
-      'Playback will stop and downloaded narration will be removed. Books, reading positions and consent remain.',
+      'Playback will stop and downloaded narration will be removed. Books, reading positions and cloud registrations remain.',
       'Clear cache',
     )) {
       return;
@@ -416,7 +416,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _resetPreferences() => _action(() async {
     if (await _confirm(
       'Reset preferences?',
-      'Restore device preferences to their defaults. Books, account, consent and caches remain. Narration pauses if its voice changes.',
+      'Restore device preferences to their defaults. Books, account, illustration consent and caches remain. Narration pauses if its voice changes.',
       'Reset preferences',
     )) {
       await controller.preferences.reset();

@@ -8,7 +8,7 @@ An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and T
 - Choose Paper, Sepia, or Dark from the library Appearance menu or reading settings. One saved palette applies immediately to the whole app, including menus and dialogs; typography controls affect book text only.
 - Open Settings from the library gear or macOS Settings… (Command-comma) to manage account, appearance, reading, global narration preferences, library defaults, usage, storage, privacy, and app information. Preferences stay local and work without an account; payments and cross-device synchronization are not included.
 - Switch Page flip / Pages / Scroll, typography, themes, and window sizes while retaining a grapheme-safe text position.
-- Select visible book text in every reading mode: long-press and move selection handles on iOS, or mouse-drag on macOS. Copy preserves the selected normalized text; Look Up opens the operating system's dictionary. Dictionary availability and installed languages are managed by the OS, not the app.
+- Select visible book text in every reading mode: long-press and move selection handles on iOS, or mouse-drag on macOS. Copy preserves the selected normalized text; Look Up opens the operating system's dictionary. Read from here starts narration at the beginning of the paragraph containing the selection's first character and continues through the book. Selecting or starting playback never commits reading progress. Dictionary availability and installed languages are managed by the OS, not the app.
 - Swipe right from the physical leftmost 20 logical pixels in Reader or Settings to go Back on release (at least 64 pixels). Reader flushes its complete committed text position before exiting, even with controls hidden. Compact Settings returns from detail to categories before exiting; wide Settings exits directly. Cancelled swipes, covered routes, and trackpad pan/zoom do not trigger this action.
 - Preserve EPUB chapter structure, nested tables of contents, headings, paragraphs, and explicit line breaks. Publisher CSS, inline images, interactive links, and rich styling are omitted; local covers remain in the library.
 - Read horizontal Unicode text, including RTL and mixed-direction passages, CJK, Indic scripts, Thai, combining marks, and emoji. Font coverage uses platform fallback. Vertical writing is not supported.
@@ -180,6 +180,18 @@ To stop the HTTPS endpoint without disturbing other Serve endpoints:
 
 Library themes have desktop, hover-overlay, and compact iOS-list visual baselines in `test/goldens/`. After intentional design changes, regenerate them with `flutter test test/library_theme_test.dart --update-goldens` and inspect all nine images before committing.
 
+The library, Settings, and narration-control baselines were visually reviewed and
+refreshed with Flutter **3.47.7** (framework
+`abaf9c523780a608bd46686fd5e53740a07077f8`, engine
+`deb287481e3ce9468f3434937ced4240a70539ca`), Dart **3.13.5**, and
+**macOS 27.0.1 / 26A434 on arm64**. Use this environment and the stock software/
+deterministic Skia test renderer (`flutter test --no-enable-impeller`) for exact
+pixel comparisons. Widget platform overrides do not replace the host renderer.
+Changing the Flutter engine or host may change glyph-edge rasterization even
+when layouts are identical; review every affected reference/current pair before
+refreshing images for a new canonical environment. Keep exact comparison rather
+than hiding drift behind a tolerance.
+
 For manual UI performance work, follow [Flutter's profiling guidance](https://docs.flutter.dev/perf/ui-performance): run `flutter run --profile -d macos` or `flutter run --profile -d <physical-ios-device-id>`, open the printed DevTools URL, and record the Performance view while opening a book, scrolling, turning pages, and navigating chapters. Diagnose UI and raster times separately against the display's frame budget. Debug builds and iOS simulators are not performance evidence.
 
 Prefer removing redundant work over adding caches or custom infrastructure. Only optimize measured paths causing missed frames or accounting for at least 10% of frame time or allocations. Preserve complete narration/reading anchors, first-frame restoration, paragraph semantics, and explicit end-of-book completion before accepting an optimization.
@@ -299,6 +311,23 @@ flutter test integration_test/reader_test.dart -d macos --plain-name 'Reader con
 flutter test integration_test/reader_test.dart -d <ios-simulator-id> --plain-name 'nested EPUB contents'
 ```
 
+If a Mac App Development profile is unavailable, offline native scenarios can
+still be built with command-local signing overrides:
+
+```sh
+env FLUTTER_XCODE_CODE_SIGNING_ALLOWED=NO \
+  FLUTTER_XCODE_CODE_SIGNING_REQUIRED=NO \
+  FLUTTER_XCODE_CODE_SIGN_IDENTITY=- \
+  flutter test integration_test/reader_test.dart -d macos
+```
+
+This exercises real local rendering, storage, and audio with fake cloud services;
+it does **not** validate Google Keychain access, App Check, or a signed
+distribution. Do not export these overrides globally or use them for release/
+OTA builds. Full dictionary scenarios additionally require a visible, active
+native Flutter window; the bridge reports `No active Flutter view` rather than
+pretending dictionary presentation succeeded when that prerequisite is absent.
+
 Offline importing and reading work on iOS and macOS. Illustration authentication uses the shared Google/Firebase identity on both platforms, while protected generation still requires valid App Check. The iOS deployment target is 15.0 and macOS target is 12.0. No loopback web server or EPUB-specific App Transport Security exception is required.
 
 Validate every EPUB fixture separately with the official EPUBCheck release:
@@ -314,7 +343,7 @@ java -jar /path/to/epubcheck.jar path/to/book.epub
 - `lib/text/` contains the shared normalized document pipeline, EPUB/TXT parsing, Unicode direction detection, lazy section loading, and logical navigation. `lib/text/layout/` owns measured section painters; curl turns own their two preview textures, and navigation callbacks attach/detach by viewport identity.
 - `lib/app/reader_controller.dart` remains the single shared `ChangeNotifier` and coordinates catalog, preferences, illustrations, narration, and account transactions. Feature coordinators own their state without importing the controller or one another. `lib/app/reader_app.dart` owns theme/lifecycle/native Settings routing; `lib/main.dart` initializes and runs it.
 - `lib/identity/` owns shared lazy Google/Firebase identity. `lib/account/usage_coordinator.dart` owns usage snapshots and request fencing; `lib/account/api.dart` declares the interface and `lib/account/http_account_api.dart` owns authenticated transport and response validation.
-- `lib/illustrations/` owns normalized text indexing, spoiler gating, authenticated REST, atomic sidecars, local assets, and durable deletion retries. `lib/narration/` owns consent, speech transport, private audio persistence, the app-lifetime player/session, and listening controls.
+- `lib/illustrations/` owns normalized text indexing, spoiler gating, authenticated REST, atomic sidecars, local assets, and durable deletion retries. `lib/narration/` owns registration, speech transport, private audio persistence, the app-lifetime player/session, and listening controls.
 - `lib/theme.dart` defines shared app-wide palettes; focused widgets under `lib/library/`, `lib/reader/`, and `lib/settings/` preserve their screen's state and callback ownership.
 - Shared test doubles/helpers live under `test/support/`, reusable values under `test/fixtures/`, and page-flip behavior suites run independently. `integration_test/support/frame_summary.dart` is shared by the profile driver and its arithmetic tests; tests do not import other test entrypoints.
 - Handwritten Dart files stay below 1,000 lines with headroom, with one focused component per file and private widget State/owned enum/helper exceptions. The sole line-cap exception is `lib/text/direction.dart`, whose Unicode 17.0.0 table remains generated by `tool/generate_direction.py`. Callers import declarations directly, without compatibility exports or `part` splits.
@@ -325,12 +354,12 @@ Lora and DM Sans are bundled under the SIL Open Font License. Remaining dependen
 ## Google accounts
 
 Settings → Account signs in with Google independently of cloud generation.
-Signing in does not consent to uploading prose. Reading and importing remain
-account-free; only opted-in cloud features require authentication and App Check.
+Signing in does not enable illustrations or upload prose. Reading and importing
+remain account-free; cloud requests require authentication and App Check.
 Sign out clears both Google and Firebase sessions without changing local books.
 Account deletion reauthenticates the same Google user and requires a successful
-cloud purge before deleting Firebase identity or clearing local feature consent
-and audio. Missing or failed purge endpoints leave those local records intact.
+cloud purge before deleting Firebase identity or clearing illustration consent,
+narration registrations and audio. Missing or failed purge endpoints leave those local records intact.
 Local books and complete reading positions survive deletion; Settings reflects
 the actual identity even if post-purge local cleanup reports an error.
 
@@ -353,28 +382,32 @@ announce selection on the actionable control.
 Voice and listening speed are global across books. Settings and the listening
 sheet edit the same saved values. Speed changes immediately without regenerating
 audio. Changing voice pauses listening at the committed text position and waits
-for Play; uncached speech then consumes allowance. Existing per-book consent,
+for Play; uncached speech then consumes allowance. Existing per-book registrations,
 cached audio, and text progress remain intact. Legacy narration sidecar voice
 values identify cached/resumable audio and do not override global preferences.
 
 Library filter/sort defaults are saved separately from temporary library choices.
 Reset preferences restores the app-wide defaults without deleting books, account,
-consent, or caches. Clearing downloaded narration stops playback and invalidates
-audio resume offsets while preserving books, consent, and complete text anchors.
+illustration consent, registrations, or caches. Clearing downloaded narration stops
+playback and invalidates audio resume offsets while preserving books, registrations,
+and complete text anchors.
 The displayed cache size refreshes after clearing finishes.
 
 Usage & allowance displays only server-reported balances, includes outstanding
 generation reservations, and shows unavailable/offline states when no snapshot
 can be obtained. The read-only `/v1/account/usage` endpoint requires Firebase Auth
 and App Check even while generation is disabled; viewing it neither initializes
-credits nor grants prose-upload consent. A core-only build can sign in and change
+credits nor registers books. A core-only build can sign in and change
 local settings without an API deployment. Payments and subscriptions are deferred.
 
 ## Listening to books
 
-The Listen toolbar action opens per-book consent before Google sign-in or prose
-upload. Narration supports Marin/Cedar voices, 0.75–2× speed, chapter selection,
-play/pause, ±15-second audio seeking, remaining allowance and local cache clearing.
+The Listen toolbar action opens listening controls, automatically registering the
+book when needed. Narration has no consent dialog or per-book prose-upload gate;
+Google sign-in and valid App Check remain prerequisites for cloud requests.
+Illustration consent is unchanged. Narration supports Marin/Cedar voices, 0.75–2×
+speed, chapter selection, play/pause, ±15-second audio seeking, remaining allowance
+and local cache clearing.
 One audio handler continues playback in the library and while the device is
 locked; the library includes a mini-player. Opening another book or navigating
 manually pauses narration and invalidates the old audio offset.
@@ -385,14 +418,20 @@ The narration sheet's Cloud account menu supports signing out and deleting cloud
 data on either platform. Account deletion clears downloaded narration while
 preserving local books and reading positions.
 
-Listening uses the same committed logical reading position as visual reading.
+By default, listening starts at the committed logical reading position. Read from here in
+the text-selection menu instead starts at the beginning of the paragraph containing
+the selection's first character and continues through subsequent paragraphs and
+chapters to the end of the book. It replaces prior audio and discards its offset
+without changing the catalog anchor merely for selecting or starting narration.
 Only naturally completed chunks advance prose or unlock illustrations. Downloads,
 prefetch and audio seeking never advance progress. After seeking, replay from the
 committed passage to grant completion. Pausing restores the committed listening
 anchor without continuous scrolling or word highlighting. Interrupted chunks
-retain the complete text position, chunk identity and audio offset. Cached replay
-works offline and consumes no generation allowance; a 250 MiB LRU cache bounds
-local audio. Changing speed reuses audio; changing voice generates new speech.
+retain the complete committed position, separate complete playback start, chunk
+identity and audio offset, including selected playback that has not yet completed.
+Cached replay works offline and consumes no generation allowance; a 250 MiB LRU
+cache bounds local audio. Changing speed reuses audio; changing voice generates
+new speech.
 
 Narration remains remotely disabled by default. See [backend configuration](backend/README.md#ai-narration-disabled-by-default)
 and the guarantees in [AGENTS.md](AGENTS.md#narration-guarantees). Generated Firebase

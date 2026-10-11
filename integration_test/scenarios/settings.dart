@@ -284,12 +284,12 @@ void registerSettingsTests() {
       final book = app.book('Unicode Test');
       expect(anchor, isNotNull);
       expect(anchor, isNot(initial));
-      await app.runWithFrames(() => app.controller.consentToNarration(book));
+      await app.runWithFrames(() => app.controller.registerNarration(book));
       await app.runWithFrames(session.play);
       await _wait(tester, () => session.status == NarrationStatus.playing);
       await app.closeReader();
       expect(app.book('Unicode Test').lastPosition, anchor);
-      final consent = session.manifest.cloudBookId;
+      final registration = session.manifest.cloudBookId;
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       final flow = _SettingsFlow(tester);
@@ -329,7 +329,7 @@ void registerSettingsTests() {
       expect(app.controller.preferences.settings.narrationVoice, 'cedar');
       expect(app.controller.preferences.settings.narrationSpeed, 1.5);
       expect(app.book('Unicode Test').lastPosition, anchor);
-      expect(session.manifest.cloudBookId, consent);
+      expect(session.manifest.cloudBookId, registration);
       expect(await tester.runAsync(app.controller.narrationCacheBytes), cached);
       await flow.tap('Reset preferences');
       await tester.tap(find.widgetWithText(FilledButton, 'Reset preferences'));
@@ -343,7 +343,7 @@ void registerSettingsTests() {
         app.controller.preferences.settings.toJson(),
         const ReaderSettings().toJson(),
       );
-      expect(session.manifest.cloudBookId, consent);
+      expect(session.manifest.cloudBookId, registration);
       expect(await tester.runAsync(app.controller.narrationCacheBytes), cached);
       expect(app.book('Unicode Test').lastPosition, anchor);
       await flow.section('Storage & privacy');
@@ -351,7 +351,7 @@ void registerSettingsTests() {
       await app.capture('settings-cache-confirmation');
       await flow.tap('Cancel');
       expect(await tester.runAsync(app.controller.narrationCacheBytes), cached);
-      expect(session.manifest.cloudBookId, consent);
+      expect(session.manifest.cloudBookId, registration);
       expect(app.book('Unicode Test').lastPosition, anchor);
       expect(session.status, NarrationStatus.paused);
       await flow.tap('Clear narration cache');
@@ -366,12 +366,12 @@ void registerSettingsTests() {
       expect(session.status, isNot(NarrationStatus.playing));
       expect(session.manifest.chunkId, isNull);
       expect(session.manifest.offsetMs, 0);
-      expect(session.manifest.cloudBookId, consent);
+      expect(session.manifest.cloudBookId, registration);
       expect(app.book('Unicode Test').lastPosition, anchor);
       final saved = await tester.runAsync(
         () => session.store.load(app.book('Unicode Test')),
       );
-      expect(saved!.cloudBookId, consent);
+      expect(saved!.cloudBookId, registration);
       expect(saved.chunkId, isNull);
       expect(saved.offsetMs, 0);
       expect(saved.anchor, anchor);

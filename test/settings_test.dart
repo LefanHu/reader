@@ -366,7 +366,7 @@ void main() {
 
   for (final failureStatus in [404, 503]) {
     testWidgets(
-      'account deletion $failureStatus preserves local state and a later 204 clears cloud consent',
+      'account deletion $failureStatus preserves local state and a later 204 clears cloud registration',
       (tester) async {
         const anchor = TextPosition(
           version: 1,
@@ -380,14 +380,14 @@ void main() {
         ).copyWith(wordCount: 42);
         final identity = FakeCloudIdentity()..email = 'reader@example.test';
         final store = MemoryNarrationStore();
-        final consent = NarrationManifest(
+        final registration = NarrationManifest(
           account: 'account',
           cloudBookId: book.hash,
           anchor: anchor,
           chunkId: 'cached-chunk',
           offsetMs: 700,
         );
-        await store.save(book, consent);
+        await store.save(book, registration);
         await store.put(book, 'cached-audio', testWav());
         final illustrations = MemoryIllustrationStore();
         final illustrationConsent = IllustrationManifest(
@@ -464,7 +464,7 @@ void main() {
         expect(identity.deletions, 0);
         expect(identity.email, 'reader@example.test');
         expect(controller.cloudAccountBusy, false);
-        expect((await store.load(book)).toJson(), consent.toJson());
+        expect((await store.load(book)).toJson(), registration.toJson());
         expect(await store.cached(book, 'cached-audio'), isNotNull);
         expect((await illustrations.loadManifest(book)).profile?.enabled, true);
         expect(controller.catalog.books.single.toJson(), book.toJson());

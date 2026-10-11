@@ -13,6 +13,7 @@ class ReaderSelectionRegion extends StatefulWidget {
     super.key,
     required this.child,
     required this.onSelectionChanged,
+    this.onReadFromHere,
   });
 
   /// Visible committed-page slices or the active section's scroll content.
@@ -20,6 +21,10 @@ class ReaderSelectionRegion extends StatefulWidget {
 
   /// Immediately fences navigation and progress while selected content exists.
   final ValueChanged<bool> onSelectionChanged;
+
+  /// Starts narration from captured source provenance after dismissing selection.
+  /// Absent when the reader has no narration service.
+  final VoidCallback? onReadFromHere;
 
   @override
   State<ReaderSelectionRegion> createState() => ReaderSelectionRegionState();
@@ -88,6 +93,20 @@ class ReaderSelectionRegionState extends State<ReaderSelectionRegion> {
       anchors: anchors,
       buttonItems: [
         ...region.contextMenuButtonItems,
+        if (selected != null &&
+            selected.isNotEmpty &&
+            widget.onReadFromHere != null)
+          ContextMenuButtonItem(
+            label: 'Read from here',
+            onPressed: () {
+              // Capture the action first: clearing selection clears provenance.
+              final read = widget.onReadFromHere!;
+              region.hideToolbar();
+              read();
+              clearSelection();
+              widget.onSelectionChanged(false);
+            },
+          ),
         if (selected != null &&
             selected.isNotEmpty &&
             (platform == TargetPlatform.iOS ||

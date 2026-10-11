@@ -19,6 +19,7 @@ class FakeNarrationApi implements NarrationApi {
   final List<String> voices = [];
   final List<String> deleted = [];
   Completer<Uint8List>? gate;
+  Completer<NarrationRegistration>? registrationGate;
   @override
   bool get configured => true;
   @override
@@ -31,7 +32,9 @@ class FakeNarrationApi implements NarrationApi {
   @override
   Future<NarrationRegistration> register(CatalogBook book) async {
     registrations++;
-    return const NarrationRegistration('account', 'cloud-book', 500000);
+    return registrationGate == null
+        ? const NarrationRegistration('account', 'cloud-book', 500000)
+        : registrationGate!.future;
   }
 
   @override

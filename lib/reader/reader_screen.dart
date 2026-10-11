@@ -425,6 +425,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
     onManualNavigation: () {
       unawaited(widget.controller.narration?.navigate(widget.book));
     },
+    onReadFromHere: widget.controller.narration == null
+        ? null
+        : (position) => unawaited(
+            showNarrationSheet(
+              context,
+              widget.controller,
+              widget.book,
+              start: position,
+            ),
+          ),
     onTap: () => setState(() => controls = !controls),
     onPosition: (position, progress, title) {
       widget.controller.savePosition(widget.book, position, progress);

@@ -143,6 +143,10 @@ Narration uses the same API and private worker deployments, Firebase Auth, App C
 Firestore database, Secret Manager key and private asset bucket as the existing
 feature stack. It does not initialize or spend illustration credits.
 
+Narration registration has no consent gate and accepts only the account-scoped
+fingerprint. Authentication and App Check remain mandatory; illustration consent
+is unchanged.
+
 Set `narration_enabled`, `narration_monthly_characters` and
 `narration_daily_characters` in the environment Terraform configuration. Runtime
 injects `NARRATION_ENABLED` (default false), `NARRATION_MONTHLY_CHARACTERS`
@@ -154,7 +158,7 @@ indexes. Existing deployment scopes remain `core|illustrations|all`.
 Authenticated routes:
 
 - `GET /v1/narration/config`: rollout, model/voices and remaining UTC-month allowance.
-- `POST /v1/narration/books`: explicit consent version and account-scoped fingerprint.
+- `POST /v1/narration/books`: account-scoped fingerprint only; no prose is uploaded.
 - `POST /v1/narration/books/:bookId/jobs`: exact prose, SHA-256 digest, chunk ID,
   document/chunk versions and Marin/Cedar voice. Requests are idempotent.
 - `GET /v1/narration/jobs/:jobId`: status and a ten-minute private download URL
@@ -203,7 +207,7 @@ account. Responses are marked `Cache-Control: no-store` and contain:
   credits and those held by jobs. Both are null when credits are not activated.
 
 This endpoint performs only reads. It never initializes illustration credits,
-registers books, grants consent, enqueues generation, or reclaims reservations.
+registers books, changes illustration consent, enqueues generation, or reclaims reservations.
 Existing narration configuration/generation cleanup owns reservation recovery;
 the Settings snapshot can conservatively include expired reservations until that
 cleanup runs. Missing monthly usage means the full configured monthly allowance.
@@ -243,7 +247,7 @@ Public API recipe (JSON request bodies shown below; empty-body calls need no JSO
 | `POST /v1/scenes/:sceneId/regenerate` | HTTP 202. Poll original job's scenes until `ready_locked`; unlock again → HTTP 200 and `generationVersion:2`, valid replacement WebP. |
 | `GET /v1/account/usage` | Initial density-one success plus paid regeneration spend exactly two credits; reserved credits return to zero. Repeat illustration book registration and register another fingerprint: no credit reset or extra grant. |
 | `GET /v1/narration/config` | HTTP 200, `enabled:true`, model `gpt-realtime-2.1-mini`, voices Marin/Cedar (`marin`, `cedar`), limits and remaining allowance. |
-| `POST /v1/narration/books` | `{"fingerprint":"<64-hex account-scoped fingerprint>","consentVersion":1}` → HTTP 200, 64-hex `id`, matching authenticated `account`, remaining allowance; illustration balances unchanged. |
+| `POST /v1/narration/books` | `{"fingerprint":"<64-hex account-scoped fingerprint>"}` → HTTP 200, 64-hex `id`, matching authenticated `account`, remaining allowance; illustration balances unchanged. |
 | `POST /v1/narration/books/:bookId/jobs` | Narration payload below → HTTP 200, 64-hex `id`. Repeat exactly: same ID, no duplicate reservation. |
 | `GET /v1/narration/jobs/:jobId` | Poll `queued`/`generating` → `ready` with ten-minute signed `url`; privately fetch nonempty RIFF/WAVE, 24 kHz mono 16-bit PCM, then listen for exact passage and no introduction. Repeat using `voice:"cedar"` and a distinct chunk ID. |
 | `GET /v1/account/usage` | For two successful voice jobs, remaining narration units decrease by twice the passage's UTF-16 length; illustration credits unchanged. GET configuration should agree. |

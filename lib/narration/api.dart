@@ -4,7 +4,7 @@ import '../text/narration_chunk.dart';
 import '../catalog/catalog_book.dart';
 import 'narration_registration.dart';
 
-/// Private cloud boundary: no prose leaves the device before registration consent.
+/// Private cloud boundary: registration and generation require Auth/App Check.
 abstract interface class NarrationApi {
   /// Whether this build can authenticate to the narration service.
   bool get configured;
@@ -15,7 +15,7 @@ abstract interface class NarrationApi {
   /// Rollout and allowance check uses an existing identity when available.
   Future<Map<String, dynamic>> configuration();
 
-  /// Called only after explicit per-book consent; may open Google sign-in.
+  /// Registers an account-scoped fingerprint; may open Google sign-in.
   Future<NarrationRegistration> register(CatalogBook book);
 
   /// Idempotent generation/download of one exact chunk, bounded by the caller.

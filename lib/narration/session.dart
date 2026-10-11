@@ -104,7 +104,7 @@ class NarrationSession {
   /// Current publication; returning to the library does not detach it.
   CatalogBook? book;
 
-  /// Opt-in and interrupted audio state for the current publication.
+  /// Registration and interrupted audio state for the current publication.
   NarrationManifest manifest = const NarrationManifest();
 
   /// Explicit buffering and playback state shown in the accessible controls.
@@ -164,6 +164,7 @@ class NarrationSession {
       speed: settings.narrationSpeed,
       anchor: loaded.anchor,
       chunkId: sameVoice ? loaded.chunkId : null,
+      chunkStart: sameVoice ? loaded.chunkStart : null,
       offsetMs: sameVoice ? loaded.offsetMs : 0,
     );
     document = doc;
@@ -171,12 +172,21 @@ class NarrationSession {
     changed();
   }
 
-  /// Consent precedes Google sign-in and cloud book registration.
-  Future<void> consent(CatalogBook target) async {
+  /// Registers an available book through the authenticated cloud boundary.
+  Future<void> register(CatalogBook target) async {
     await attach(target);
+    if (_disposed ||
+        !isBookAvailable(target) ||
+        book?.hash != target.hash ||
+        manifest.cloudBookId != null) {
+      return;
+    }
     final epoch = _epoch;
     final registration = await api.register(target);
-    if (_disposed || epoch != _epoch || book?.hash != target.hash) {
+    if (_disposed ||
+        epoch != _epoch ||
+        book?.hash != target.hash ||
+        !isBookAvailable(target)) {
       if (abandonRegistration != null) {
         await abandonRegistration!(registration.bookId);
       } else {
@@ -189,29 +199,36 @@ class NarrationSession {
       cloudBookId: registration.bookId,
       voice: manifest.voice,
       speed: manifest.speed,
+      anchor: currentPosition(target),
     );
     remaining = registration.remaining;
     await store.save(target, manifest);
     changed();
   }
 
-  Future<void> _prepare(int epoch) async {
+  Future<void> _prepare(int epoch, {TextPosition? start}) async {
     final target = book!;
     final position = currentPosition(target);
-    final resume =
-        manifest.anchor != null &&
-        manifest.anchor == position &&
-        manifest.chunkId != null;
-    final anchor = resume ? manifest.anchor : position;
+    final samePosition = manifest.anchor == position;
+    final resume = start == null && samePosition && manifest.chunkId != null;
+    final anchor =
+        start ??
+        (samePosition ? manifest.chunkStart ?? manifest.anchor : position);
     final doc = document!;
     final ordinal = doc.sections.indexWhere(
       (section) => section.id == anchor?.sectionId,
     );
+    if (start != null && ordinal < 0) {
+      throw ArgumentError.value(start, 'start', 'Unknown narration section.');
+    }
     final loadedSection = await documents.loadSection(
       target.path,
       doc.sections[ordinal < 0 ? 0 : ordinal].id,
     );
     if (!_current(epoch)) return;
+    if (start != null && loadedSection.resolve(start) != start) {
+      throw ArgumentError.value(start, 'start', 'Invalid narration anchor.');
+    }
     _section = loadedSection;
     _chunks = narrationChunks(_section!, from: anchor);
     _index = 0;
@@ -221,27 +238,60 @@ class NarrationSession {
         cloudBookId: manifest.cloudBookId,
         voice: manifest.voice,
         speed: manifest.speed,
-        anchor: _chunks.firstOrNull?.start ?? anchor,
+        anchor: position,
+        chunkStart: _chunks.firstOrNull?.start ?? anchor,
       );
     }
   }
 
   /// Starts at the committed anchor, reusing private cached files offline.
-  Future<void> play() async {
+  Future<void> play() => _play();
+
+  /// Replaces prior playback with an exact logical start, never a catalog write.
+  /// Its separate chunk anchor supports pause, restart and offline cached replay.
+  Future<void> playFrom(TextPosition start) => _play(start: start);
+
+  Future<void> _play({TextPosition? start}) async {
     if (_cacheMaintenance != null) await _cacheMaintenance;
     await _preferenceUpdate;
-    if (_wanted || book == null || manifest.cloudBookId == null || _disposed) {
+    if (book == null ||
+        manifest.cloudBookId == null ||
+        _disposed ||
+        (_wanted && start == null)) {
       return;
     }
+    final epoch = ++_epoch;
+    // Fence the old player token before stopping it: a queued completion cannot
+    // commit the passage being replaced by Read from here.
+    ++_loadToken;
+    _resumeTimer?.cancel();
     _wanted = true;
     _seeked = false;
     error = null;
     status = NarrationStatus.buffering;
-    final epoch = ++_epoch;
+    if (start != null) {
+      manifest = NarrationManifest(
+        account: manifest.account,
+        cloudBookId: manifest.cloudBookId,
+        voice: manifest.voice,
+        speed: manifest.speed,
+        anchor: currentPosition(book!),
+        chunkStart: start,
+      );
+    }
     changed();
     try {
-      await _prepare(epoch);
-      if (epoch != _epoch || !_wanted) return;
+      if (start != null) {
+        await _native(() async {
+          if (_current(epoch)) await player.stopAudio();
+        });
+        if (!_current(epoch)) return;
+        store.pin({});
+      }
+      await _prepare(epoch, start: start);
+      if (!_current(epoch)) return;
+      await store.save(book!, manifest);
+      if (!_current(epoch)) return;
       await _start(epoch);
     } on Object catch (failure) {
       if (epoch == _epoch) {
@@ -262,8 +312,11 @@ class NarrationSession {
     final cached = await store.cached(target, key);
     if (cached != null) return cached;
     if (!_current(epoch)) throw StateError('Session changed.');
+    // Single-flight applies only within one generation. A replaced download's
+    // fenced failure must not poison playback of the same chunk in a new epoch.
+    final download = '$epoch:$key';
     return _downloads
-        .putIfAbsent(key, () async {
+        .putIfAbsent(download, () async {
           final bytes = await api.audio(
             profile.cloudBookId!,
             chunk,
@@ -273,7 +326,7 @@ class NarrationSession {
           if (!_current(epoch)) throw StateError('Session changed.');
           return store.put(target, key, bytes);
         })
-        .whenComplete(() => _downloads.remove(key));
+        .whenComplete(() => _downloads.remove(download));
   }
 
   Future<void> _start(int epoch) async {
@@ -334,8 +387,9 @@ class NarrationSession {
       cloudBookId: manifest.cloudBookId,
       voice: manifest.voice,
       speed: manifest.speed,
-      anchor: currentPosition(book!) ?? chunk.start,
+      anchor: currentPosition(book!),
       chunkId: chunk.id,
+      chunkStart: chunk.start,
       offsetMs: offset.inMilliseconds,
     );
     status = NarrationStatus.playing;
@@ -412,6 +466,7 @@ class NarrationSession {
       speed: manifest.speed,
       anchor: manifest.anchor,
       chunkId: _seeked ? null : manifest.chunkId,
+      chunkStart: _seeked ? null : manifest.chunkStart,
       offsetMs: _seeked || manifest.chunkId == null
           ? 0
           : player.position.inMilliseconds,
@@ -443,7 +498,7 @@ class NarrationSession {
     }
   }
 
-  /// Stops and releases audio but keeps consent and interrupted playback on disk.
+  /// Stops and releases audio but keeps registration and interrupted playback.
   Future<void> stop({bool restore = true}) async {
     if (_cacheMaintenance != null) await _cacheMaintenance;
     await _stop(restore: restore);
@@ -540,6 +595,7 @@ class NarrationSession {
           ? currentPosition(book!) ?? manifest.anchor
           : manifest.anchor,
       chunkId: voiceChanged ? null : manifest.chunkId,
+      chunkStart: voiceChanged ? null : manifest.chunkStart,
       offsetMs: voiceChanged ? 0 : manifest.offsetMs,
     );
     await _native(() => player.speed(manifest.speed));
@@ -564,7 +620,7 @@ class NarrationSession {
     changed();
   }
 
-  /// Clears selected audio while retaining the open sheet's consent and book.
+  /// Clears selected audio while retaining the open sheet's registration and book.
   /// The old audio offset is invalid after removing its exact cached generation.
   Future<void> clear() async {
     final target = book;
@@ -586,7 +642,7 @@ class NarrationSession {
   }
 
   /// Stops playback and drains fenced downloads before clearing all owned audio.
-  /// Consent, cache identity metadata and complete text anchors are retained.
+  /// Registration, cache identity metadata and complete text anchors are retained.
   Future<void> clearAllCache(List<CatalogBook> books) async {
     final previous = _cacheMaintenance;
     final preferences = _preferenceUpdate;

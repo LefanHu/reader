@@ -21,7 +21,6 @@ import {
 import {
   accountDeletionRouter,
   authenticateAccount,
-  type AccountRequest,
 } from "./account.js";
 
 const hash = (value: string) =>
@@ -212,17 +211,8 @@ async function harness(enabled = true) {
   });
   const app = express();
   app.use(express.json());
-  app.use("/v1/narration", (req: AccountRequest, res, next) => {
-    if (!req.header("authorization") || !req.header("x-firebase-appcheck")) {
-      res.status(401).end();
-      return;
-    }
-    req.uid = req.header("authorization");
-    next();
-  });
-  app.use("/v1/narration", backend.api());
   app.use(
-    "/v1/account",
+    ["/v1/narration", "/v1/account"],
     authenticateAccount(
       async (token) => {
         if (token === "verified-user") return { uid: "user" };
@@ -233,6 +223,10 @@ async function harness(enabled = true) {
         if (token !== "verified-app") throw new Error("Invalid App Check token");
       },
     ),
+  );
+  app.use("/v1/narration", backend.api());
+  app.use(
+    "/v1/account",
     accountDeletionRouter({
       db: db as unknown as Firestore,
       storage: backend.dependencies.storage,
@@ -253,16 +247,18 @@ async function harness(enabled = true) {
     method = "GET",
     body?: any,
     uid = "user",
+    credentials: { token?: string | null; appCheck?: string | null } = {},
   ) => {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    const token = credentials.token === undefined ? `verified-${uid}` : credentials.token;
+    const appCheck = credentials.appCheck === undefined ? "verified-app" : credentials.appCheck;
+    if (token !== null) headers.authorization = `Bearer ${token}`;
+    if (appCheck !== null) headers["x-firebase-appcheck"] = appCheck;
     const response = await fetch(
       `http://127.0.0.1:${address.port}/v1/narration${path}`,
       {
         method,
-        headers: {
-          authorization: uid,
-          "x-firebase-appcheck": "verified",
-          "content-type": "application/json",
-        },
+        headers,
         body: body === undefined ? undefined : JSON.stringify(body),
       },
     );
@@ -301,7 +297,6 @@ async function harness(enabled = true) {
     (
       await request("/books", "POST", {
         fingerprint: hash("book"),
-        consentVersion: 1,
       })
     ).body.id as string;
   return {
@@ -604,7 +599,6 @@ test("narration rollout is independent; deletion stays available when disabled",
       (
         await app.request("/books", "POST", {
           fingerprint: hash("book"),
-          consentVersion: 1,
         })
       ).status,
       503,
@@ -619,16 +613,60 @@ test("narration rollout is independent; deletion stays available when disabled",
   }
 });
 
-test("registration requires consent and does not create illustration credit records", async () => {
+test("registration accepts a fingerprint without creating illustration credit records", async () => {
   const app = await harness();
   try {
-    assert.equal(
-      (await app.request("/books", "POST", { fingerprint: hash("book") }))
-        .status,
-      400,
+    const fingerprint = hash("book");
+    const response = await app.request("/books", "POST", { fingerprint });
+    assert.equal(response.status, 200);
+    assert.match(response.body.id, /^[a-f0-9]{64}$/);
+    assert.equal(response.body.account, "user");
+    assert.equal(response.body.remaining, 500000);
+    const record = app.db.values.get(`users/user/narrationBooks/${response.body.id}`);
+    assert(record);
+    assert.equal(record.fingerprint, fingerprint);
+    assert.equal(record.uid, "user");
+    assert.equal(record.deleted, false);
+    assert.deepEqual(
+      Object.keys(record).sort(),
+      ["createdAt", "deleted", "fingerprint", "uid"],
     );
-    await app.book();
     assert(!app.db.values.has("users/user"));
+  } finally {
+    await app.close();
+  }
+});
+
+test("registration rejects invalid fingerprints without persisting books", async () => {
+  const app = await harness();
+  try {
+    for (const fingerprint of [undefined, null, 1, "", "a".repeat(63), "a".repeat(65), "g".repeat(64), "A".repeat(64)]) {
+      assert.equal(
+        (await app.request("/books", "POST", { fingerprint })).status,
+        400,
+      );
+    }
+    assert.equal(app.db.values.size, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("registration requires verified Firebase identity and App Check tokens", async () => {
+  const app = await harness();
+  try {
+    for (const credentials of [
+      { token: null },
+      { token: "invalid" },
+      { appCheck: null },
+      { appCheck: "invalid" },
+    ]) {
+      assert.equal(
+        (await app.request("/books", "POST", { fingerprint: hash("book") }, "user", credentials)).status,
+        401,
+      );
+    }
+    assert.equal(app.db.values.size, 0);
   } finally {
     await app.close();
   }
@@ -755,7 +793,6 @@ test("expired cloud audio is never delivered and abandoned input releases unsubm
       (
         await app.request("/books", "POST", {
           fingerprint: hash("new"),
-          consentVersion: 1,
         })
       ).status,
       410,
@@ -904,7 +941,7 @@ test("UTC quota caps count supplementary characters atomically across users", as
       await app.request(
         "/books",
         "POST",
-        { fingerprint: hash("other"), consentVersion: 1 },
+        { fingerprint: hash("other") },
         "other",
       )
     ).body.id;

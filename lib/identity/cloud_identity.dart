@@ -9,7 +9,7 @@ abstract interface class CloudIdentity {
   /// Restores an existing session without presenting authentication UI.
   Future<bool> hasSession();
 
-  /// Explicit Google authentication; calling it never consents to prose upload.
+  /// Explicit Google authentication; never enables illustrations or uploads prose.
   Future<void> signIn();
 
   /// Verifies the same Firebase user before destructive cloud-account actions.

@@ -312,13 +312,13 @@ class ReaderController extends ChangeNotifier {
     }
   }
 
-  /// Consent and cleanup complete before creating a new cloud registration.
-  Future<void> consentToNarration(CatalogBook book) async {
+  /// Drains durable cleanup before creating an authenticated book registration.
+  Future<void> registerNarration(CatalogBook book) async {
     await drainNarrationDeletions();
     if ((await narrationDeletionOutbox.load()).isNotEmpty) {
       throw StateError('Cloud cleanup is pending. Retry when connected.');
     }
-    await narration?.consent(book);
+    await narration?.register(book);
     await refreshCloudAccount();
   }
 
@@ -337,7 +337,7 @@ class ReaderController extends ChangeNotifier {
     }
   }
 
-  /// Explicit library sign-in is independent of per-book generation consent.
+  /// Explicit library sign-in is independent of cloud generation registration.
   Future<void> signInToCloud() async {
     if (cloudAccountBusy) return;
     final identity = cloudIdentity;
@@ -421,7 +421,7 @@ class ReaderController extends ChangeNotifier {
     }
   }
 
-  /// Refreshes owned usage without prompting for sign-in or granting consent.
+  /// Refreshes owned usage without prompting for sign-in or registering books.
   Future<void> refreshAccountUsage() => _usage.refresh();
 
   /// Counts validated downloaded audio; source books and manifests are excluded.

@@ -82,7 +82,7 @@ class ReaderPreferencesCoordinator {
     );
   }
 
-  /// Restores defaults without removing books, consent, or cached audio.
+  /// Restores defaults without removing books, illustration consent, or audio.
   Future<void> reset() => _updatePreferences((_) => const ReaderSettings());
 
   Future<void> _updatePreferences(

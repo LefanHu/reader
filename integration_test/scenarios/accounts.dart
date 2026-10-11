@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../test/support/cloud_identity_fake.dart';
 import '../support/native_test_app.dart';
 
-/// Real native routes and storage exercise account actions without cloud consent.
+/// Real native routes and storage exercise account actions without cloud generation.
 /// Provider dialogs are covered separately by signed OAuth validation.
 void registerAccountTests() {
   testWidgets(

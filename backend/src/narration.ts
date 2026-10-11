@@ -316,14 +316,10 @@ export class NarrationBackend {
       "/books",
       route(async (req, res) => {
         if (
-          req.body?.consentVersion !== 1 ||
           typeof req.body?.fingerprint !== "string" ||
           !/^[a-f0-9]{64}$/.test(req.body.fingerprint)
         )
-          throw new NarrationError(
-            400,
-            "Narration consent and fingerprint required.",
-          );
+          throw new NarrationError(400, "Valid fingerprint required.");
         const uid = req.uid!;
         const id = hash(`${uid}:${req.body.fingerprint}:${randomUUID()}`);
         await db.runTransaction(async (tx) => {
@@ -332,7 +328,6 @@ export class NarrationBackend {
           tx.create(this.book(uid, id), {
             uid,
             fingerprint: req.body.fingerprint,
-            consentVersion: 1,
             deleted: false,
             createdAt: FieldValue.serverTimestamp(),
           });
