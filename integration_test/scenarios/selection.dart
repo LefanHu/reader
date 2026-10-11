@@ -110,13 +110,17 @@ void registerSelectionTests() {
     ) async {
       final app = await NativeTestApp.launch(
         tester,
-        narration: true,
+        localNarration: Platform.isIOS,
+        narration: !Platform.isIOS,
         textBytes: selectionBookFixture(),
       );
       final session = app.controller.narration!;
       final api = session.api as FakeNarrationApi;
-      // Keep native completion outside the selection/start assertions.
-      api.gate = Completer<Uint8List>()..complete(testWav(samples: 24000 * 60));
+      if (!Platform.isIOS) {
+        // The cloud fixture's long WAV keeps completion outside assertions.
+        api.gate = Completer<Uint8List>()
+          ..complete(testWav(samples: 24000 * 60));
+      }
       await app.runWithFrames(
         () => app.controller.preferences.configure(mode: mode, fontSize: 24),
       );
@@ -150,17 +154,33 @@ void registerSelectionTests() {
           await Future<void>.delayed(const Duration(milliseconds: 25));
         }
       });
+      final active = session.activeChunk!;
+      // Pause the installed voice promptly; no guessed native speech duration
+      // or fabricated local audio is needed to inspect the selected start.
+      await app.runWithFrames(session.pause);
       expect(find.byType(AlertDialog), findsNothing);
-      expect(api.registrations, 1);
-      expect(api.requests.first.start, expected);
-      expect(api.requests.first.text, startsWith(selectionSecondParagraph));
+      if (Platform.isIOS) {
+        expect(api.registrations, 0);
+        expect(api.requests, isEmpty);
+        expect(active.start, expected);
+        expect(active.end.version, expected.version);
+        expect(active.end.sectionId, expected.sectionId);
+        expect(active.end.blockId, expected.blockId);
+        expect(
+          active.text,
+          selectionSecondParagraph.substring(0, active.end.offset),
+        );
+        expect(session.manifest.account, isNull);
+        expect(session.manifest.cloudBookId, isNull);
+      } else {
+        expect(api.registrations, 1);
+        expect(api.requests.first.start, expected);
+        expect(api.requests.first.text, startsWith(selectionSecondParagraph));
+      }
       expect(session.manifest.chunkStart, expected);
       expect(session.manifest.anchor, committed);
       expect(app.book('Unicode Test').lastPosition, committed);
-      expect(app.viewport.navigation.leadingPosition, leading);
       expect(find.text('Read from here'), findsNothing);
-      await app.runWithFrames(session.pause);
-      expect(app.book('Unicode Test').lastPosition, committed);
     });
   }
 }

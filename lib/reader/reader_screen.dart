@@ -9,11 +9,14 @@ import '../catalog/catalog_book.dart';
 import '../illustrations/illustration_scene.dart';
 import '../illustrations/illustration_setup.dart';
 import '../narration/narration_sheet.dart';
+import '../narration/session.dart';
+import '../narration/status_indicator.dart';
 import '../preferences/reading_mode.dart';
 import '../text/document.dart' as text;
 import '../text/document_store.dart' as text;
 import '../text/text_contents_entry.dart' as text;
 import '../text/text_position.dart' as text;
+import '../text/narration_range.dart';
 import '../text/reader_navigation.dart';
 import '../text/viewport.dart';
 import 'illustration_consent_dialog.dart';
@@ -50,7 +53,8 @@ class ReaderScreen extends StatefulWidget {
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
-class _ReaderScreenState extends State<ReaderScreen> {
+class _ReaderScreenState extends State<ReaderScreen>
+    with WidgetsBindingObserver {
   late final Future<text.TextDocument> publication;
   final navigation = TextReaderNavigation();
   late final store = widget.documentStore ?? text.TextDocumentStore();
@@ -59,13 +63,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool revealingIllustration = false;
   String? chapterTitle;
   Timer? revealTimer;
+  NarrationSession? _highlightSession;
+  // Invalidates deferred presentation attachments on owner/lifecycle changes.
+  int _highlightOwnerEpoch = 0;
+  bool _readerVisible = true;
+  text.TextPosition? _pendingFollow;
+  text.TextPosition? _narrationAnchor;
+  bool _followScheduled = false;
+  int _followEpoch = 0;
 
   @override
   void initState() {
     super.initState();
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _readerVisible =
+        lifecycle == null || lifecycle == AppLifecycleState.resumed;
     publication = _open();
     widget.controller.addListener(_controllerChanged);
     widget.controller.narration?.restoreViewport = _restoreNarrationViewport;
+    WidgetsBinding.instance.addObserver(this);
+    _syncHighlightOwner();
   }
 
   Future<text.TextDocument> _open() => store.load(widget.book.path);
@@ -80,11 +97,92 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   int _narrationRevision = 0;
   bool _listening = false;
+  void _syncHighlightOwner() {
+    final session = widget.controller.narration;
+    final next =
+        _readerVisible && !closed && session?.book?.hash == widget.book.hash
+        ? session
+        : null;
+    if (identical(next, _highlightSession)) return;
+    final previous = _highlightSession;
+    _highlightSession = next;
+    previous?.detachHighlightOwner(this);
+    final epoch = ++_highlightOwnerEpoch;
+    if (next == null) return;
+    // Attaching can synchronously publish a newly visible cue. Reader creation
+    // may be inside a controller builder, so never notify it during that build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !_readerVisible ||
+          closed ||
+          epoch != _highlightOwnerEpoch ||
+          !identical(next, _highlightSession) ||
+          !identical(next, widget.controller.narration) ||
+          next.book?.hash != widget.book.hash) {
+        return;
+      }
+      next.attachHighlightOwner(this);
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _readerVisible = state == AppLifecycleState.resumed;
+    _syncHighlightOwner();
+    _controllerChanged();
+  }
+
+  void _queueFollow(text.TextPosition? target) {
+    ++_followEpoch;
+    _pendingFollow = target;
+    if (target == null || _followScheduled) return;
+    _followScheduled = true;
+    scheduleMicrotask(() async {
+      try {
+        while (mounted && _pendingFollow != null) {
+          final next = _pendingFollow!;
+          _pendingFollow = null;
+          final epoch = _followEpoch;
+          final session = widget.controller.narration;
+          await navigation.follow(
+            next,
+            isCurrent: () =>
+                mounted &&
+                !closed &&
+                _readerVisible &&
+                epoch == _followEpoch &&
+                identical(session, widget.controller.narration) &&
+                next == _activeNarrationAnchor,
+          );
+        }
+      } on Object catch (error, stack) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stack,
+            library: 'reader',
+            context: ErrorDescription('while following spoken text'),
+          ),
+        );
+      } finally {
+        _followScheduled = false;
+      }
+    });
+  }
+
   void _controllerChanged() {
-    final listening =
-        widget.controller.narration?.ownsPosition(widget.book) == true;
-    if ((!_listening && listening) ||
-        _narrationRevision != widget.controller.narrationNavigationRevision) {
+    _syncHighlightOwner();
+    final session = widget.controller.narration;
+    final listening = session?.ownsPosition(widget.book) == true;
+    final active = _readerVisible ? _activeNarrationAnchor : null;
+    if (active != _narrationAnchor) {
+      _narrationAnchor = active;
+      _queueFollow(active);
+    }
+    if (active == null &&
+        ((!_listening && listening) ||
+            _narrationRevision !=
+                widget.controller.narrationNavigationRevision)) {
       final anchor = widget.controller.catalog.books
           .where((item) => item.hash == widget.book.hash)
           .firstOrNull
@@ -259,6 +357,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final route = ModalRoute.of(context);
     if (closed || route?.isCurrent != true) return;
     closed = true;
+    _queueFollow(null);
+    _syncHighlightOwner();
     await widget.controller.flush();
     if (!mounted) return;
     // A sheet opened during persistence belongs to a different exit action.
@@ -266,17 +366,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
       Navigator.pop(context);
     } else {
       closed = false;
+      _syncHighlightOwner();
+      _controllerChanged();
     }
   }
 
   @override
   void dispose() {
     revealTimer?.cancel();
+    widget.controller.removeListener(_controllerChanged);
+    _readerVisible = false;
+    ++_highlightOwnerEpoch;
+    ++_followEpoch;
+    _pendingFollow = null;
+    WidgetsBinding.instance.removeObserver(this);
+    _highlightSession?.detachHighlightOwner(this);
+    _highlightSession = null;
     if (widget.controller.narration?.restoreViewport ==
         _restoreNarrationViewport) {
       widget.controller.narration?.restoreViewport = null;
     }
-    widget.controller.removeListener(_controllerChanged);
     widget.controller.flush();
     super.dispose();
   }
@@ -369,28 +478,43 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     ),
                     SizedBox(
                       height: 62,
-                      child: ReaderControlsTransition(
-                        visible: controls,
-                        hiddenOffset: const Offset(0, .15),
-                        child: ReaderNavigationBar(
-                          progress:
-                              widget.controller.catalog.books
-                                  .where(
-                                    (book) => book.hash == widget.book.hash,
-                                  )
-                                  .firstOrNull
-                                  ?.progress ??
-                              widget.book.progress,
-                          foreground: _foreground,
-                          pages:
-                              widget.controller.preferences.settings.mode !=
-                              ReadingMode.scroll,
-                          rightToLeft: navigation.rightToLeft,
-                          onPrevious: navigation.previous,
-                          onNext: navigation.next,
-                          onPreviousChapter: navigation.previousSection,
-                          onNextChapter: navigation.nextSection,
-                        ),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          ReaderControlsTransition(
+                            visible: controls,
+                            hiddenOffset: const Offset(0, .15),
+                            child: ReaderNavigationBar(
+                              listeningStatus: controls
+                                  ? _narrationStatus()
+                                  : null,
+                              progress:
+                                  widget.controller.catalog.books
+                                      .where(
+                                        (book) => book.hash == widget.book.hash,
+                                      )
+                                      .firstOrNull
+                                      ?.progress ??
+                                  widget.book.progress,
+                              foreground: _foreground,
+                              pages:
+                                  widget.controller.preferences.settings.mode !=
+                                  ReadingMode.scroll,
+                              rightToLeft: navigation.rightToLeft,
+                              onPrevious: navigation.previous,
+                              onNext: navigation.next,
+                              onPreviousChapter: navigation.previousSection,
+                              onNextChapter: navigation.nextSection,
+                            ),
+                          ),
+                          if (!controls)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                              ),
+                              child: _narrationStatus(),
+                            ),
+                        ],
                       ),
                     ),
                   ],
@@ -403,44 +527,79 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ),
   );
 
-  Widget _readerView(text.TextDocument document) => TextViewport(
-    document: document,
-    sourcePath: widget.book.path,
-    store: store,
-    navigation: navigation,
-    settings: widget.controller.preferences.settings,
-    foreground: _foreground,
-    background: _background,
-    initialPosition:
-        widget.controller.catalog.books
-            .where((item) => item.hash == widget.book.hash)
-            .firstOrNull
-            ?.lastPosition ??
-        widget.book.lastPosition,
-    onRestored: (title) {
-      if (mounted && chapterTitle != title) {
-        setState(() => chapterTitle = title);
-      }
-    },
-    onManualNavigation: () {
-      unawaited(widget.controller.narration?.navigate(widget.book));
-    },
-    onReadFromHere: widget.controller.narration == null
-        ? null
-        : (position) => unawaited(
-            showNarrationSheet(
-              context,
-              widget.controller,
-              widget.book,
-              start: position,
+  Widget? _narrationStatus() {
+    final session = widget.controller.narration;
+    if (session?.book?.hash != widget.book.hash || session?.ready != true) {
+      return null;
+    }
+    return NarrationStatusIndicator(
+      key: const ValueKey('reader-narration-status'),
+      status: session!.status,
+    );
+  }
+
+  NarrationRange? get _activeNarrationRange {
+    final session = widget.controller.narration;
+    return session?.book?.hash == widget.book.hash &&
+            session?.status == NarrationStatus.playing &&
+            _readerVisible
+        ? session?.activeHighlight
+        : null;
+  }
+
+  text.TextPosition? get _activeNarrationAnchor {
+    final session = widget.controller.narration;
+    return session?.book?.hash == widget.book.hash &&
+            session?.status == NarrationStatus.playing
+        ? session?.activeFollowPosition
+        : null;
+  }
+
+  Widget _readerView(text.TextDocument document) {
+    final liveAnchor = _readerVisible ? _activeNarrationAnchor : null;
+    return TextViewport(
+      document: document,
+      sourcePath: widget.book.path,
+      store: store,
+      navigation: navigation,
+      settings: widget.controller.preferences.settings,
+      foreground: _foreground,
+      background: _background,
+      activeNarrationRange: _activeNarrationRange,
+      // Live spoken bounds reopen as presentation, never durable progress.
+      initialPositionIsRestoration: liveAnchor != null,
+      initialPosition:
+          liveAnchor ??
+          widget.controller.catalog.books
+              .where((item) => item.hash == widget.book.hash)
+              .firstOrNull
+              ?.lastPosition ??
+          widget.book.lastPosition,
+      onRestored: (title) {
+        if (mounted && chapterTitle != title) {
+          setState(() => chapterTitle = title);
+        }
+      },
+      onManualNavigation: () {
+        unawaited(widget.controller.narration?.navigate(widget.book));
+      },
+      onReadFromHere: widget.controller.narration == null
+          ? null
+          : (position) => unawaited(
+              showNarrationSheet(
+                context,
+                widget.controller,
+                widget.book,
+                start: position,
+              ),
             ),
-          ),
-    onTap: () => setState(() => controls = !controls),
-    onPosition: (position, progress, title) {
-      widget.controller.savePosition(widget.book, position, progress);
-      if (chapterTitle != title && mounted) {
-        setState(() => chapterTitle = title);
-      }
-    },
-  );
+      onTap: () => setState(() => controls = !controls),
+      onPosition: (position, progress, title) {
+        widget.controller.savePosition(widget.book, position, progress);
+        if (chapterTitle != title && mounted) {
+          setState(() => chapterTitle = title);
+        }
+      },
+    );
+  }
 }

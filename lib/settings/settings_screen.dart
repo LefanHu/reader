@@ -315,42 +315,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ),
   ];
 
-  List<Widget> _narration() => [
-    const Text('Voice and speed apply to all books on this device.'),
-    const SizedBox(height: 12),
-    for (final voice in ['marin', 'cedar'])
-      SettingsChoiceTile<String>(
-        value: voice,
-        selected: controller.preferences.settings.narrationVoice,
-        title: Text(_title(voice)),
-        onChanged: (value) {
-          _preference(
-            () => controller.preferences.configure(narrationVoice: value),
-          );
-        },
-      ),
-    const Text(
-      'Changing voice pauses narration. Press Play to continue; uncached audio consumes allowance.',
-    ),
-    const SizedBox(height: 20),
-    const Text('Playback speed'),
-    Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final speed in [.75, 1.0, 1.25, 1.5, 1.75, 2.0])
-          ChoiceChip(
-            label: Text('$speed×'),
-            selected: controller.preferences.settings.narrationSpeed == speed,
-            onSelected: (_) => _preference(
-              () => controller.preferences.configure(narrationSpeed: speed),
-            ),
+  List<Widget> _narration() {
+    final source = controller.narrationSource;
+    final selected = controller.preferences.settings.narrationVoice;
+    final missing = !source.voices.any((voice) => voice.identifier == selected);
+    return [
+      const Text('Voice and speed apply to all books on this device.'),
+      const SizedBox(height: 12),
+      if (missing)
+        ListTile(
+          title: Text('Unavailable: $selected'),
+          subtitle: const Text(
+            'This saved voice is unavailable. Choose an installed voice for new audio; matching cached audio can still play.',
           ),
-      ],
-    ),
-    const SizedBox(height: 12),
-    const Text('Speed changes apply immediately and reuse existing audio.'),
-  ];
+          selected: true,
+          leading: const Icon(Icons.warning_amber_outlined),
+        ),
+      for (final voice in source.voices)
+        SettingsChoiceTile<String>(
+          value: voice.identifier,
+          selected: selected,
+          title: Text(voice.name),
+          subtitle: Text('${voice.language} · ${voice.quality}'),
+          onChanged: (value) {
+            _preference(
+              () => controller.preferences.configure(narrationVoice: value),
+            );
+          },
+        ),
+      Text(
+        source.requiresCloudRegistration
+            ? 'Changing voice pauses narration. Press Play to continue; uncached audio consumes allowance.'
+            : 'Speech is generated on this device using installed voices. Changing voice pauses narration. Press Play to continue.',
+      ),
+      const SizedBox(height: 20),
+      const Text('Playback speed'),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final speed in [.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+            ChoiceChip(
+              label: Text('$speed×'),
+              selected: controller.preferences.settings.narrationSpeed == speed,
+              onSelected: (_) => _preference(
+                () => controller.preferences.configure(narrationSpeed: speed),
+              ),
+            ),
+        ],
+      ),
+      const SizedBox(height: 12),
+      const Text('Speed changes apply immediately and reuse existing audio.'),
+    ];
+  }
 
   List<Widget> _library() => [
     const Text('Default filter'),

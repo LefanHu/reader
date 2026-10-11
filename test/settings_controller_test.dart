@@ -10,6 +10,7 @@ import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/importing/book_importer.dart';
 import 'package:reader/narration/api.dart';
+import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/player.dart';
 import 'package:reader/narration/session.dart';
@@ -71,6 +72,9 @@ Future<ReaderController> _controller({
     accountApi: api,
     cloudIdentity: identity,
     narrationApi: narrationApi,
+    narrationSource: narrationApi == null
+        ? null
+        : CloudNarrationSource(narrationApi),
     narrationPlayer: narrationPlayer,
     narrationStore: narrationStore,
     narrationDocuments: narrationDocuments,

@@ -10,6 +10,7 @@ import 'package:reader/catalog/file_catalog_store.dart';
 import 'package:reader/importing/book_importer.dart';
 import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/narration/file_narration_store.dart';
+import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/session.dart';
 import 'package:reader/narration/narration_registration.dart';
@@ -122,6 +123,7 @@ void main() {
       preferences = const ReaderSettings();
       session = NarrationSession(
         api: api,
+        source: CloudNarrationSource(api),
         preferences: () => preferences,
         player: player,
         store: cache,
@@ -568,6 +570,7 @@ void main() {
         await session.dispose();
         session = NarrationSession(
           api: api,
+          source: CloudNarrationSource(api),
           player: FakeNarrationPlayer(),
           store: cache,
           documents: MemoryDocumentStore(sections: sections),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'package:reader/narration/session.dart';
 import 'package:reader/preferences/reader_settings.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/settings/settings_choice_tile.dart';
 import 'package:reader/settings/settings_screen.dart';
 
 import '../../test/fixtures/narration_audio.dart';
@@ -165,7 +167,10 @@ void registerSettingsTests() {
   testWidgets(
     'global settings change theme voice speed and retain imported books',
     (tester) async {
-      final app = await NativeTestApp.launch(tester);
+      final app = await NativeTestApp.launch(
+        tester,
+        localNarration: Platform.isIOS,
+      );
       await app.openBook('Unicode Test');
       await app.advance();
       final anchor = app.viewport.navigation.leadingPosition;
@@ -216,9 +221,36 @@ void registerSettingsTests() {
       await flow.visible(sample);
       expect(tester.widget<Text>(sample).style!.fontFamily, 'DM Sans');
       await flow.section('Narration');
-      await flow.tap('Cedar');
+      final source = app.controller.narrationSource;
+      final chosen = source.voices.last;
+      final voiceTile = find.byWidgetPredicate(
+        (widget) =>
+            widget is SettingsChoiceTile<String> &&
+            widget.value == chosen.identifier,
+      );
+      await flow.visible(voiceTile);
+      await tester.tap(voiceTile);
+      await tester.pumpAndSettle();
       await flow.tap('1.5×');
-      expect(app.controller.preferences.settings.narrationVoice, 'cedar');
+      expect(
+        app.controller.preferences.settings.narrationVoice,
+        chosen.identifier,
+      );
+      if (Platform.isIOS) {
+        expect(chosen.identifier, startsWith('apple:'));
+        expect(app.controller.narration!.manifest.cloudBookId, isNull);
+        expect(
+          (app.controller.narration!.api as FakeNarrationApi).registrations,
+          0,
+        );
+        expect(
+          (app.controller.narration!.player as NativeNarrationPlayer)
+              .playbackState
+              .value
+              .speed,
+          1.5,
+        );
+      }
       expect(app.controller.preferences.settings.narrationSpeed, 1.5);
       await flow.section('Appearance');
       await flow.tap('Sepia');

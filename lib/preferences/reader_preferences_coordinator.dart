@@ -18,10 +18,19 @@ class ReaderPreferencesCoordinator {
     required this.store,
     required this._applyNarrationPreferences,
     required this._changed,
+    required this.isNarrationVoiceAvailable,
+    required this.defaultNarrationVoice,
   });
 
   /// Persists complete reader-wide preference snapshots.
   final SettingsStore store;
+
+  /// Validates new selections against the active source's installed catalog.
+  /// Restored missing voices remain unchanged until the user chooses a voice.
+  final bool Function(String) isNarrationVoiceAvailable;
+
+  /// Supplies the active source's default, or null when none is available.
+  final String? Function() defaultNarrationVoice;
 
   /// Authoritative current preferences, merged inside each queued operation.
   ReaderSettings settings = const ReaderSettings();
@@ -54,8 +63,7 @@ class ReaderPreferencesCoordinator {
     LibraryFilter? libraryFilter,
     LibrarySort? librarySort,
   }) {
-    if (narrationVoice != null &&
-        !['marin', 'cedar'].contains(narrationVoice)) {
+    if (narrationVoice != null && !isNarrationVoiceAvailable(narrationVoice)) {
       return Future.error(
         ArgumentError.value(narrationVoice, 'narrationVoice'),
       );
@@ -83,7 +91,11 @@ class ReaderPreferencesCoordinator {
   }
 
   /// Restores defaults without removing books, illustration consent, or audio.
-  Future<void> reset() => _updatePreferences((_) => const ReaderSettings());
+  Future<void> reset() => _updatePreferences(
+    (current) => ReaderSettings(
+      narrationVoice: defaultNarrationVoice() ?? current.narrationVoice,
+    ),
+  );
 
   Future<void> _updatePreferences(
     ReaderSettings Function(ReaderSettings) update,

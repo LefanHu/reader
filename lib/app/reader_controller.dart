@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -29,6 +30,9 @@ import '../importing/book_importer.dart';
 import '../importing/book_picker.dart';
 import '../importing/native_book_picker.dart';
 import '../narration/api.dart';
+import '../narration/source.dart';
+import '../narration/apple_narration_source.dart';
+import '../narration/cloud_narration_source.dart';
 import '../narration/file_narration_store.dart';
 import '../narration/http_narration_api.dart';
 import '../narration/narration_manifest.dart';
@@ -63,6 +67,7 @@ class ReaderController extends ChangeNotifier {
     IllustrationApi? illustrationApi,
     IllustrationDeletionOutbox? illustrationDeletionOutbox,
     NarrationApi? narrationApi,
+    NarrationSource? narrationSource,
     NarrationPlayer? narrationPlayer,
     NarrationStore? narrationStore,
     TextDocumentStore? narrationDocuments,
@@ -70,8 +75,27 @@ class ReaderController extends ChangeNotifier {
     this.cloudIdentity,
     this.accountApi,
     IllustrationGate illustrationGate = const IllustrationGate(),
-  }) : narrationDeletionOutbox =
+  }) : narrationSource =
+           narrationSource ??
+           CloudNarrationSource(
+             narrationApi ??
+                 HttpNarrationApi(
+                   identity: cloudIdentity ?? FirebaseCloudIdentity(),
+                 ),
+           ),
+       narrationDeletionOutbox =
            narrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox() {
+    if ((narrationApi != null ||
+            narrationPlayer != null ||
+            narrationStore != null) &&
+        (narrationApi == null ||
+            narrationPlayer == null ||
+            narrationStore == null ||
+            narrationSource == null)) {
+      throw ArgumentError(
+        'Narration requires an explicit source, API, player, and store.',
+      );
+    }
     catalog = CatalogSession(
       store: catalogStore,
       importer: importer,
@@ -81,6 +105,10 @@ class ReaderController extends ChangeNotifier {
     );
     preferences = ReaderPreferencesCoordinator(
       store: settingsStore,
+      isNarrationVoiceAvailable: (voice) => this.narrationSource.voices.any(
+        (candidate) => candidate.identifier == voice,
+      ),
+      defaultNarrationVoice: () => this.narrationSource.defaultVoice,
       applyNarrationPreferences: (settings) async {
         await narration?.applyPreferences(settings);
       },
@@ -115,6 +143,7 @@ class ReaderController extends ChangeNotifier {
         narrationStore != null) {
       narration = NarrationSession(
         api: narrationApi,
+        source: this.narrationSource,
         player: narrationPlayer,
         store: narrationStore,
         documents: narrationDocuments,
@@ -144,6 +173,9 @@ class ReaderController extends ChangeNotifier {
 
   /// App-lifetime narration; absent in offline/test dependency graphs.
   NarrationSession? narration;
+
+  /// Platform voice catalog and synthesis identity, independent of attachment.
+  final NarrationSource narrationSource;
 
   /// Shared account boundary works with core-only configuration and no API URL.
   final CloudIdentity? cloudIdentity;
@@ -192,11 +224,18 @@ class ReaderController extends ChangeNotifier {
   /// Creates the production dependency graph and restores persisted state.
   static Future<ReaderController> create() async {
     final store = await FileCatalogStore.create();
+    // Native synthesis binds an existing private root before any book is opened.
+    await store.root.create(recursive: true);
     final identity = FirebaseCloudIdentity();
+    final narrationApi = HttpNarrationApi(identity: identity);
+    final source = Platform.isIOS
+        ? await AppleNarrationSource.create(root: store.root)
+        : CloudNarrationSource(narrationApi);
     final controller = ReaderController(
       cloudIdentity: identity,
       accountApi: HttpAccountApi(identity: identity),
-      narrationApi: HttpNarrationApi(identity: identity),
+      narrationApi: narrationApi,
+      narrationSource: source,
       narrationPlayer: await NativeNarrationPlayer.create(),
       narrationStore: FileNarrationStore(store.root),
       narrationDeletionOutbox: FileIllustrationDeletionOutbox(
@@ -216,6 +255,12 @@ class ReaderController extends ChangeNotifier {
   /// Loads catalog, preferences, and book sidecars at startup.
   Future<void> initialize() async {
     await Future.wait([catalog.load(), preferences.load()]);
+    // Only old cloud defaults migrate; a removed saved Apple voice stays honest.
+    if (!narrationSource.requiresCloudRegistration &&
+        !preferences.settings.narrationVoice.startsWith('apple:') &&
+        narrationSource.defaultVoice != null) {
+      await preferences.configure(narrationVoice: narrationSource.defaultVoice);
+    }
     await illustrations.loadManifests(catalog.books);
     unawaited(illustrations.drainDeletions());
     unawaited(drainNarrationDeletions());
@@ -314,6 +359,10 @@ class ReaderController extends ChangeNotifier {
 
   /// Drains durable cleanup before creating an authenticated book registration.
   Future<void> registerNarration(CatalogBook book) async {
+    if (!narrationSource.requiresCloudRegistration) {
+      await narration?.attach(book);
+      return;
+    }
     await drainNarrationDeletions();
     if ((await narrationDeletionOutbox.load()).isNotEmpty) {
       throw StateError('Cloud cleanup is pending. Retry when connected.');

@@ -32,7 +32,8 @@ class ReaderSettings {
   /// Whether the viewport should prefer the bundled serif reading family.
   final bool serif;
 
-  /// Global provider voice; book sidecars record audio identity, not overrides.
+  /// Global source voice: Marin/Cedar or `apple:<installed identifier>`.
+  /// Book sidecars record audio identity, never a preference override.
   final String narrationVoice;
 
   /// Global playback multiplier; changes reuse existing generated audio.
@@ -83,9 +84,7 @@ class ReaderSettings {
     theme: ReadingTheme.values.byName(json['theme'] as String? ?? 'paper'),
     fontSize: (json['fontSize'] as num?)?.round().clamp(80, 180) ?? 100,
     serif: json['serif'] as bool? ?? true,
-    narrationVoice: ['marin', 'cedar'].contains(json['narrationVoice'])
-        ? json['narrationVoice'] as String
-        : 'marin',
+    narrationVoice: _voiceIdentity(json['narrationVoice']) ?? 'marin',
     narrationSpeed:
         json['narrationSpeed'] is num &&
             (json['narrationSpeed'] as num).isFinite
@@ -102,4 +101,16 @@ class ReaderSettings {
             .firstOrNull ??
         LibrarySort.recent,
   );
+
+  // Parsing preserves removed Apple voices; availability belongs to the source,
+  // not persisted settings, and must never silently change a saved selection.
+  static String? _voiceIdentity(Object? value) {
+    if (value == 'marin' || value == 'cedar') return value as String;
+    if (value is String &&
+        value.startsWith('apple:') &&
+        value.substring(6).trim().isNotEmpty) {
+      return value;
+    }
+    return null;
+  }
 }

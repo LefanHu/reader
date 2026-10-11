@@ -17,6 +17,9 @@ import 'package:reader/library/library_screen.dart';
 import 'package:reader/app/reader_app.dart';
 import 'package:reader/narration/file_narration_store.dart';
 import 'package:reader/narration/native_narration_player.dart';
+import 'package:reader/narration/apple_narration_source.dart';
+import 'package:reader/narration/cloud_narration_source.dart';
+import 'package:reader/narration/player.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/viewport.dart';
 
@@ -44,6 +47,11 @@ class NativeTestApp {
 
   /// Controller owned by ReaderApp after mounting and by this fixture beforehand.
   late final ReaderController controller;
+
+  /// Real Apple source only for explicitly local acceptance scenarios.
+  AppleNarrationSource? localNarrationSource;
+  ReaderController? _ownedController;
+  NarrationPlayer? _initializingPlayer;
   final _screenshotKey = GlobalKey();
   bool _mounted = false;
 
@@ -54,11 +62,21 @@ class NativeTestApp {
     WidgetTester tester, {
     bool importBooks = true,
     bool narration = false,
+    bool localNarration = false,
     CloudIdentity? cloudIdentity,
     Uint8List? textBytes,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
     final app = NativeTestApp._(tester, root);
+    addTearDown(app._dispose);
+    final hasNarration = narration || localNarration;
+    final api = hasNarration ? FakeNarrationApi() : null;
+    if (localNarration) {
+      app.localNarrationSource = await AppleNarrationSource.create(root: root);
+    }
+    if (hasNarration) {
+      app._initializingPlayer = await NativeNarrationPlayer.create();
+    }
     final txt =
         textBytes ??
         Uint8List.fromList(
@@ -73,9 +91,12 @@ class NativeTestApp {
     final epub = epubFixture();
     app.controller = ReaderController(
       cloudIdentity: cloudIdentity,
-      narrationApi: narration ? FakeNarrationApi() : null,
-      narrationPlayer: narration ? await NativeNarrationPlayer.create() : null,
-      narrationStore: narration ? FileNarrationStore(root) : null,
+      narrationApi: api,
+      narrationSource:
+          app.localNarrationSource ??
+          (api == null ? null : CloudNarrationSource(api)),
+      narrationPlayer: app._initializingPlayer,
+      narrationStore: hasNarration ? FileNarrationStore(root) : null,
       catalogStore: app.store,
       settingsStore: MemorySettingsStore(),
       importer: BookImporter(root: root),
@@ -93,7 +114,7 @@ class NativeTestApp {
       ]),
       illustrationApi: FakeIllustrationApi(),
     );
-    addTearDown(app._dispose);
+    app._ownedController = app.controller;
     await app.controller.initialize();
     // ReaderApp assumes ownership as soon as its state is mounted, including
     // when a subsequent pump throws because a test detects a rendering error.
@@ -232,20 +253,24 @@ class NativeTestApp {
 
   Future<void> _dispose() async {
     try {
-      try {
-        if (_mounted) {
-          await tester.pumpWidget(const SizedBox.shrink());
-        } else {
-          controller.dispose();
+      final owned = _ownedController;
+      if (owned == null) {
+        await _initializingPlayer?.dispose();
+      } else {
+        try {
+          if (_mounted) {
+            await tester.pumpWidget(const SizedBox.shrink());
+          } else {
+            owned.dispose();
+          }
+        } finally {
+          // Unmount first: route disposal queues its own serialized final flush.
+          await runWithFrames(owned.flush);
         }
-      } finally {
-        // ReaderScreen.dispose queues its own flush. Unmount first, then await
-        // a final serialized write so deleting files cannot race that flush.
-        await runWithFrames(controller.flush);
       }
     } finally {
       // Delete only the directory this fixture created, after readers detach.
-      await root.delete(recursive: true);
+      if (await root.exists()) await root.delete(recursive: true);
     }
   }
 }

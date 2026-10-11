@@ -17,6 +17,7 @@ import 'package:reader/illustrations/illustration_profile.dart';
 import 'package:reader/importing/book_importer.dart';
 import 'package:reader/app/reader_app.dart';
 import 'package:reader/narration/api.dart';
+import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/preferences/library_filter.dart';
@@ -28,6 +29,7 @@ import 'package:reader/text/text_position.dart';
 import 'package:reader/theme.dart';
 
 import 'fixtures/catalog_book.dart';
+import 'support/controller_lifecycle.dart';
 import 'support/fake_illustration_api.dart';
 import 'support/fake_picker.dart';
 import 'support/fake_word_counter.dart';
@@ -59,10 +61,7 @@ Future<ReaderController> _mount(
   await controller.preferences.configure(theme: theme);
   addTearDown(() async {
     await tester.pumpWidget(const SizedBox.shrink());
-    controller.dispose();
-    // Native-fake stream shutdown needs its queued callbacks drained before flush.
-    await tester.pumpAndSettle();
-    await controller.flush();
+    await disposeControllerWithFrames(tester, controller);
   });
   await tester.pumpWidget(
     ListenableBuilder(
@@ -124,8 +123,7 @@ Future<GlobalKey<NavigatorState>> _mountRouted(
   final controller = await testController();
   addTearDown(() async {
     await tester.pumpWidget(const SizedBox.shrink());
-    controller.dispose();
-    await controller.flush();
+    await disposeControllerWithFrames(tester, controller);
   });
   final navigator = GlobalKey<NavigatorState>();
   await tester.pumpWidget(
@@ -170,6 +168,7 @@ Future<ReaderController> _accountController({
   MemoryIllustrationStore? illustrationStore,
   CatalogBook? book,
 }) async {
+  final audioApi = narrationApi ?? FakeNarrationApi();
   final controller = ReaderController(
     cloudIdentity: identity,
     accountApi: accountApi,
@@ -180,7 +179,8 @@ Future<ReaderController> _accountController({
     wordCounter: FakeWordCounter(),
     illustrationApi: FakeIllustrationApi(),
     illustrationStore: illustrationStore ?? MemoryIllustrationStore(),
-    narrationApi: narrationApi ?? FakeNarrationApi(),
+    narrationApi: audioApi,
+    narrationSource: CloudNarrationSource(audioApi),
     narrationPlayer: FakeNarrationPlayer(),
     narrationStore: narrationStore ?? MemoryNarrationStore(),
     narrationDocuments: MemoryDocumentStore(),
@@ -666,8 +666,7 @@ void main() {
       final controller = await testController();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
-        controller.dispose();
-        await controller.flush();
+        await disposeControllerWithFrames(tester, controller);
       });
       final navigator = GlobalKey<NavigatorState>();
       await tester.pumpWidget(

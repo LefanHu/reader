@@ -15,6 +15,7 @@ class TextReaderNavigation {
   VoidCallback? _next, _previous, _nextSection, _previousSection;
   void Function(TextPosition)? _goTo;
   Future<void> Function(TextPosition)? _restore;
+  Future<void> Function(TextPosition, bool Function())? _follow;
 
   /// Binds live viewport callbacks once during lifecycle attachment.
   void attach(
@@ -29,6 +30,7 @@ class TextReaderNavigation {
     required VoidCallback previousSection,
     required void Function(TextPosition) goTo,
     required Future<void> Function(TextPosition) restore,
+    required Future<void> Function(TextPosition, bool Function()) follow,
   }) {
     _owner = owner;
     _leadingPosition = leadingPosition;
@@ -41,6 +43,7 @@ class TextReaderNavigation {
     _previousSection = previousSection;
     _goTo = goTo;
     _restore = restore;
+    _follow = follow;
   }
 
   /// Clears callbacks only when the currently attached owner is identical.
@@ -57,6 +60,7 @@ class TextReaderNavigation {
     _previousSection = null;
     _goTo = null;
     _restore = null;
+    _follow = null;
   }
 
   /// Current logical anchor, retained through typography and viewport changes.
@@ -92,5 +96,19 @@ class TextReaderNavigation {
   /// Restoration never writes viewport progress back over narration commits.
   Future<void> restore(TextPosition position) async {
     await _restore?.call(position);
+  }
+
+  /// Silently follows spoken text only when its measured line is off-screen.
+  /// The optional fence is rechecked after section I/O; obsolete playback must
+  /// not apply a late presentation restore.
+  Future<void> follow(
+    TextPosition position, {
+    bool Function()? isCurrent,
+  }) async {
+    final owner = _owner;
+    await _follow?.call(
+      position,
+      () => identical(owner, _owner) && (isCurrent?.call() ?? true),
+    );
   }
 }

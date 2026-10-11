@@ -5,6 +5,7 @@ import 'package:audio_session/audio_session.dart';
 import 'package:just_audio/just_audio.dart';
 
 import 'player.dart';
+import 'narration_playback_clock.dart';
 
 /// One app-lifetime audio_service handler with native Apple media controls.
 class NativeNarrationPlayer extends BaseAudioHandler
@@ -33,22 +34,48 @@ class NativeNarrationPlayer extends BaseAudioHandler
           speed: _audio.speed,
         ),
       );
+      _emitClock();
       if (state.processingState == ProcessingState.completed &&
+          _audio.processingState == ProcessingState.completed &&
           _token != null) {
         final token = _token!;
         _token = null;
         _completion.add(token);
       }
     });
-    _audio.positionStream.listen((offset) {
-      playbackState.add(playbackState.value.copyWith(updatePosition: offset));
-    });
+    _audio
+        .createPositionStream(
+          minPeriod: const Duration(milliseconds: 200),
+          maxPeriod: const Duration(milliseconds: 200),
+        )
+        .listen((_) {
+          playbackState.add(
+            playbackState.value.copyWith(updatePosition: position),
+          );
+        });
   }
   final AudioPlayer _audio = AudioPlayer(handleInterruptions: false);
   final StreamController<int> _completion = StreamController.broadcast();
+  final StreamController<NarrationPlaybackClock> _clock =
+      StreamController.broadcast();
   int? _token;
   Future<void> Function()? _playAction, _pauseAction, _stopAction;
   Future<void> Function(Duration)? _seekAction;
+
+  void _emitClock({bool? advancing}) {
+    final token = _token;
+    if (token == null) return;
+    _clock.add(
+      NarrationPlaybackClock(
+        token: token,
+        position: position,
+        speed: _audio.speed,
+        advancing:
+            advancing ??
+            (_audio.playing && _audio.processingState == ProcessingState.ready),
+      ),
+    );
+  }
 
   // AudioService permits one initialization per engine, even across controllers.
   static Future<NativeNarrationPlayer>? _instance;
@@ -93,6 +120,8 @@ class NativeNarrationPlayer extends BaseAudioHandler
   @override
   Stream<int> get completed => _completion.stream;
   @override
+  Stream<NarrationPlaybackClock> get clockChanges => _clock.stream;
+  @override
   Duration get position => _audio.position;
   @override
   Duration? get duration => _audio.duration;
@@ -103,6 +132,7 @@ class NativeNarrationPlayer extends BaseAudioHandler
     int token,
     Duration offset,
   ) async {
+    _emitClock(advancing: false);
     _token = null;
     await _audio.setFilePath(path);
     // A persisted offset at/beyond EOF must never turn loading into completion.
@@ -112,6 +142,7 @@ class NativeNarrationPlayer extends BaseAudioHandler
     }
     _token = token;
     mediaItem.add(MediaItem(id: path, title: title, duration: duration));
+    _emitClock();
   }
 
   @override
@@ -121,19 +152,29 @@ class NativeNarrationPlayer extends BaseAudioHandler
         await _pauseAction?.call();
       }),
     );
+    _emitClock();
   }
 
   @override
-  Future<void> pauseAudio() => _audio.pause();
+  Future<void> pauseAudio() async {
+    await _audio.pause();
+    _emitClock();
+  }
+
   @override
   Future<void> stopAudio() async {
+    _emitClock(advancing: false);
     _token = null;
     await _audio.stop();
     mediaItem.add(null);
   }
 
   @override
-  Future<void> seekAudio(Duration offset) => _audio.seek(offset);
+  Future<void> seekAudio(Duration offset) async {
+    _emitClock(advancing: false);
+    await _audio.seek(offset);
+    _emitClock();
+  }
 
   /// Publishes speed immediately; a speed-only edit need not emit player state.
   @override
@@ -145,6 +186,7 @@ class NativeNarrationPlayer extends BaseAudioHandler
         updatePosition: position,
       ),
     );
+    _emitClock();
   }
 
   @override
@@ -185,6 +227,7 @@ class NativeNarrationPlayer extends BaseAudioHandler
   /// Unbinds the closed session without reinitializing AudioService on the next one.
   @override
   Future<void> dispose() async {
+    _emitClock(advancing: false);
     _token = null;
     _playAction = _pauseAction = _stopAction = null;
     _seekAction = null;

@@ -17,8 +17,10 @@ import 'reader_navigation.dart';
 import 'page_target.dart';
 import 'page_turn.dart';
 import 'layout/section_layout.dart';
-import 'layout/text_line.dart';
 import 'block_slice.dart';
+import 'narration_range.dart';
+import 'narration_follow_target.dart';
+import 'text_page_slices.dart';
 import 'reader_gesture_surface.dart';
 import 'reader_selection_content.dart';
 import 'reader_selection_region.dart';
@@ -39,9 +41,11 @@ class TextViewport extends StatefulWidget {
     required this.onPosition,
     required this.onTap,
     this.initialPosition,
+    this.initialPositionIsRestoration = false,
     this.onManualNavigation,
     this.onRestored,
     this.onReadFromHere,
+    this.activeNarrationRange,
   });
 
   /// Immutable manifest used for navigation and source progress.
@@ -68,6 +72,10 @@ class TextViewport extends StatefulWidget {
   /// Optional last durable leading text position.
   final text.TextPosition? initialPosition;
 
+  /// Silently restores a presentation-only initial anchor, even if playback
+  /// pauses while loading. Ordinary initial positions still report progress.
+  final bool initialPositionIsRestoration;
+
   /// Reports a leading passage and layout-independent progress. Curl previews
   /// never report: only completed turns may persist or unlock illustrations.
   final void Function(text.TextPosition position, double progress, String title)
@@ -82,6 +90,10 @@ class TextViewport extends StatefulWidget {
   /// Starts narration from the selected paragraph without committing progress.
   /// Source identities come from selection leaves, never a text search.
   final ValueChanged<text.TextPosition>? onReadFromHere;
+
+  /// Complete normalized spoken bounds. Decoration never changes selection,
+  /// reflows text, or commits reading progress.
+  final NarrationRange? activeNarrationRange;
 
   /// Toggles reading chrome without intercepting drag navigation.
   final VoidCallback onTap;
@@ -175,6 +187,7 @@ class _TextViewportState extends State<TextViewport>
         _goTo(position);
       },
       restore: (position) => _goTo(position, restoration: true),
+      follow: _follow,
     );
   }
 
@@ -194,6 +207,7 @@ class _TextViewportState extends State<TextViewport>
             sectionId: widget.document.sections.first.id,
             blockId: '',
           ),
+      restoration: widget.initialPositionIsRestoration,
     );
   }
 
@@ -212,10 +226,39 @@ class _TextViewportState extends State<TextViewport>
     }
   }
 
+  Future<void> _follow(
+    text.TextPosition target,
+    bool Function() isCurrent,
+  ) async {
+    if (!mounted ||
+        _selectionActive ||
+        !isCurrent() ||
+        target.version != widget.document.version ||
+        !widget.document.sections.any((item) => item.id == target.sectionId)) {
+      return;
+    }
+    final layout = _layout;
+    if (layout != null &&
+        narrationTargetVisible(
+          target: target,
+          documentVersion: widget.document.version,
+          sectionId: _section!.id,
+          layout: layout,
+          page: widget.settings.mode == ReadingMode.scroll ? null : _page,
+          scrollOffset: _scroll.hasClients ? _scroll.offset : 0,
+          viewportExtent: _height,
+        )) {
+      return;
+    }
+    await _goTo(target, restoration: true, isCurrent: isCurrent);
+  }
+
   Future<void> _goTo(
     text.TextPosition requested, {
     bool restoration = false,
+    bool Function()? isCurrent,
   }) async {
+    if (isCurrent?.call() == false) return;
     _clearSelection();
     if (_restored?.isCompleted == false) _restored!.complete();
     _restored = restoration ? Completer<void>() : null;
@@ -237,7 +280,13 @@ class _TextViewportState extends State<TextViewport>
         widget.sourcePath,
         widget.document.sections[target].id,
       );
-      if (!mounted || generation != _request) return;
+      if (!mounted ||
+          generation != _request ||
+          isCurrent?.call() == false ||
+          (isCurrent != null && section.resolve(requested) != requested)) {
+        if (restored != null && !restored.isCompleted) restored.complete();
+        return;
+      }
       setState(() {
         _ordinal = target;
         _section = section;
@@ -246,8 +295,15 @@ class _TextViewportState extends State<TextViewport>
         _error = null;
       });
     } on Object catch (error) {
-      if (mounted && generation == _request) setState(() => _error = error);
+      if (mounted && generation == _request && isCurrent?.call() != false) {
+        setState(() => _error = error);
+      }
       if (restored != null && !restored.isCompleted) restored.complete();
+    } finally {
+      if (identical(_restored, restored) && restored?.isCompleted == true) {
+        _restored = null;
+        _restorationOnly = false;
+      }
     }
     if (restored != null) await restored.future;
   }
@@ -380,42 +436,13 @@ class _TextViewportState extends State<TextViewport>
     }
   }
 
-  ui.Image _texture(SectionLayout layout, int page) {
-    final ratio = math.min(2.0, 2048 / math.max(_width, _height));
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder)..scale(ratio);
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, _width, _height),
-      Paint()..color = widget.background,
-    );
-    final lines = layout.pages[page];
-    var y = 0.0;
-    var start = 0;
-    while (start < lines.length) {
-      var end = start + 1;
-      while (end < lines.length && lines[end].block == lines[start].block) {
-        end++;
-      }
-      final first = lines[start];
-      final last = lines[end - 1];
-      final height = last.top + last.height - first.top;
-      canvas.save();
-      canvas.clipRect(Rect.fromLTWH(0, y, _width, height));
-      first.block.painter.paint(canvas, Offset(0, y - first.top));
-      canvas.restore();
-      y += height + 16;
-      start = end;
-    }
-    final picture = recorder.endRecording();
-    try {
-      return picture.toImageSync(
-        (_width * ratio).ceil(),
-        (_height * ratio).ceil(),
-      );
-    } finally {
-      picture.dispose();
-    }
-  }
+  ui.Image _texture(SectionLayout layout, int page) => textPageTexture(
+    layout: layout,
+    page: page,
+    width: _width,
+    height: _height,
+    background: widget.background,
+  );
 
   Future<void> _startTurn(int delta, {required bool automatic}) async {
     if (_turnBusy || _layout == null || _restoring) return;
@@ -785,6 +812,12 @@ class _TextViewportState extends State<TextViewport>
                               start: 0,
                               end: block.block.text.length,
                               bottomPadding: 16,
+                              narrationRange: narrationBlockRange(
+                                range: widget.activeNarrationRange,
+                                documentVersion: widget.document.version,
+                                sectionId: _section!.id,
+                                block: block,
+                              ),
                             ),
                           SizedBox(height: layout.viewportHeight),
                         ],
@@ -815,7 +848,12 @@ class _TextViewportState extends State<TextViewport>
                           onSelectedBlock: (block) => _selectedBlock = block,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: _pageSlices(layout.pages[_page]),
+                            children: textPageSlices(
+                              layout.pages[_page],
+                              documentVersion: widget.document.version,
+                              sectionId: _section!.id,
+                              activeNarrationRange: widget.activeNarrationRange,
+                            ),
                           ),
                         ),
                         if (_turn?.current != null)
@@ -904,30 +942,5 @@ class _TextViewportState extends State<TextViewport>
         );
       },
     );
-  }
-
-  List<Widget> _pageSlices(List<TextLine> page) {
-    final slices = <Widget>[];
-    var start = 0;
-    while (start < page.length) {
-      var end = start + 1;
-      while (end < page.length && page[end].block == page[start].block) {
-        end++;
-      }
-      final first = page[start];
-      final last = page[end - 1];
-      slices.add(
-        BlockSlice(
-          block: first.block,
-          top: first.top,
-          height: last.top + last.height - first.top,
-          start: first.start,
-          end: last.end,
-          bottomPadding: end < page.length ? 16 : 0,
-        ),
-      );
-      start = end;
-    }
-    return slices;
   }
 }

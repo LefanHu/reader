@@ -13,6 +13,7 @@ class ReaderNavigationBar extends StatelessWidget {
     required this.onNext,
     required this.onPreviousChapter,
     required this.onNextChapter,
+    this.listeningStatus,
   });
 
   /// Publication-wide reading progress.
@@ -38,6 +39,10 @@ class ReaderNavigationBar extends StatelessWidget {
 
   /// Moves to the next chapter.
   final VoidCallback onNextChapter;
+
+  /// Optional persistent listening indicator in the existing progress slot.
+  /// Its presence never changes the reserved 62-pixel navigation height.
+  final Widget? listeningStatus;
   @override
   Widget build(BuildContext context) => SizedBox(
     height: 62,
@@ -56,14 +61,24 @@ class ReaderNavigationBar extends StatelessWidget {
           icon: Icon(rightToLeft ? Icons.chevron_right : Icons.chevron_left),
         ),
         Expanded(
-          child: Semantics(
-            label: '${(progress * 100).round()} percent read',
-            child: LinearProgressIndicator(
-              value: progress,
-              minHeight: 3,
-              backgroundColor: foreground.withValues(alpha: .16),
-              color: Theme.of(context).colorScheme.primary,
-            ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (listeningStatus != null) ...[
+                listeningStatus!,
+                const SizedBox(height: 6),
+              ],
+              Semantics(
+                label: '${(progress * 100).round()} percent read',
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 3,
+                  backgroundColor: foreground.withValues(alpha: .16),
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+            ],
           ),
         ),
         Padding(

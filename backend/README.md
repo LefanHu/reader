@@ -169,10 +169,11 @@ Authenticated routes:
 The private `/internal/narration/:jobId` worker transaction claims each job with a
 four-minute lease and unique claim token. Its OpenAI Realtime response uses
 `gpt-realtime-2.1-mini`, fixed narration instructions, no tools, isolated input,
-24 kHz mono PCM and a three-minute timeout. Refusal, incomplete output, invalid
-PCM and transcript mismatch produce no published asset. Transcript comparison
-removes punctuation and collapses whitespace while retaining word boundaries,
-case and order. This safeguard cannot establish the accuracy of the audio itself.
+24 kHz mono PCM and a three-minute timeout. Refusal, incomplete output, empty,
+misaligned or oversized PCM produce no published asset. Successfully completed
+audio is accepted independently of absent or mismatching transcript metadata;
+transcript events are ignored. The provider is instructed to read the exact source
+passage, but this service does not verify spoken-text fidelity.
 See [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations)
 and [the TTS migration notice](https://developers.openai.com/api/docs/deprecations).
 

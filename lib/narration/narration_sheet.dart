@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app/reader_controller.dart';
@@ -6,7 +8,7 @@ import '../text/document.dart';
 import '../text/text_position.dart';
 import 'session.dart';
 
-/// Opens listening controls, registering through Auth/App Check when necessary.
+/// Shows controls before loading or authenticating, so startup is never hidden.
 /// A complete [start] begins playback there without committing reading progress.
 Future<void> showNarrationSheet(
   BuildContext context,
@@ -14,8 +16,7 @@ Future<void> showNarrationSheet(
   CatalogBook book, {
   TextPosition? start,
 }) async {
-  final session = controller.narration;
-  if (session == null) {
+  if (controller.narration == null) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Narration is not configured in this build.'),
@@ -23,77 +24,184 @@ Future<void> showNarrationSheet(
     );
     return;
   }
-  try {
-    await session.attach(book);
-    if (!context.mounted) return;
-    if (session.manifest.cloudBookId == null) {
-      if (!session.api.configured) {
-        throw StateError('Narration is not configured in this build.');
-      }
-      await controller.registerNarration(book);
-    }
-    if (!context.mounted) return;
-    if (session.book?.hash != book.hash) return;
-    if (start != null) {
-      await session.playFrom(start);
-      if (!context.mounted || session.book?.hash != book.hash) return;
-    }
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => NarrationSheet(controller: controller),
-    );
-  } on Object catch (error) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.toString())));
-    }
-  }
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    builder: (_) =>
+        NarrationSheet(controller: controller, book: book, start: start),
+  );
 }
 
-/// Renders shared playback and global preferences without owning an audio engine.
-class NarrationSheet extends StatelessWidget {
-  /// Uses the app-lifetime narration session and controller notification source.
-  const NarrationSheet({super.key, required this.controller});
+/// Themed listening controls borrowing the app-lifetime narration engine.
+/// Only startup/action presentation is local; playback and preferences continue
+/// to use the sole shared notifier, [ReaderController].
+class NarrationSheet extends StatefulWidget {
+  /// An optional [book] is attached after the sheet is visible. Only a cloud
+  /// source registers it; on-device synthesis needs no account.
+  /// Without it, controls use the already attached session.
+  const NarrationSheet({
+    super.key,
+    required this.controller,
+    this.book,
+    this.start,
+  });
 
   /// Shared owner of playback, global preferences, and account transactions.
   final ReaderController controller;
+
+  /// Requested publication, also displayed while attachment is pending.
+  final CatalogBook? book;
+
+  /// Optional explicit playback start, never a committed reading anchor.
+  final TextPosition? start;
+
+  @override
+  State<NarrationSheet> createState() => _NarrationSheetState();
+}
+
+class _NarrationSheetState extends State<NarrationSheet> {
+  bool _opening = false;
+  String? _activity;
+  String? _actionError;
+  Future<void> Function()? _retry;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.book != null) {
+      _opening = true;
+      _activity = 'Preparing listening…';
+      unawaited(_open());
+    }
+  }
+
+  /// Session generations remain authoritative. Dismissing the sheet stops the
+  /// startup chain at its next boundary, but never disposes or pauses playback.
+  Future<void> _open() async {
+    final session = widget.controller.narration!;
+    final book = widget.book!;
+    setState(() {
+      _opening = true;
+      _activity = 'Preparing listening…';
+      _actionError = null;
+      _retry = null;
+    });
+    try {
+      await session.attach(book);
+      if (!mounted) return;
+      if (session.book?.hash != book.hash) {
+        throw StateError('This book is no longer available for listening.');
+      }
+      if (session.source.requiresCloudRegistration &&
+          session.manifest.cloudBookId == null) {
+        if (!session.api.configured) {
+          throw StateError('Narration is not configured in this build.');
+        }
+        setState(() => _activity = 'Connecting narration…');
+        await widget.controller.registerNarration(book);
+      }
+      if (!mounted) return;
+      if (session.book?.hash != book.hash || !session.ready) {
+        throw StateError('This book is no longer available for listening.');
+      }
+      setState(() {
+        _opening = false;
+        _activity = null;
+      });
+      if (widget.start != null) await session.playFrom(widget.start!);
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _opening = false;
+        _activity = null;
+        _actionError = error.toString();
+        _retry = _open;
+      });
+    }
+  }
+
+  /// Surface action failures in the sheet without blocking local reading.
+  Future<void> _perform(Future<void> Function() action) async {
+    setState(() {
+      _actionError = null;
+      _retry = null;
+    });
+    try {
+      await action();
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError = error.toString();
+        _retry = () => _perform(action);
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: controller,
+    listenable: widget.controller,
     builder: (context, _) {
+      final controller = widget.controller;
       final session = controller.narration!;
-      if (session.book == null) {
-        return const SafeArea(
-          child: Padding(
-            padding: EdgeInsets.all(20),
-            child: Text('Narration stopped'),
-          ),
-        );
-      }
+      final book = widget.book ?? session.book;
+      final attached = book != null && session.book?.hash == book.hash;
+      final ready = attached && !_opening && session.ready;
+      final cloud = session.source.requiresCloudRegistration;
+      final voices = session.source.voices;
+      final selectedVoice = controller.preferences.settings.narrationVoice;
+      final selectedDescriptor = voices
+          .where((voice) => voice.identifier == selectedVoice)
+          .firstOrNull;
+      final ownsPosition = attached && session.ownsPosition(book);
+      final error = _actionError ?? (attached ? session.error : null);
+      final loading =
+          _opening ||
+          (attached &&
+              session.status == NarrationStatus.buffering &&
+              session.error == null);
+      final status =
+          _activity ??
+          (error != null
+              ? 'Listening needs attention'
+              : !attached
+              ? 'Narration stopped'
+              : switch (session.status) {
+                  NarrationStatus.buffering => 'Loading audio…',
+                  NarrationStatus.complete => 'Book complete',
+                  NarrationStatus.playing => 'Listening',
+                  _ => 'Paused',
+                });
+      final theme = Theme.of(context);
+      final colors = theme.colorScheme;
       return SafeArea(
+        top: false,
         child: ConstrainedBox(
           constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * .85,
+            maxWidth: 600,
           ),
           child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'AI narration',
-                          style: Theme.of(context).textTheme.headlineSmall,
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        cloud ? 'AI narration' : 'On-device narration',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: colors.onSurfaceVariant,
                         ),
                       ),
+                    ),
+                    if (cloud)
                       PopupMenuButton<bool>(
                         tooltip: 'Cloud account',
-                        icon: const Icon(Icons.manage_accounts),
+                        icon: const Icon(Icons.manage_accounts_outlined),
                         itemBuilder: (_) => const [
                           PopupMenuItem(value: false, child: Text('Sign out')),
                           PopupMenuItem(
@@ -104,157 +212,412 @@ class NarrationSheet extends StatelessWidget {
                         onSelected: (delete) =>
                             _accountAction(context, controller, delete),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Semantics(
-                    liveRegion: true,
-                    child: Text(
-                      session.error ??
-                          switch (session.status) {
-                            NarrationStatus.buffering => 'Buffering — cached audio is available offline. Retry when connected.',
-                            NarrationStatus.complete => 'Book complete',
-                            NarrationStatus.playing => 'Listening',
-                            _ => 'Paused',
-                          },
+                    IconButton(
+                      tooltip: 'Close listening controls',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Semantics(
+                  header: true,
+                  child: Text(
+                    book?.title ?? 'Listening',
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    children: [
-                      IconButton(
-                        tooltip: 'Back 15 seconds',
-                        icon: const Icon(Icons.replay),
-                        onPressed: () => session.seek(
-                          session.player.position - const Duration(seconds: 15),
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: session.ownsPosition(session.book!)
-                            ? 'Pause narration'
-                            : 'Play narration',
-                        icon: Icon(
-                          session.ownsPosition(session.book!)
-                              ? Icons.pause
-                              : Icons.play_arrow,
-                        ),
-                        onPressed: () => session.ownsPosition(session.book!)
-                            ? session.pause()
-                            : session.play(),
-                      ),
-                      IconButton(
-                        tooltip: 'Forward 15 seconds',
-                        icon: const Icon(Icons.forward),
-                        onPressed: () => session.seek(
-                          session.player.position + const Duration(seconds: 15),
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Stop narration',
-                        icon: const Icon(Icons.stop),
-                        onPressed: session.stop,
-                      ),
-                    ],
-                  ),
-                  DropdownButtonFormField<String>(
-                    key: ValueKey(
-                      controller.preferences.settings.narrationVoice,
-                    ),
-                    initialValue:
-                        controller.preferences.settings.narrationVoice,
-                    decoration: const InputDecoration(
-                      labelText: 'Voice · all books',
-                    ),
-                    items: const [
-                      DropdownMenuItem(value: 'marin', child: Text('Marin')),
-                      DropdownMenuItem(value: 'cedar', child: Text('Cedar')),
-                    ],
-                    onChanged: (voice) =>
-                        controller.preferences.configure(narrationVoice: voice),
-                  ),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<double>(
-                    key: ValueKey(
-                      controller.preferences.settings.narrationSpeed,
-                    ),
-                    initialValue:
-                        controller.preferences.settings.narrationSpeed,
-                    decoration: const InputDecoration(
-                      labelText: 'Speed · all books',
-                    ),
-                    items: [.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-                        .map(
-                          (speed) => DropdownMenuItem(
-                            value: speed,
-                            child: Text('$speed×'),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (speed) =>
-                        controller.preferences.configure(narrationSpeed: speed),
-                  ),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    decoration: const InputDecoration(labelText: 'Chapter'),
-                    isExpanded: true,
-                    items: session.document?.sections
-                        .map(
-                          (section) => DropdownMenuItem(
-                            value: section.id,
-                            child: Text(
-                              section.title,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (id) async {
-                      if (id == null) return;
-                      await session.navigate(session.book!);
-                      final section = await session.documents.loadSection(
-                        session.book!.path,
-                        id,
-                      );
-                      final document = session.document as TextDocument;
-                      await controller.savePosition(
-                        session.book!,
-                        section.start,
-                        document.progress(section, section.start),
-                        fromNarration: true,
-                      );
-                      controller.notifyNarrationNavigation();
-                    },
-                  ),
-                  const SizedBox(height: 16),
+                ),
+                if (book?.authors.isNotEmpty ?? false) ...[
+                  const SizedBox(height: 4),
                   Text(
-                    session.remaining == null
-                        ? 'Cached replay is free. Connect to refresh allowance.'
-                        : '${session.remaining} input characters remaining this UTC month',
-                  ),
-                  TextButton(
-                    onPressed: () async {
-                      try {
-                        final config = await session.api.configuration();
-                        session.remaining = config['remaining'] as int?;
-                        controller.notifyNarrationNavigation();
-                      } on Object {
-                        /* Offline cached listening remains available. */
-                      }
-                    },
-                    child: const Text('Refresh allowance'),
-                  ),
-                  TextButton(
-                    onPressed: session.clear,
-                    child: const Text('Clear downloaded audio'),
+                    book!.authors.join(', '),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
                   ),
                 ],
-              ),
+                const SizedBox(height: 20),
+                _ListeningStatus(
+                  status: status,
+                  cloud: cloud,
+                  loading: loading,
+                  error: error,
+                  retry: error == null
+                      ? null
+                      : () {
+                          final retry = _retry;
+                          if (retry != null) {
+                            unawaited(retry());
+                          } else if (ready) {
+                            unawaited(_perform(session.play));
+                          }
+                        },
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: Tooltip(
+                    message: ownsPosition
+                        ? 'Pause narration'
+                        : 'Play narration',
+                    child: FilledButton.icon(
+                      key: const ValueKey('narration-transport'),
+                      onPressed: !ready
+                          ? null
+                          : () => _perform(
+                              ownsPosition ? session.pause : session.play,
+                            ),
+                      icon: Icon(ownsPosition ? Icons.pause : Icons.play_arrow),
+                      label: Text(ownsPosition ? 'Pause' : 'Play'),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // Wrap rather than shrink labels at narrow iOS widths or large
+                // accessibility text; every transport target remains reachable.
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  children: [
+                    Tooltip(
+                      message: 'Back 15 seconds',
+                      child: TextButton.icon(
+                        onPressed: ready && session.manifest.chunkId != null
+                            ? () => _perform(
+                                () => session.seek(
+                                  session.player.position -
+                                      const Duration(seconds: 15),
+                                ),
+                              )
+                            : null,
+                        icon: const Icon(Icons.replay),
+                        label: const Text('−15 sec'),
+                      ),
+                    ),
+                    Tooltip(
+                      message: 'Forward 15 seconds',
+                      child: TextButton.icon(
+                        onPressed: ready && session.manifest.chunkId != null
+                            ? () => _perform(
+                                () => session.seek(
+                                  session.player.position +
+                                      const Duration(seconds: 15),
+                                ),
+                              )
+                            : null,
+                        icon: const Icon(Icons.forward),
+                        label: const Text('+15 sec'),
+                      ),
+                    ),
+                    Tooltip(
+                      message: 'Stop narration',
+                      child: TextButton.icon(
+                        onPressed: ready ? () => _perform(session.stop) : null,
+                        icon: const Icon(Icons.stop),
+                        label: const Text('Stop'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Listening preferences',
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Voice and speed apply to all books.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  key: ValueKey(selectedVoice),
+                  initialValue: selectedVoice,
+                  isExpanded: true,
+                  isDense: false,
+                  itemHeight: null,
+                  menuMaxHeight: 360,
+                  decoration: InputDecoration(
+                    labelText: 'Voice · all books',
+                    helperText: selectedDescriptor == null
+                        ? 'Unavailable. Choose an installed voice for new audio.'
+                        : '${selectedDescriptor.language} · ${selectedDescriptor.quality}',
+                    helperMaxLines: 3,
+                  ),
+                  selectedItemBuilder: (context) => [
+                    if (selectedDescriptor == null)
+                      Text(
+                        'Unavailable: $selectedVoice',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    for (final voice in voices)
+                      Text(
+                        voice.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
+                  items: [
+                    if (selectedDescriptor == null)
+                      DropdownMenuItem(
+                        value: selectedVoice,
+                        enabled: false,
+                        child: Text('Unavailable: $selectedVoice'),
+                      ),
+                    for (final voice in voices)
+                      DropdownMenuItem(
+                        value: voice.identifier,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(voice.name),
+                              Text(
+                                '${voice.language} · ${voice.quality}',
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                  onChanged: voices.isEmpty
+                      ? null
+                      : (voice) {
+                          if (voice == null) return;
+                          unawaited(
+                            _perform(
+                              () => controller.preferences.configure(
+                                narrationVoice: voice,
+                              ),
+                            ),
+                          );
+                        },
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<double>(
+                  key: ValueKey(controller.preferences.settings.narrationSpeed),
+                  initialValue: controller.preferences.settings.narrationSpeed,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Speed · all books',
+                  ),
+                  items: [.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+                      .map(
+                        (speed) => DropdownMenuItem(
+                          value: speed,
+                          child: Text('$speed×'),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (speed) => _perform(
+                    () =>
+                        controller.preferences.configure(narrationSpeed: speed),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  decoration: const InputDecoration(labelText: 'Chapter'),
+                  isExpanded: true,
+                  items: attached
+                      ? session.document?.sections
+                            .map(
+                              (section) => DropdownMenuItem(
+                                value: section.id,
+                                child: Text(
+                                  section.title,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            )
+                            .toList()
+                      : null,
+                  onChanged: !ready
+                      ? null
+                      : (id) {
+                          if (id == null) return;
+                          unawaited(
+                            _perform(() async {
+                              final target = session.book!;
+                              await session.navigate(target);
+                              final section = await session.documents
+                                  .loadSection(target.path, id);
+                              // Loading a chapter must not navigate a replaced book.
+                              if (!mounted ||
+                                  session.book?.hash != target.hash) {
+                                return;
+                              }
+                              final document = session.document as TextDocument;
+                              await controller.savePosition(
+                                target,
+                                section.start,
+                                document.progress(section, section.start),
+                                fromNarration: true,
+                              );
+                              controller.notifyNarrationNavigation();
+                            }),
+                          );
+                        },
+                ),
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 8),
+                Text(
+                  !cloud
+                      ? 'Speech is generated on this device using installed voices. No cloud account or allowance is needed.'
+                      : attached && session.remaining != null
+                      ? '${session.remaining} input characters remaining this UTC month'
+                      : 'Cached replay is free. Connect to refresh allowance.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    if (cloud)
+                      TextButton(
+                        onPressed: !ready
+                            ? null
+                            : () => _perform(() async {
+                                final config = await session.api
+                                    .configuration();
+                                if (!mounted ||
+                                    session.book?.hash != book.hash) {
+                                  return;
+                                }
+                                session.remaining = config['remaining'] as int?;
+                                controller.notifyNarrationNavigation();
+                              }),
+                        child: const Text('Refresh allowance'),
+                      ),
+                    TextButton(
+                      onPressed: !ready ? null : () => _perform(session.clear),
+                      child: Text(
+                        cloud
+                            ? 'Clear downloaded audio'
+                            : 'Clear narration audio',
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ),
       );
     },
   );
+}
+
+/// Accessible status stays in the sheet through startup and recoverable errors.
+class _ListeningStatus extends StatelessWidget {
+  const _ListeningStatus({
+    required this.status,
+    required this.cloud,
+    required this.loading,
+    required this.error,
+    required this.retry,
+  });
+
+  final String status;
+
+  /// Local failures must not imply that on-device speech needs a connection.
+  final bool cloud;
+  final bool loading;
+  final String? error;
+  final VoidCallback? retry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        key: const ValueKey('narration-status'),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: error == null
+              ? colors.surfaceContainerLow
+              : colors.errorContainer,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: colors.outlineVariant),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                if (loading)
+                  const SizedBox(
+                    key: ValueKey('narration-loading'),
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  Icon(
+                    error == null
+                        ? Icons.headphones_outlined
+                        : Icons.error_outline,
+                    color: error == null
+                        ? colors.primary
+                        : colors.onErrorContainer,
+                    size: 22,
+                  ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    status,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: error == null
+                          ? colors.onSurface
+                          : colors.onErrorContainer,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 8),
+              Text(error!, style: TextStyle(color: colors.onErrorContainer)),
+              const SizedBox(height: 8),
+              Text(
+                cloud
+                    ? 'Your book remains available to read. Cached audio can be '
+                          'played offline; retry when connected.'
+                    : 'Your book remains available to read. Choose an installed '
+                          'voice and retry; on-device speech needs no connection.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.onErrorContainer,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: TextButton.icon(
+                  key: const ValueKey('narration-retry'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: colors.onErrorContainer,
+                  ),
+                  onPressed: retry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// Account deletion requires an explicit user action and preserves local books.

@@ -6,6 +6,7 @@ import express from "express";
 import type { Firestore } from "firebase-admin/firestore";
 import { Timestamp } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
+import type WebSocket from "ws";
 import {
   NarrationBackend,
   NarrationError,
@@ -15,7 +16,6 @@ import {
 } from "./narration.js";
 import {
   RealtimeNarrationProvider,
-  narrationTranscript,
   narrationWav,
 } from "./narration-provider.js";
 import {
@@ -568,15 +568,6 @@ test("bounded Unicode input validates UTF-16 counts and exact text digests", () 
     input("\0"),
   ])
     assert.throws(() => validateNarrationInput(value));
-  assert.equal(narrationTranscript("Hello,\nworld!"), "Hello world");
-  assert.notEqual(
-    narrationTranscript("Hello world"),
-    narrationTranscript("world Hello"),
-  );
-  assert.notEqual(
-    narrationTranscript("Hello"),
-    narrationTranscript("Hello added"),
-  );
   assert.equal(narrationLimits({}).monthly, 500000);
   assert.equal(narrationLimits({}).daily, 200000);
   assert.throws(() => narrationLimits({ NARRATION_DAILY_CHARACTERS: "NaN" }));
@@ -817,15 +808,17 @@ class ProviderSocket extends EventEmitter {
   }
 }
 
-test("provider publishes only matching, successfully completed narration and uses no tools", async () => {
+test("provider accepts completed audio regardless of transcript metadata and uses no tools", async () => {
   process.env.OPENAI_API_KEY = "test-only";
   try {
     for (const transcript of [
+      undefined,
       "Hello world.",
       "world Hello",
       "Hello",
       "Hello world added",
       "Helloworld",
+      "x".repeat(20001),
     ]) {
       const socket = new ProviderSocket();
       let submitted = 0;
@@ -847,18 +840,53 @@ test("provider publishes only matching, successfully completed narration and use
         type: "response.output_audio.delta",
         delta: Buffer.alloc(100).toString("base64"),
       });
+      if (transcript !== undefined)
+        socket.event({
+          type: "response.output_audio_transcript.delta",
+          delta: transcript,
+        });
       socket.event({
-        type: "response.output_audio_transcript.delta",
-        delta: transcript,
+        type: "response.done",
+        response: { status: "completed" },
+      });
+      const audio = await generated;
+      assert.equal(audio.readUInt32LE(24), 24000);
+      assert.equal(audio.readUInt16LE(22), 1);
+      assert.equal(audio.readUInt32LE(40), 100);
+      assert.equal(submitted, 1);
+      assert(socket.closed);
+    }
+    for (const pcm of [
+      Buffer.alloc(0),
+      Buffer.alloc(1),
+      Buffer.alloc(32 * 1024 * 1024 - 43),
+    ]) {
+      const socket = new ProviderSocket();
+      // The fake implements the used methods; ws types its fluent on return as WebSocket.
+      const injected = socket as unknown as Pick<WebSocket, "on" | "send" | "close">;
+      const generated = new RealtimeNarrationProvider(
+        () => injected,
+      ).generate("Hello", "marin", async () => {});
+      socket.event({
+        type: "response.output_audio.delta",
+        delta: pcm.toString("base64"),
       });
       socket.event({
         type: "response.done",
         response: { status: "completed" },
       });
-      if (transcript === "Hello world.")
-        assert.equal((await generated).readUInt32LE(24), 24000);
-      else await assert.rejects(generated);
-      assert.equal(submitted, 1);
+      await assert.rejects(generated);
+      assert(socket.closed);
+    }
+    {
+      const socket = new ProviderSocket();
+      // The fake implements the used methods; ws types its fluent on return as WebSocket.
+      const injected = socket as unknown as Pick<WebSocket, "on" | "send" | "close">;
+      const generated = new RealtimeNarrationProvider(
+        () => injected,
+      ).generate("Hello", "marin", async () => {});
+      socket.event({ type: "error", error: { message: "Request refused" } });
+      await assert.rejects(generated);
       assert(socket.closed);
     }
     for (const status of ["failed", "incomplete", "cancelled"]) {
@@ -897,7 +925,7 @@ test("failed provider retries consume new allowance and are bounded", async () =
     const id = await app.book();
     app.provider(async (_text, _voice, submit) => {
       await submit();
-      throw new Error("transcript mismatch");
+      throw new Error("Narration provider connection failed");
     });
     for (let attempt = 0; attempt < 2; attempt++) {
       const job = (await app.request(`/books/${id}/jobs`, "POST", input())).body

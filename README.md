@@ -380,15 +380,17 @@ or larger type use compact navigation. Choices support keyboard activation and
 announce selection on the actionable control.
 
 Voice and listening speed are global across books. Settings and the listening
-sheet edit the same saved values. Speed changes immediately without regenerating
-audio. Changing voice pauses listening at the committed text position and waits
-for Play; uncached speech then consumes allowance. Existing per-book registrations,
-cached audio, and text progress remain intact. Legacy narration sidecar voice
-values identify cached/resumable audio and do not override global preferences.
+sheet edit the same saved values. iOS lists installed ordinary Apple voices;
+macOS retains Marin/Cedar. Speed changes immediately without regenerating audio.
+Changing voice pauses playback, invalidates the old audio offset, and waits for
+Play. Missing saved Apple voices remain visibly unavailable until explicitly
+replaced; unrelated preference edits still work. Existing cloud registrations,
+cached audio, and complete text anchors remain intact. Legacy narration sidecar
+voice values identify cached/resumable audio, not per-book preference overrides.
 
 Library filter/sort defaults are saved separately from temporary library choices.
 Reset preferences restores the app-wide defaults without deleting books, account,
-illustration consent, registrations, or caches. Clearing downloaded narration stops
+illustration consent, registrations, or caches. Clearing narration audio stops
 playback and invalidates audio resume offsets while preserving books, registrations,
 and complete text anchors.
 The displayed cache size refreshes after clearing finishes.
@@ -402,21 +404,42 @@ local settings without an API deployment. Payments and subscriptions are deferre
 
 ## Listening to books
 
-The Listen toolbar action opens listening controls, automatically registering the
-book when needed. Narration has no consent dialog or per-book prose-upload gate;
-Google sign-in and valid App Check remain prerequisites for cloud requests.
-Illustration consent is unchanged. Narration supports Marin/Cedar voices, 0.75–2×
-speed, chapter selection, play/pause, ±15-second audio seeking, remaining allowance
-and local cache clearing.
+The Listen toolbar action opens listening controls. On iOS, installed Apple voices
+synthesize exact normalized prose on-device: no Google sign-in, App Check, book
+registration, allowance request, or cloud generation is needed. Local synthesis
+errors never fall back to cloud. The first short sentence clip starts playback
+before the rest of its paragraph is synthesized; overlong sentences split near
+300 UTF-16 units at clause, whitespace, or complete-grapheme boundaries.
+
+macOS retains the real cloud engine. Opening its listening controls automatically
+registers the book when needed, with Google sign-in and valid App Check required
+for cloud requests. Narration has no consent dialog; illustration consent is
+unchanged. Both engines support 0.75–2× speed, chapter selection, play/pause,
+±15-second audio seeking, and local cache clearing. Only cloud controls show
+generation allowance and cloud-account actions.
+
+The themed listening sheet appears before attachment or registration finishes,
+shows loading inline, and keeps recoverable errors and Retry beside labeled
+transport controls. Voice and speed remain global preferences.
+During playback, iOS highlights native spoken-word bounds where marker offsets
+have been verified for the installed voice, OS, and source PCM format. Other
+combinations use native-tokenized sentence fallback, never estimated word times;
+macOS retains paragraph fallback. Range painting clips to measured glyph boxes,
+including RTL and page fragments. Silent following keeps the current native cue
+or actual clip start visible without committing progress or curling the page.
+Playing, paused, and buffering status remain visible in reserved bottom chrome
+even when reading controls are hidden; status changes never resize the viewport.
+Pausing or buffering removes the highlight. The mini-player reports actual state.
 One audio handler continues playback in the library and while the device is
 locked; the library includes a mini-player. Opening another book or navigating
 manually pauses narration and invalidates the old audio offset.
 The native service is initialized once per Flutter engine. Closing a controller
 stops its audio and unbinds callbacks without replacing the shared handler; a
 speed-only edit immediately updates native media state as well as playback.
-The narration sheet's Cloud account menu supports signing out and deleting cloud
-data on either platform. Account deletion clears downloaded narration while
-preserving local books and reading positions.
+The macOS narration sheet's Cloud account menu supports signing out and deleting
+cloud data. Settings retains shared account/privacy actions on both platforms,
+including old iOS cloud registrations. Deletion purges server data first and
+clears narration audio while preserving local books and complete reading positions.
 
 By default, listening starts at the committed logical reading position. Read from here in
 the text-selection menu instead starts at the beginning of the paragraph containing
@@ -426,14 +449,18 @@ without changing the catalog anchor merely for selecting or starting narration.
 Only naturally completed chunks advance prose or unlock illustrations. Downloads,
 prefetch and audio seeking never advance progress. After seeking, replay from the
 committed passage to grant completion. Pausing restores the committed listening
-anchor without continuous scrolling or word highlighting. Interrupted chunks
-retain the complete committed position, separate complete playback start, chunk
-identity and audio offset, including selected playback that has not yet completed.
-Cached replay works offline and consumes no generation allowance; a 250 MiB LRU
-cache bounds local audio. Changing speed reuses audio; changing voice generates
-new speech.
+anchor. Following or highlighting a playing range never commits progress.
+Interrupted chunks retain the complete committed position, separate complete
+playback start, chunk identity and audio offset, including selected playback that
+has not yet completed.
+Cached replay works offline and consumes no cloud generation allowance; a 250 MiB
+LRU bounds audio and optional timing companions, pinning the active clip plus at
+most two lookahead clips. Changing speed reuses audio; changing voice synthesizes
+new speech. Interrupted local audio offsets are invalidated when the engine,
+sentence policy, OS synthesis identity, or voice changes; complete anchors survive.
 
-Narration remains remotely disabled by default. See [backend configuration](backend/README.md#ai-narration-disabled-by-default)
+Cloud narration remains remotely disabled by default; local iOS listening does
+not depend on that flag. See [backend configuration](backend/README.md#ai-narration-disabled-by-default)
 and the guarantees in [AGENTS.md](AGENTS.md#narration-guarantees). Generated Firebase
 Dart defines include separate iOS/macOS app identifiers and API keys under one
 project. Local macOS builds use development signing and a matching provisioning
@@ -443,8 +470,13 @@ later; the OS version alone does not guarantee App Attest availability. Validate
 attestation on the intended distribution before enabling rollout. Existing
 offline reading remains available on supported older systems.
 
-The **Narration** native test group uses real imports, local audio files, native
-audio decoding, storage and rendering, with fake cloud generation. Run it with
-`flutter test integration_test/reader_test.dart -d <device> --plain-name Narration`.
-Signed-device background/media actions and representative multilingual narration
-still require listening checks before enabling rollout.
+The **Narration** native test group uses real imports, storage, rendering, decoding,
+Apple sentence tokenization and on-device synthesis for local flows, plus fake
+cloud generation for cloud/privacy regressions. Run it with
+`flutter test integration_test/reader_test.dart -d <device> --no-uninstall --plain-name Narration`.
+Marker timing has been probed on the iOS 27.0 simulator with the installed
+Samantha voice and mono Float32/22,050 Hz source buffers. Other combinations
+retain sentence fallback until their offset origin and format are verified.
+Physical-device offline listening, locked/background continuation beyond the
+buffer window, media controls, interruptions/headphone removal, multilingual
+audio quality, and cold/warm latency still require a connected signed device.

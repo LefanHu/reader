@@ -8,6 +8,7 @@ import 'package:reader/app/reader_controller.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/narration/session.dart';
+import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/reader/reader_screen.dart';
 import 'package:reader/theme.dart';
@@ -17,6 +18,7 @@ import 'package:reader/text/text_section.dart' as text;
 import 'package:reader/text/viewport.dart';
 
 import 'fixtures/catalog_book.dart';
+import 'support/controller_lifecycle.dart';
 import 'support/fake_illustration_api.dart';
 import 'support/fake_picker.dart';
 import 'support/fake_word_counter.dart';
@@ -28,6 +30,7 @@ import 'support/test_controller.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
 import 'support/memory_narration_store.dart';
+import 'support/fixture_local_narration_source.dart';
 
 void main() {
   setUpAll(() async {
@@ -54,6 +57,7 @@ void main() {
         illustrationStore: MemoryIllustrationStore(),
         wordCounter: FakeWordCounter(),
         narrationApi: api,
+        narrationSource: CloudNarrationSource(api),
         narrationPlayer: player,
         narrationStore: MemoryNarrationStore(),
         narrationDocuments: documents,
@@ -61,9 +65,7 @@ void main() {
       await controller.initialize();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox());
-        controller.dispose();
-        await tester.pumpAndSettle();
-        await controller.flush();
+        await disposeControllerWithFrames(tester, controller);
       });
       await tester.pumpWidget(
         MaterialApp(
@@ -80,7 +82,7 @@ void main() {
       await tester.tap(find.byTooltip('Listen'));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
-      expect(find.text('AI narration'), findsOneWidget);
+      expect(find.byType(NarrationSheet), findsOneWidget);
       expect(api.registrations, 1);
       expect(api.requests, isEmpty);
       expect(player.playing, isFalse);
@@ -116,6 +118,7 @@ void main() {
         illustrationStore: MemoryIllustrationStore(),
         wordCounter: FakeWordCounter(),
         narrationApi: api,
+        narrationSource: CloudNarrationSource(api),
         narrationPlayer: player,
         narrationStore: cache,
         narrationDocuments: MemoryDocumentStore(),
@@ -123,9 +126,7 @@ void main() {
       await controller.initialize();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox());
-        controller.dispose();
-        await tester.pumpAndSettle();
-        await controller.flush();
+        await disposeControllerWithFrames(tester, controller);
       });
       await tester.pumpWidget(
         MaterialApp(
@@ -143,7 +144,7 @@ void main() {
       await tester.tap(find.text('Read from here'));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
-      expect(find.text('AI narration'), findsOneWidget);
+      expect(find.byType(NarrationSheet), findsOneWidget);
       expect(api.registrations, 1);
       expect(api.requests.first.start, start);
       expect(player.playing, isTrue);
@@ -186,6 +187,7 @@ void main() {
         illustrationStore: MemoryIllustrationStore(),
         wordCounter: FakeWordCounter(),
         narrationApi: api,
+        narrationSource: CloudNarrationSource(api),
         narrationPlayer: player,
         narrationStore: MemoryNarrationStore(),
         narrationDocuments: documents,
@@ -193,9 +195,7 @@ void main() {
       await controller.initialize();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox());
-        controller.dispose();
-        await tester.pumpAndSettle();
-        await controller.flush();
+        await disposeControllerWithFrames(tester, controller);
       });
       await tester.pumpWidget(
         MaterialApp(
@@ -293,8 +293,11 @@ void main() {
     },
   );
 
-  testWidgets('narration controls visual baseline', (tester) async {
+  testWidgets('cloud listening retains cache and account privacy controls', (
+    tester,
+  ) async {
     final book = testBook(), documents = MemoryDocumentStore();
+    final api = FakeNarrationApi();
     final controller = ReaderController(
       catalogStore: MemoryCatalogStore([book]),
       settingsStore: MemorySettingsStore(),
@@ -303,7 +306,8 @@ void main() {
       illustrationApi: FakeIllustrationApi(),
       illustrationStore: MemoryIllustrationStore(),
       wordCounter: FakeWordCounter(),
-      narrationApi: FakeNarrationApi(),
+      narrationApi: api,
+      narrationSource: CloudNarrationSource(api),
       narrationPlayer: FakeNarrationPlayer(),
       narrationStore: MemoryNarrationStore(),
       narrationDocuments: documents,
@@ -311,9 +315,7 @@ void main() {
     await controller.initialize();
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox());
-      controller.dispose();
-      await tester.pumpAndSettle();
-      await controller.flush();
+      await disposeControllerWithFrames(tester, controller);
     });
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -332,12 +334,9 @@ void main() {
     await controller.registerNarration(book);
     await tester.tap(find.byTooltip('Listen'));
     await tester.pumpAndSettle();
-    await expectLater(
-      find.byType(MaterialApp),
-      matchesGoldenFile('goldens/narration_controls.png'),
-    );
     await controller.narration!.play();
     await tester.pump();
+    await tester.ensureVisible(find.text('Clear downloaded audio'));
     await tester.tap(find.text('Clear downloaded audio'));
     await tester.pumpAndSettle();
     expect(controller.narration!.book, book);
@@ -348,15 +347,16 @@ void main() {
     );
     expect(controller.narration!.manifest.chunkId, isNull);
     expect(tester.takeException(), isNull);
-    final api = controller.narration!.api as FakeNarrationApi;
+    final cloudApi = controller.narration!.api as FakeNarrationApi;
     final anchor = controller.catalog.books.single.lastPosition;
+    await tester.ensureVisible(find.byTooltip('Cloud account'));
     await tester.tap(find.byTooltip('Cloud account'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Delete cloud account'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
-    expect(api.accountDeletions, 0);
+    expect(cloudApi.accountDeletions, 0);
     expect(controller.narration!.manifest.cloudBookId, isNotNull);
     await tester.tap(find.byTooltip('Cloud account'));
     await tester.pumpAndSettle();
@@ -364,10 +364,58 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Delete account'));
     await tester.pumpAndSettle();
-    expect(api.accountDeletions, 1);
+    expect(cloudApi.accountDeletions, 1);
     expect(controller.catalog.books.single.lastPosition, anchor);
     expect(controller.narration!.manifest.cloudBookId, isNull);
-    expect(find.text('AI narration'), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('narration controls visual baseline', (tester) async {
+    final book = testBook(), documents = MemoryDocumentStore();
+    final source = FixtureLocalNarrationSource();
+    final api = FakeNarrationApi();
+    final controller = ReaderController(
+      catalogStore: MemoryCatalogStore([book]),
+      settingsStore: MemorySettingsStore(),
+      importer: BookImporter(root: Directory.systemTemp),
+      picker: FakePicker([]),
+      illustrationApi: FakeIllustrationApi(),
+      illustrationStore: MemoryIllustrationStore(),
+      wordCounter: FakeWordCounter(),
+      narrationApi: api,
+      narrationSource: source,
+      narrationPlayer: FakeNarrationPlayer(),
+      narrationStore: MemoryNarrationStore(),
+      narrationDocuments: documents,
+    );
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox());
+      await disposeControllerWithFrames(tester, controller);
+    });
+    await controller.initialize();
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: buildReaderTheme(ReadingTheme.paper),
+        home: ReaderScreen(
+          book: book,
+          controller: controller,
+          documentStore: documents,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Listen'));
+    await tester.pumpAndSettle();
+    expect(api.registrations, 0);
+    expect(source.renders, 0);
+    expect(controller.preferences.settings.narrationVoice, source.defaultVoice);
+    expect(find.byTooltip('Cloud account'), findsNothing);
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('goldens/narration_controls.png'),
+    );
   });
 }

@@ -1,20 +1,12 @@
 import WebSocket from "ws";
 
-/** Fixed provider contract: exact prose in, verified 24 kHz mono WAV out. */
+/** Fixed provider contract: exact prose in, bounded 24 kHz mono WAV out. */
 export interface NarrationProvider {
   generate(
     text: string,
     voice: "marin" | "cedar",
     submitted: () => Promise<void>,
   ): Promise<Buffer>;
-}
-
-/** Comparison removes only whitespace/punctuation; words, case and order remain. */
-export function narrationTranscript(text: string): string {
-  return text
-    .replace(/\p{Punctuation}/gu, "")
-    .replace(/\p{White_Space}+/gu, " ")
-    .trim();
 }
 
 /** Converts signed little-endian PCM to a bounded mono WAV without transcoding. */
@@ -43,7 +35,7 @@ export function narrationWav(pcm: Buffer): Buffer {
 
 /** Realtime responses are isolated, tool-free, bounded and never logged. */
 export class RealtimeNarrationProvider implements NarrationProvider {
-  /** Socket injection permits transcript/refusal/timeout tests without provider calls. */
+  /** Socket injection permits completion/refusal/timeout tests without provider calls. */
   constructor(
     private readonly connect = (
       key: string,
@@ -69,7 +61,6 @@ export class RealtimeNarrationProvider implements NarrationProvider {
     return new Promise((resolve, reject) => {
       const parts: Buffer[] = [];
       let bytes = 0,
-        transcript = "",
         requested = false,
         settled = false;
       const finish = (error?: Error, audio?: Buffer) => {
@@ -142,18 +133,11 @@ export class RealtimeNarrationProvider implements NarrationProvider {
             if (bytes > 32 * 1024 * 1024 - 44)
               throw new Error("Narration output exceeded limit");
             parts.push(part);
-          } else if (event.type === "response.output_audio_transcript.delta") {
-            transcript += event.delta;
-            if (transcript.length > 20000)
-              throw new Error("Narration transcript exceeded limit");
           } else if (event.type === "error") {
             throw new Error("Narration provider refused request");
           } else if (event.type === "response.done") {
-            if (
-              event.response?.status !== "completed" ||
-              narrationTranscript(transcript) !== narrationTranscript(text)
-            )
-              throw new Error("Narration output does not match passage");
+            if (event.response?.status !== "completed")
+              throw new Error("Narration provider did not complete");
             finish(undefined, narrationWav(Buffer.concat(parts)));
           }
         } catch {

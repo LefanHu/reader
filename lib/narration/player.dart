@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'narration_playback_clock.dart';
+
 /// Playback boundary: completion is a player event, never a seek/download event.
 abstract interface class NarrationPlayer {
   /// Native media actions route back through the session's progress policy.
@@ -12,6 +14,13 @@ abstract interface class NarrationPlayer {
 
   /// Emits the load token on natural completion, rejecting stale native events.
   Stream<int> get completed;
+
+  /// Token-bound source-media snapshots for loads and playback transitions.
+  ///
+  /// Position is sampled from the player, not a queued periodic position event.
+  /// Advancing is true only while playback is playing and ready. Subscribers
+  /// schedule cue boundaries themselves; this is not a position polling stream.
+  Stream<NarrationPlaybackClock> get clockChanges;
 
   /// Current audio offset, used only for interrupted-chunk resume persistence.
   Duration get position;

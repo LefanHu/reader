@@ -4,25 +4,45 @@ import 'package:crypto/crypto.dart';
 
 import '../catalog/catalog_book.dart';
 import '../text/narration_chunk.dart';
+import '../text/narration_range.dart';
 import 'narration_manifest.dart';
 
 /// Cache identity includes owner, source, exact anchors/prose, model and settings.
 String narrationCacheKey(
   CatalogBook book,
   NarrationManifest manifest,
-  NarrationChunk chunk,
-) => narrationFingerprintKey(
-  jsonEncode({
-    'account': manifest.account,
-    'book': book.hash,
-    'document': chunk.start.version,
-    'chunkVersion': narrationChunkVersion,
-    'chunk': chunk.id,
-    'digest': chunk.digest,
-    'model': 'gpt-realtime-2.1-mini',
-    'voice': manifest.voice,
-    'format': 'pcm-24000-mono-v1',
-  }),
+  NarrationChunk chunk, {
+  NarrationRange? sentence,
+}) => narrationFingerprintKey(
+  jsonEncode(
+    manifest.engine == 'openai-realtime'
+        ? {
+            // Keep this cloud identity byte-for-byte compatible with version-1 caches.
+            'account': manifest.account,
+            'book': book.hash,
+            'document': chunk.start.version,
+            'chunkVersion': narrationChunkVersion,
+            'chunk': chunk.id,
+            'digest': chunk.digest,
+            'model': 'gpt-realtime-2.1-mini',
+            'voice': manifest.voice,
+            'format': 'pcm-24000-mono-v1',
+          }
+        : {
+            'engine': manifest.engine,
+            'book': book.hash,
+            'document': chunk.start.version,
+            'start': chunk.start.toJson(),
+            'end': chunk.end.toJson(),
+            'sentence': sentence?.toJson(),
+            'digest': chunk.digest,
+            'segmentationPolicy': manifest.segmentationPolicy,
+            'voice': manifest.voice,
+            'synthesisFingerprint': manifest.synthesisFingerprint,
+            'rate': 'AVSpeechUtteranceDefaultSpeechRate',
+            'format': 'apple-pcm16-native-v1',
+          },
+  ),
 );
 
 /// Hashes canonical generation settings without leaking account IDs in filenames.

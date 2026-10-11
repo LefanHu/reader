@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app/reader_controller.dart';
 import 'narration_sheet.dart';
-import 'session.dart';
+import 'status_indicator.dart';
 
 /// App-wide mini-player stays visible when leaving the reader during listening.
 class NarrationMiniPlayer extends StatelessWidget {
@@ -14,7 +14,7 @@ class NarrationMiniPlayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = controller.narration!;
-    if (session.book == null || session.manifest.cloudBookId == null) {
+    if (!session.ready) {
       return const SizedBox.shrink();
     }
     return SafeArea(
@@ -27,11 +27,7 @@ class NarrationMiniPlayer extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          subtitle: Text(
-            session.status == NarrationStatus.buffering
-                ? 'Buffering'
-                : 'AI narration',
-          ),
+          subtitle: NarrationStatusIndicator(status: session.status),
           onTap: () => showNarrationSheet(context, controller, session.book!),
           trailing: IconButton(
             tooltip: session.ownsPosition(session.book!)

@@ -15,6 +15,9 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ReaderDictionary") {
       ReaderDictionaryPlugin.register(with: registrar)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ReaderNarration") {
+      ReaderNarrationPlugin.register(with: registrar)
+    }
   }
 }
 
