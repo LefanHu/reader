@@ -20,6 +20,23 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 OTA = ROOT / "build" / "ota"
+PUBSPEC = ROOT / "pubspec.yaml"
+# `version: <name>+<build>`; the number after `+` is the persisted iOS CFBundleVersion.
+_VERSION = re.compile(r"^(version:\s*\d+\.\d+\.\d+\+)(\d+)[ \t]*$", re.MULTILINE)
+
+
+def current_build_number(pubspec_text):
+    """pubspec.yaml is the single persisted source of the last issued build number."""
+    match = _VERSION.search(pubspec_text)
+    if not match:
+        raise ValueError("pubspec.yaml version must look like 1.0.0+1")
+    return int(match.group(2))
+
+
+def with_build_number(pubspec_text, number):
+    """Rewrite only the build number so the version name and other lines are untouched."""
+    current_build_number(pubspec_text)
+    return _VERSION.sub(lambda match: f"{match.group(1)}{number}", pubspec_text, count=1)
 
 
 def https_base(value):
@@ -67,14 +84,18 @@ def ipa_metadata(ipa):
 
 
 def installer_contents(info, base_url, build_id):
-    """Keep manifest and install link bound to one immutable exported build."""
-    landing = f"{https_base(base_url)}/{build_id}/"
+    """Bind the stable landing page and manifest to one immutable exported IPA.
+
+    The landing page, manifest and QR stay at the same URLs for every build, so the
+    printed QR never changes; only the IPA path carries the unique build ID.
+    """
+    landing = f"{https_base(base_url)}/"
     manifest_url = landing + "manifest.plist"
     install_url = "itms-services://?action=download-manifest&url=" + quote(manifest_url, safe="")
     title = info.get("CFBundleDisplayName") or info.get("CFBundleName") or "Reader"
     manifest = {
         "items": [{
-            "assets": [{"kind": "software-package", "url": landing + "reader.ipa"}],
+            "assets": [{"kind": "software-package", "url": f"{landing}{build_id}/reader.ipa"}],
             "metadata": {
                 "bundle-identifier": info["CFBundleIdentifier"],
                 "bundle-version": info["CFBundleVersion"],
@@ -99,16 +120,16 @@ img {{ display: block; width: min(100%, 18rem); height: auto; margin: 1.5rem 0; 
 <h1>{title}</h1><p>Version {version} · Build {build}</p>
 <p><a href="{html.escape(install_url, quote=True)}">Install on iPhone</a></p>
 <img src="qr.svg" alt="QR code linking to this installation page">
-<p>Scan with your iPhone camera and open in Safari. For private Tailscale hosting,
-connect Tailscale first. Only devices included in this build's provisioning
-profile can install it.</p>
+<p>This page always offers the latest build. Scan with your iPhone camera and open
+in Safari. For private Tailscale hosting, connect Tailscale first. Only devices
+included in this build's provisioning profile can install it.</p>
 <p>Keep the Mac awake and the installer server running until installation finishes.</p>
 </body></html>
 """
     return landing, plistlib.dumps(manifest), page
 
 
-def build_ipa(defines, profile_file):
+def build_ipa(defines, profile_file, build_number):
     """Apply manual signing to Runner only, then remove the private build override."""
     result = subprocess.run(["security", "cms", "-D", "-i", str(profile_file)],
                             check=True, capture_output=True)
@@ -149,7 +170,8 @@ def build_ipa(defines, profile_file):
             "signingCertificate": "Apple Distribution",
             "provisioningProfiles": {bundle: profile_id},
         }))
-        command = ["flutter", "build", "ipa", "--release", f"--export-options-plist={options}"]
+        command = ["flutter", "build", "ipa", "--release", f"--build-number={build_number}",
+                   f"--export-options-plist={options}"]
         if defines:
             command.append(f"--dart-define-from-file={Path(defines).resolve()}")
         subprocess.run(command, cwd=ROOT, check=True)
@@ -164,23 +186,30 @@ def build_ipa(defines, profile_file):
 
 
 def publish(ipa, base_url):
-    """Stage all web assets before exposing a new, unique installation URL."""
+    """Stage every asset, then switch the stable entry points to the new build.
+
+    The IPA directory is renamed into place first so the stable manifest can never
+    reference a missing build; the landing page is replaced last.
+    """
     info = ipa_metadata(ipa)
     build_id = uuid.uuid4().hex
     landing, manifest, page = installer_contents(info, base_url, build_id)
-    OTA.mkdir(parents=True, exist_ok=True)
+    site = OTA / "site"
+    site.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".publish-", dir=OTA) as temporary:
-        staging = Path(temporary) / build_id
-        staging.mkdir()
-        shutil.copyfile(ipa, staging / "reader.ipa")
+        staging = Path(temporary)
+        (staging / build_id).mkdir()
+        shutil.copyfile(ipa, staging / build_id / "reader.ipa")
         (staging / "manifest.plist").write_bytes(manifest)
         (staging / "index.html").write_text(page, encoding="utf-8")
         subprocess.run(["qrencode", "-t", "SVG", "-o", str(staging / "qr.svg"), landing], check=True)
-        site = OTA / "site"
-        site.mkdir(exist_ok=True)
-        staging.rename(site / build_id)
-    print(f"\nInstallation page: {landing}")
-    print(f"QR image: {site / build_id / 'qr.svg'}")
+        (staging / build_id).rename(site / build_id)
+        # Same filesystem as the site, so each replace is atomic for in-flight requests.
+        for name in ("qr.svg", "manifest.plist", "index.html"):
+            os.replace(staging / name, site / name)
+    print(f"\nBuild {info['CFBundleShortVersionString']}+{info['CFBundleVersion']} published.")
+    print(f"Installation page (stable): {landing}")
+    print(f"QR image: {site / 'qr.svg'}")
     subprocess.run(["qrencode", "-t", "ANSIUTF8", landing], check=True)
     print("\nKeep this server running on the Mac:")
     print(f"python3 {shlex.quote(str(ROOT / 'tool' / 'build_ios_ota.py'))} --serve")
@@ -190,12 +219,20 @@ def publish(ipa, base_url):
 
 
 class InstallerHandler(SimpleHTTPRequestHandler):
-    """Use Apple's OTA MIME types while serving only the generated installer tree."""
+    """Use Apple's OTA MIME types while serving only the generated installer tree.
+
+    The landing page and manifest live at fixed URLs and change per build, so
+    responses must never be cached by Safari or iOS's installer.
+    """
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
         ".plist": "text/xml",
         ".ipa": "application/octet-stream",
     }
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
 
 def serve_site():
@@ -257,7 +294,13 @@ def main():
         os.environ.setdefault("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")
         if not args.ipa:
             unlock_build_keychain()
-        publish(args.ipa or build_ipa(args.defines, args.profile), base_url)
+            build_number = current_build_number(PUBSPEC.read_text()) + 1
+            ipa = build_ipa(args.defines, args.profile, build_number)
+            # The number is consumed once an IPA carrying it exists, even if publishing fails.
+            PUBSPEC.write_text(with_build_number(PUBSPEC.read_text(), build_number))
+        else:
+            ipa = args.ipa
+        publish(ipa, base_url)
     except (ValueError, OSError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         print(f"OTA build failed: {error}", file=sys.stderr)
         return 1
