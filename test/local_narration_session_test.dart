@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
 import 'package:reader/narration/narration_cache_key.dart';
@@ -351,6 +352,22 @@ void main() {
           FixtureLocalNarrationSource.firstVoice,
         );
         expect(fixture.source.renders, 1);
+        expect(fixture.commits, isEmpty);
+      },
+    );
+
+    test(
+      'a native speech rejection shows its cause, not the raw exception',
+      () async {
+        fixture.source.timingFor = (_) => throw PlatformException(
+          code: 'narration_voice',
+          message: 'The selected voice is not installed on this device.',
+        );
+        await fixture.session.play();
+        expect(
+          fixture.session.error,
+          'The selected voice is not installed on this device.',
+        );
         expect(fixture.commits, isEmpty);
       },
     );

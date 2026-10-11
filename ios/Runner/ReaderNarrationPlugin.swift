@@ -117,7 +117,7 @@ final class ReaderNarrationPlugin: NSObject, FlutterPlugin, AVSpeechSynthesizerD
     let canonical = candidate.resolvingSymlinksInPath()
     // iOS's system-owned /var alias is not an app-controlled storage link.
     let systemAlias = candidate.path.hasPrefix("/var/") && canonical.path == "/private" + candidate.path
-    guard canonical.path.hasPrefix(sandboxRoot.path + "/"),
+    guard unaliased(canonical.path).hasPrefix(unaliased(sandboxRoot.path) + "/"),
       candidate.path == canonical.path || systemAlias,
       safeDirectories(canonical), root == nil || root == canonical || (active == nil && pending.isEmpty) else {
       result(error("path", "Narration storage must be an owned sandbox directory.")); return
@@ -187,11 +187,19 @@ final class ReaderNarrationPlugin: NSObject, FlutterPlugin, AVSpeechSynthesizerD
   private func enqueue(_ arguments: Any?, result: @escaping FlutterResult) {
     guard let args = arguments as? [String: Any], let id = args["requestId"] as? String,
       !id.isEmpty, id.count <= 128, let generation = args["generation"] as? Int,
-      let text = args["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      text.utf16.count <= 3000, let voiceID = args["voice"] as? String,
-      let voice = ordinaryVoices().first(where: { $0.identifier == voiceID }),
-      let path = args["stagingPath"] as? String, let target = ownedTarget(path) else {
-      result(error("arguments", "Choose an installed voice and an owned, bounded speech clip.")); return
+      let text = args["text"] as? String, let voiceID = args["voice"] as? String,
+      let path = args["stagingPath"] as? String else {
+      result(error("arguments", "The speech request is malformed.")); return
+    }
+    // Each rejection names its cause so a failure is diagnosable from the app.
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf16.count <= 3000 else {
+      result(error("text", "The speech clip is empty or longer than 3,000 characters.")); return
+    }
+    guard let voice = ordinaryVoices().first(where: { $0.identifier == voiceID }) else {
+      result(error("voice", "The selected voice is not installed on this device.")); return
+    }
+    guard let target = ownedTarget(path) else {
+      result(error("path", "The speech clip's storage location is not an owned narration file.")); return
     }
     guard pending.count + (active == nil ? 0 : 1) < 3,
       active?.id != id, !pending.contains(where: { $0.id == id }) else {
@@ -206,8 +214,8 @@ final class ReaderNarrationPlugin: NSObject, FlutterPlugin, AVSpeechSynthesizerD
   /// derives a filename from book text or creates a missing book directory.
   private func ownedTarget(_ path: String) -> URL? {
     guard let root = root, !path.split(separator: "/").contains("..") else { return nil }
-    let target = URL(fileURLWithPath: path).standardizedFileURL
-    let prefix = root.path + "/books/"
+    let target = URL(fileURLWithPath: unaliased(URL(fileURLWithPath: path).standardizedFileURL.path))
+    let prefix = unaliased(root.path) + "/books/"
     guard target.path.hasPrefix(prefix) else { return nil }
     let parts = target.path.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
     guard parts.count == 3, isHash(String(parts[0])), parts[1] == "narration",
@@ -218,17 +226,24 @@ final class ReaderNarrationPlugin: NSObject, FlutterPlugin, AVSpeechSynthesizerD
     return target
   }
 
+  /// iOS reaches app containers as both `/var/...` and `/private/var/...`;
+  /// Foundation and Dart canonicalize differently, so compare one spelling.
+  private func unaliased(_ path: String) -> String {
+    path.hasPrefix("/private/var/") ? String(path.dropFirst("/private".count)) : path
+  }
+
   private func isHash(_ value: String) -> Bool {
     value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
   }
 
   /// Inspect every app-controlled component, never ancestors outside the sandbox.
   private func safeDirectories(_ directory: URL) -> Bool {
-    var path = sandboxRoot.path
-    guard directory.path == path || directory.path.hasPrefix(path + "/") else { return false }
+    var path = unaliased(sandboxRoot.path)
+    let directoryPath = unaliased(directory.path)
+    guard directoryPath == path || directoryPath.hasPrefix(path + "/") else { return false }
     var homeInfo = stat()
     guard lstat(path, &homeInfo) == 0, (homeInfo.st_mode & S_IFMT) == S_IFDIR else { return false }
-    for part in directory.path.dropFirst(path.count).split(separator: "/") {
+    for part in directoryPath.dropFirst(path.count).split(separator: "/") {
       path += "/" + part
       var info = stat()
       guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }

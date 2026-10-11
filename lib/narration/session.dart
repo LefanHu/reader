@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart' show PlatformException;
+
 import '../catalog/catalog_book.dart';
 import '../serial_queue.dart';
 import '../preferences/reader_settings.dart';
@@ -339,6 +341,8 @@ class NarrationSession {
     error = switch (failure) {
       StateError(:final message) => message,
       FormatException(:final message) => message,
+      // Native narration codes carry a user-readable cause in `message`.
+      PlatformException(:final message) when message != null => message,
       _ => failure.toString(),
     };
     _wanted = false;
