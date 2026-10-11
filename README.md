@@ -29,6 +29,152 @@ flutter devices
 flutter run -d <ios-device-id>
 ```
 
+### Headless iPhone builds and private QR installation
+
+A paid Apple Developer Program membership permits Ad Hoc installation on registered
+iPhones without a live Xcode connection. The phone and build Mac can be on different
+networks. Tailscale is used for private HTTPS downloads, not remote device debugging.
+
+On the build Mac, select the full Xcode installation globally. Native Dart build hooks
+also need to discover its SDK; a per-command `DEVELOPER_DIR` alone may not suffice:
+
+```sh
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+xcrun --sdk iphoneos --show-sdk-path
+brew install cocoapods qrencode
+```
+
+Create a distribution key and certificate signing request (CSR) once. Do not overwrite
+an existing key; the certificate returned by Apple must match the key that made its CSR.
+Keep all downloaded credentials in the ignored `.credentials/` directory with
+owner-only permissions:
+
+```sh
+mkdir -p .credentials
+chmod 700 .credentials
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout .credentials/ios-distribution.key \
+  -out .credentials/ios-distribution.csr -subj "/CN=Reader Build"
+chmod 600 .credentials/ios-distribution.*
+```
+
+Use a browser on another computer for [Apple Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources):
+
+1. Create an **Apple Distribution** certificate using the CSR. Download it as
+   `.credentials/ios-distribution.cer` on the build Mac.
+2. Register the explicit App ID `com.leafmealone.reader`, including **App Attest**
+   for the existing production entitlement.
+3. Register the iPhone's UDID. Finder or Xcode on a Mac physically near the phone can
+   provide it; it is not the serial number or IMEI.
+4. Create an **Ad Hoc** profile for that App ID, distribution certificate, and
+   registered iPhone. Save it as `.credentials/ReaderAdHoc.mobileprovision`.
+   [Apple's profile instructions](https://developer.apple.com/help/account/provisioning-profiles/create-an-ad-hoc-provisioning-profile/).
+
+Enable App Attest before generating the profile. If the profile was downloaded
+before enabling that capability, regenerate and download it again; Xcode rejects
+the old profile because it does not authorize the app's production entitlement.
+
+Import the certificate and matching private key into a dedicated build keychain.
+These are one-time **Bash** commands in an interactive SSH terminal. Passwords stay
+in local shell variables, never source files or chat; disable shell tracing first.
+The keychain search-list update preserves existing keychains.
+
+```bash
+set +x
+openssl x509 -inform DER -in .credentials/ios-distribution.cer \
+  -out .credentials/ios-distribution.pem
+openssl pkcs12 -export -legacy -inkey .credentials/ios-distribution.key \
+  -in .credentials/ios-distribution.pem -out .credentials/ios-distribution.p12
+chmod 600 .credentials/ios-distribution.*
+read -rsp "P12 export password: " P12_PASSWORD; echo
+read -rsp "New build keychain password: " KEYCHAIN_PASSWORD; echo
+KEYCHAIN="$HOME/Library/Keychains/reader-build.keychain-db"
+security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+security set-keychain-settings -lut 21600 "$KEYCHAIN"
+security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+security import .credentials/ios-distribution.p12 -k "$KEYCHAIN" \
+  -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+security set-key-partition-list -S apple-tool:,apple:,codesign: \
+  -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+EXISTING_KEYCHAINS=()
+while IFS= read -r entry; do
+  entry="${entry#*\"}"; entry="${entry%\"*}"
+  EXISTING_KEYCHAINS+=("$entry")
+done < <(security list-keychains -d user)
+security list-keychains -d user -s "${EXISTING_KEYCHAINS[@]}" "$KEYCHAIN"
+unset P12_PASSWORD KEYCHAIN_PASSWORD
+security find-identity -v -p codesigning
+```
+
+Remember the build keychain password privately. If it has locked, unlock it before
+later builds using these **Bash** commands; do not rely on a GUI password dialog:
+
+```bash
+set +x
+read -rsp "Build keychain password: " KEYCHAIN_PASSWORD; echo
+security unlock-keychain -p "$KEYCHAIN_PASSWORD" \
+  "$HOME/Library/Keychains/reader-build.keychain-db"
+unset KEYCHAIN_PASSWORD
+```
+
+`security` accepts passwords as process arguments; run this only on a trusted build
+Mac and never enable command tracing or log expanded commands.
+No Apple Account GUI sign-in or App Store Connect API key is needed for manual signing.
+
+On a preconfigured build Mac, the tool also supports the dedicated
+`~/Library/Keychains/reader-ota-build.keychain-db` keychain. If its password is stored in
+`.credentials/ios-build-keychain.password`, builds unlock it automatically. That file
+must belong to the current user and have owner-only permissions; never commit, print,
+or share it. Existing keychains and their passwords are not modified.
+
+Build and generate the installer, substituting the Mac's Tailscale DNS name:
+
+```sh
+python3 tool/build_ios_ota.py \
+  --profile .credentials/ReaderAdHoc.mobileprovision \
+  --base-url https://YOUR-MAC.YOUR-TAILNET.ts.net:8443
+```
+
+The command installs the supplied profile for Xcode, temporarily applies manual signing
+to Runner only, builds a release IPA, and publishes an immutable installer under
+`build/ota/site/`. It rejects expired, development, and App Store profiles, and never
+publishes a stale IPA after failed export. `--ipa /path/to/export.ipa` republishes an
+existing Ad Hoc export instead of rebuilding. Optional `--defines .dart-defines/dev.json`
+enables the configured cloud features; local reading does not require it.
+The build override `.credentials/ios-signing.xcconfig` is removed on exit; if the process
+is forcibly killed, remove that generated file before starting another build.
+
+Keep the installer server running in an SSH terminal or persistent terminal session.
+The built-in server binds loopback and uses Apple's required XML manifest MIME type:
+
+```sh
+python3 tool/build_ios_ota.py --serve
+```
+
+In another terminal, expose only that generated site through private HTTPS:
+
+```sh
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve \
+  --bg --https=8443 http://127.0.0.1:8765
+```
+
+If Serve is disabled, approve the setup URL printed by Tailscale in a browser.
+Do not use Funnel unless you intentionally want public hosting. Connect the iPhone
+to the same tailnet, scan the emitted QR code, open the page in Safari, and tap
+**Install on iPhone**. The QR code opens the installation page, not a bare IPA download.
+Keep the Mac awake until installation finishes. The server must remain running;
+`--bg` persists the HTTPS proxy but does not keep the Python server alive.
+
+The served site contains only generated installer assets and IPAs, not credential
+files or the repository. An IPA itself necessarily includes its signed provisioning
+profile; keep access restricted to trusted tailnet members. Adding another phone
+requires registering its UDID and regenerating the Ad Hoc profile before rebuilding.
+To stop the HTTPS endpoint without disturbing other Serve endpoints:
+
+```sh
+/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --https=8443 off
+```
+
 Library themes have desktop, hover-overlay, and compact iOS-list visual baselines in `test/goldens/`. After intentional design changes, regenerate them with `flutter test test/library_theme_test.dart --update-goldens` and inspect all nine images before committing.
 
 For manual UI performance work, follow [Flutter's profiling guidance](https://docs.flutter.dev/perf/ui-performance): run `flutter run --profile -d macos` or `flutter run --profile -d <physical-ios-device-id>`, open the printed DevTools URL, and record the Performance view while opening a book, scrolling, turning pages, and navigating chapters. Diagnose UI and raster times separately against the display's frame budget. Debug builds and iOS simulators are not performance evidence.

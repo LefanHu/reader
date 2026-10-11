@@ -2,3 +2,5 @@
 #include "Generated.xcconfig"
 // Optional private native callbacks generated with Firebase Dart configuration.
 #include? "../../.dart-defines/ios.xcconfig"
+// Present only during headless Ad Hoc builds; never commit signing configuration.
+#include? "../../.credentials/ios-signing.xcconfig"
