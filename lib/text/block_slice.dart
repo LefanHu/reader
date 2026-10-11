@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
 import 'layout/measured_block.dart';
+import 'selectable_text_slice.dart';
 import 'text_slice_painter.dart';
 
-/// Paints and exposes semantics for only the committed block slice.
+/// Paints selectable normalized text and semantics for the visible block slice.
 class BlockSlice extends StatelessWidget {
   /// Borrows a block painter for the specified visible text and geometry.
   const BlockSlice({
@@ -34,7 +35,13 @@ class BlockSlice extends StatelessWidget {
       child: SizedBox(
         height: height,
         child: ClipRect(
-          child: CustomPaint(painter: TextSlicePainter(block.painter, top)),
+          child: SelectableTextSlice(
+            block: block,
+            top: top,
+            start: start,
+            end: end,
+            child: CustomPaint(painter: TextSlicePainter(block.painter, top)),
+          ),
         ),
       ),
     ),

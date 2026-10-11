@@ -8,6 +8,7 @@ An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and T
 - Choose Paper, Sepia, or Dark from the library Appearance menu or reading settings. One saved palette applies immediately to the whole app, including menus and dialogs; typography controls affect book text only.
 - Open Settings from the library gear or macOS Settings… (Command-comma) to manage account, appearance, reading, global narration preferences, library defaults, usage, storage, privacy, and app information. Preferences stay local and work without an account; payments and cross-device synchronization are not included.
 - Switch Page flip / Pages / Scroll, typography, themes, and window sizes while retaining a grapheme-safe text position.
+- Select visible book text in every reading mode: long-press and move selection handles on iOS, or mouse-drag on macOS. Copy preserves the selected normalized text; Look Up opens the operating system's dictionary. Dictionary availability and installed languages are managed by the OS, not the app.
 - Swipe right from the physical leftmost 20 logical pixels in Reader or Settings to go Back on release (at least 64 pixels). Reader flushes its complete committed text position before exiting, even with controls hidden. Compact Settings returns from detail to categories before exiting; wide Settings exits directly. Cancelled swipes, covered routes, and trackpad pan/zoom do not trigger this action.
 - Preserve EPUB chapter structure, nested tables of contents, headings, paragraphs, and explicit line breaks. Publisher CSS, inline images, interactive links, and rich styling are omitted; local covers remain in the library.
 - Read horizontal Unicode text, including RTL and mixed-direction passages, CJK, Indic scripts, Thai, combining marks, and emoji. Font coverage uses platform fallback. Vertical writing is not supported.
@@ -16,6 +17,8 @@ An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and T
 - Persist source files, normalized sections, and the catalog under Application Support; global reading preferences remain in SharedPreferences.
 
 Scripted, remote-resource, fixed-layout, and encrypted/DRM publications are rejected. Archive traversal, expansion, entry-count, and markup limits apply to every EPUB import. Import parsing and sidecar serialization run outside the UI isolate. The viewport retains at most two measured section layouts. Page flip uses those same layouts for an interactive paper curl, retaining at most two page textures (twice logical resolution, capped at 2048 pixels). Horizontal drags may start anywhere inside the padded page content, separate from the screen-edge Back band: the fold follows horizontal travel, grab height, and live vertical movement, then settles from the last held shape. Vertical-only gestures do not turn pages. Tap the outer 20% to turn; center taps toggle controls. RTL sections mirror physical page navigation; edge Back stays at the physical left. Positions and illustration gates advance only after completed turns; reflow, chapter jumps, suspension, and exit cancel unfinished turns. Reduced-motion settings use immediate page changes without curl textures. Unicode direction ranges are generated from Unicode 17.0.0; regeneration instructions are in `tool/generate_direction.py`.
+
+Selection borrows the existing measured text painters and never commits reading progress. Active selection fences page gestures, scrolling progress reports, and reader navigation shortcuts; explicit navigation or reflow clears it. Mouse drags select text rather than curling pages. Paragraph-aware selection aggregation lives inside scrolling content so Flutter's scroll selection container cannot hide stable block identities.
 
 Catalog version 2 intentionally discards legacy imported books and Readium reading positions on first launch. Global preferences survive. A durable reset marker makes cleanup restartable; known cloud illustration book IDs are queued for deletion before local data is removed. Startup retries use an existing identity session and never prompt for sign-in.
 
@@ -271,14 +274,19 @@ flutter test integration_test/reader_test.dart -d <ios-simulator-id>
 ```
 
 The native integration runner registers independent **Library**, **Reading**,
-**Reader controls**, **Page flip**, **Narration**, **Accounts**, and **Settings**
-groups from `integration_test/scenarios/`. Each test creates its own temporary
-catalog through `integration_test/support/native_test_app.dart`; cleanup runs even
+**Reader controls**, **Page flip**, **Narration**, **Accounts**, **Settings**, and
+**Text selection and dictionary lookup** groups from `integration_test/scenarios/`.
+Each test creates its own temporary catalog through
+`integration_test/support/native_test_app.dart`; cleanup runs even
 on failure. Import parsing, file storage, rendering, and narration playback are
 real; picker input, preferences, and cloud services use fakes. Settings flows cover
 global controls, playback reset, cache removal, complete committed anchors, and
 compact/wide edge-Back hierarchy. Reader controls also verify edge exits and disk/
 reopened anchor equality in every reading mode with visible and hidden controls.
+Selection scenarios use real mouse/long-press/handle gestures, the platform
+clipboard, and native dictionary presentation in all three modes. Exact clipboard
+contents, native errors, complete reading anchors, and resource limits are checked
+automatically; screenshots and manual dictionary UI review are not required.
 EPUB fixtures live in `test/fixtures/` instead of importing another test suite.
 Platform screenshots are written to the test app's temporary directory and their
 paths are printed. Add `--no-uninstall` on iOS when inspecting those PNGs after

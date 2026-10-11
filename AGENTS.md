@@ -59,9 +59,11 @@
 
 - Run `dart format lib test`, `flutter analyze`, and `flutter test` after Dart changes.
 - Format changed integration tests too. Run affected native scenarios on both macOS and an iOS simulator when changing shared reader or library behavior and those toolchains are available.
+- For behavioral changes such as text selection and dictionary lookup, use automated native interaction, clipboard, platform-call, and committed-position checks. Do not require screenshot capture, manual visual inspection, Screen Sharing, or Screen Recording permission as acceptance criteria. Keep visual review for intentional appearance changes as described below.
 - After intentional visual changes, regenerate affected goldens and inspect the images; do not accept baseline updates solely because tests pass. Library baselines cover Paper, Sepia, and Dark in iOS lists and desktop grids, including revealed overlays.
 - Run `npm run build` and `npm test` in `backend/` when backend behavior changes.
 - When platform integration changes, also build or run the affected platform when its toolchain is available.
+- On feature completion, provide a copyable terminal command that generates/displays the iPhone installation QR code using `qrencode -t ANSIUTF8 '<current OTA installation-page URL>'`. Use the latest successfully built and hosted installer URL, not a previous build; do not rely on an inline QR image being visible in chat. If no fresh installer is available, state that prerequisite rather than presenting an old build as current.
 
 ## Cloud identity guarantees
 

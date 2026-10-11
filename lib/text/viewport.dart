@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -20,6 +19,9 @@ import 'page_turn.dart';
 import 'layout/section_layout.dart';
 import 'layout/text_line.dart';
 import 'block_slice.dart';
+import 'reader_gesture_surface.dart';
+import 'reader_selection_content.dart';
+import 'reader_selection_region.dart';
 
 /// Measured native Flutter text viewport shared by scroll and page modes.
 /// At most two section layouts are retained, including an adjacent curl preview.
@@ -115,6 +117,21 @@ class _TextViewportState extends State<TextViewport>
   bool _restoring = false;
   bool _restorationOnly = false;
   Completer<void>? _restored;
+  final _selection = GlobalKey<ReaderSelectionRegionState>();
+  bool _selectionActive = false;
+
+  void _clearSelection() {
+    _selectionActive = false;
+    _selection.currentState?.clearSelection();
+  }
+
+  void _selectionChanged(bool active) {
+    if (!mounted || _selectionActive == active) return;
+    _selectionActive = active;
+    // Selection always belongs to the committed page, never a curl preview.
+    if (active && _turnBusy) _cancelTurn();
+    setState(() {});
+  }
 
   void _manualNavigation() {
     _restorationOnly = false;
@@ -170,6 +187,7 @@ class _TextViewportState extends State<TextViewport>
     if (oldWidget.settings != widget.settings ||
         oldWidget.foreground != widget.foreground ||
         oldWidget.background != widget.background) {
+      _clearSelection();
       _cancelTurn();
     }
     if (oldWidget.navigation != widget.navigation) {
@@ -182,6 +200,7 @@ class _TextViewportState extends State<TextViewport>
     text.TextPosition requested, {
     bool restoration = false,
   }) async {
+    _clearSelection();
     if (_restored?.isCompleted == false) _restored!.complete();
     _restored = restoration ? Completer<void>() : null;
     final restored = _restored;
@@ -230,6 +249,7 @@ class _TextViewportState extends State<TextViewport>
   }
 
   void _step(int delta) {
+    _clearSelection();
     _manualNavigation();
     final layout = _layout;
     if (layout == null || _restoring) return;
@@ -265,6 +285,7 @@ class _TextViewportState extends State<TextViewport>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
+      _clearSelection();
       _cancelTurn();
       if (mounted) setState(() {});
     }
@@ -564,6 +585,7 @@ class _TextViewportState extends State<TextViewport>
   }
 
   void _scrolled() {
+    if (_selectionActive) return;
     if (_restoring ||
         _layout == null ||
         !_scroll.hasClients ||
@@ -643,6 +665,7 @@ class _TextViewportState extends State<TextViewport>
     final section = _section!;
     final key = _key(section, width, height, scaler);
     if (_layoutKey == '$key:${widget.settings.mode.name}') return;
+    _clearSelection();
     _cancelTurn();
     _width = width;
     _height = height;
@@ -683,6 +706,7 @@ class _TextViewportState extends State<TextViewport>
 
   @override
   void dispose() {
+    _clearSelection();
     if (_restored?.isCompleted == false) _restored!.complete();
     widget.navigation.detach(this);
     WidgetsBinding.instance.removeObserver(this);
@@ -713,83 +737,56 @@ class _TextViewportState extends State<TextViewport>
         _prepare(width, height, MediaQuery.textScalerOf(context));
         final layout = _layout!;
         final content = widget.settings.mode == ReadingMode.scroll
-            ? NotificationListener<OverscrollNotification>(
-                onNotification: (notification) {
-                  if (_restoring) return false;
-                  if (notification.overscroll > 0) {
-                    _advanceOrFinish();
-                  } else if (notification.overscroll < 0) {
-                    _previousEnd();
-                  }
-                  return false;
-                },
-                child: SingleChildScrollView(
-                  key: ObjectKey(_scroll),
-                  controller: _scroll,
-                  physics: const ClampingScrollPhysics(
-                    parent: AlwaysScrollableScrollPhysics(),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (final block in layout.blocks)
-                        BlockSlice(
-                          block: block,
-                          top: 0,
-                          height: block.painter.height,
-                          start: 0,
-                          end: block.block.text.length,
-                          bottomPadding: 16,
-                        ),
-                      SizedBox(height: layout.viewportHeight),
-                    ],
+            ? GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _selectionActive ? null : widget.onTap,
+                child: NotificationListener<OverscrollNotification>(
+                  onNotification: (notification) {
+                    if (_restoring || _selectionActive) return false;
+                    if (notification.overscroll > 0) {
+                      _advanceOrFinish();
+                    } else if (notification.overscroll < 0) {
+                      _previousEnd();
+                    }
+                    return false;
+                  },
+                  child: SingleChildScrollView(
+                    key: ObjectKey(_scroll),
+                    controller: _scroll,
+                    physics: const ClampingScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
+                    child: ReaderSelectionContent(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final block in layout.blocks)
+                            BlockSlice(
+                              block: block,
+                              top: 0,
+                              height: block.painter.height,
+                              start: 0,
+                              end: block.block.text.length,
+                              bottomPadding: 16,
+                            ),
+                          SizedBox(height: layout.viewportHeight),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               )
-            : GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                dragStartBehavior: widget.settings.mode == ReadingMode.pageFlip
-                    ? DragStartBehavior.down
-                    : DragStartBehavior.start,
-                onTapUp: widget.settings.mode == ReadingMode.pageFlip
-                    ? (details) {
-                        final fraction = details.localPosition.dx / width;
-                        if (fraction < .2 || fraction > .8) {
-                          _step(
-                            (fraction > .8) != widget.navigation.rightToLeft
-                                ? 1
-                                : -1,
-                          );
-                        } else {
-                          widget.onTap();
-                        }
-                      }
-                    : (_) => widget.onTap(),
-                onHorizontalDragStart:
-                    widget.settings.mode == ReadingMode.pageFlip
-                    ? _dragStart
-                    : null,
-                onHorizontalDragUpdate:
-                    widget.settings.mode == ReadingMode.pageFlip
-                    ? _dragUpdate
-                    : null,
-                onHorizontalDragCancel:
-                    widget.settings.mode == ReadingMode.pageFlip
-                    ? _dragCancel
-                    : null,
-                onHorizontalDragEnd:
-                    widget.settings.mode == ReadingMode.pageFlip
-                    ? _dragEnd
-                    : (details) {
-                        final velocity = details.primaryVelocity ?? 0;
-                        if (velocity.abs() > 80) {
-                          _step(
-                            (velocity < 0) != widget.navigation.rightToLeft
-                                ? 1
-                                : -1,
-                          );
-                        }
-                      },
+            : ReaderGestureSurface(
+                mode: widget.settings.mode,
+                selecting: _selectionActive,
+                width: width,
+                rightToLeft: widget.navigation.rightToLeft,
+                onStep: _step,
+                onTap: widget.onTap,
+                onDragStart: _dragStart,
+                onDragUpdate: _dragUpdate,
+                onDragCancel: _dragCancel,
+                onDragEnd: _dragEnd,
                 child: ClipRect(
                   child: SizedBox(
                     height: height,
@@ -797,9 +794,11 @@ class _TextViewportState extends State<TextViewport>
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: _pageSlices(layout.pages[_page]),
+                        ReaderSelectionContent(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: _pageSlices(layout.pages[_page]),
+                          ),
                         ),
                         if (_turn?.current != null)
                           ExcludeSemantics(
@@ -835,6 +834,7 @@ class _TextViewportState extends State<TextViewport>
         return Focus(
           autofocus: true,
           onKeyEvent: (_, event) {
+            if (_selectionActive) return KeyEventResult.ignored;
             if (event is! KeyDownEvent) return KeyEventResult.ignored;
             final key = event.logicalKey;
             final rtl =
@@ -870,11 +870,12 @@ class _TextViewportState extends State<TextViewport>
               onPointerCancel: (_) {
                 if (widget.settings.mode == ReadingMode.pageFlip) _dragCancel();
               },
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: widget.settings.mode == ReadingMode.scroll
-                    ? widget.onTap
-                    : null,
+              // Navigation recognizers belong inside SelectionArea: an ordinary
+              // touch swipe wins before its ancestor's text-drag recognizer,
+              // while a stationary long press still starts native selection.
+              child: ReaderSelectionRegion(
+                key: _selection,
+                onSelectionChanged: _selectionChanged,
                 child: content,
               ),
             ),

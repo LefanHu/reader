@@ -49,22 +49,27 @@ class NativeTestApp {
 
   /// Starts an isolated app, optionally seeding books without repeating import UI.
   /// The import scenario uses [importBooks] false to exercise that UI explicitly.
+  /// [textBytes] replaces only the fixture's TXT input; validation/storage stay real.
   static Future<NativeTestApp> launch(
     WidgetTester tester, {
     bool importBooks = true,
     bool narration = false,
     CloudIdentity? cloudIdentity,
+    Uint8List? textBytes,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
     final app = NativeTestApp._(tester, root);
-    final txt = Uint8List.fromList(
-      utf8.encode(
-        List.generate(
-          120,
-          (i) => 'Paragraph $i: 中文 العربية שָׁלוֹם हिन्दी ไทย e\u0301 👩🏽‍🚀.',
-        ).join('\n\n'),
-      ),
-    );
+    final txt =
+        textBytes ??
+        Uint8List.fromList(
+          utf8.encode(
+            List.generate(
+              120,
+              (i) =>
+                  'Paragraph $i: 中文 العربية שָׁלוֹם हिन्दी ไทย e\u0301 👩🏽‍🚀.',
+            ).join('\n\n'),
+          ),
+        );
     final epub = epubFixture();
     app.controller = ReaderController(
       cloudIdentity: cloudIdentity,

@@ -8,6 +8,7 @@ import 'scenarios/reading.dart';
 import 'scenarios/narration.dart';
 import 'scenarios/accounts.dart';
 import 'scenarios/settings.dart';
+import 'scenarios/selection.dart';
 
 /// Single native runner: feature groups support focused --plain-name runs while
 /// each scenario owns a fresh app/catalog through NativeTestApp.
@@ -20,4 +21,5 @@ void main() {
   group('Narration', registerNarrationTests);
   group('Accounts', registerAccountTests);
   group('Settings', registerSettingsTests);
+  group('Text selection and dictionary lookup', registerSelectionTests);
 }
