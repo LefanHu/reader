@@ -179,8 +179,6 @@ class ForbiddenLocalCloudApi extends FakeNarrationApi {
   @override
   bool get configured => _unexpected('configured');
   @override
-  Future<bool> hasSession() async => _unexpected('hasSession');
-  @override
   Future<Map<String, dynamic>> configuration() async =>
       _unexpected('configuration');
   @override
@@ -195,10 +193,6 @@ class ForbiddenLocalCloudApi extends FakeNarrationApi {
   }) async => _unexpected('audio');
   @override
   Future<void> deleteBook(String bookId) async => _unexpected('deleteBook');
-  @override
-  Future<void> signOut() async => _unexpected('signOut');
-  @override
-  Future<void> deleteAccount() async => _unexpected('deleteAccount');
 }
 
 class LocalNarrationSessionFixture {

@@ -4,8 +4,9 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/catalog/catalog_session.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
-import 'package:reader/illustrations/file_illustration_deletion_outbox.dart';
+import 'package:reader/file_cloud_deletion_outbox.dart';
 import 'package:reader/importing/book_importer.dart';
 import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/importing/import_result.dart';
@@ -15,6 +16,9 @@ import 'package:reader/text/document_store.dart';
 import 'package:reader/text/text_position.dart';
 
 import 'fixtures/catalog_book.dart';
+import 'support/fake_picker.dart';
+import 'support/fake_word_counter.dart';
+import 'support/memory_catalog_store.dart';
 import 'support/test_controller.dart';
 
 void main() {
@@ -28,19 +32,7 @@ void main() {
 
   Future<CatalogBook> importTxt([
     String text = 'First paragraph.\n\nSecond paragraph.',
-  ]) async {
-    final bytes = Uint8List.fromList(utf8.encode(text));
-    final outcome = await BookImporter(root: root).import(
-      ImportCandidate(
-        name: 'Novel.txt',
-        size: bytes.length,
-        readBytes: () async => bytes,
-      ),
-      {},
-    );
-    expect(outcome.result.status, ImportStatus.imported);
-    return outcome.book!;
-  }
+  ]) => importTextBook(root, text, name: 'Novel.txt');
 
   test('catalog preserves complete text positions and metadata', () {
     final original = testBook(
@@ -93,11 +85,14 @@ void main() {
       await narration.create();
       await File('${narration.path}/manifest.json.tmp')
           .writeAsString(jsonEncode({'cloudBookId': 'c' * 64}));
-      final narrationOutbox = FileIllustrationDeletionOutbox(
+      final narrationOutbox = FileCloudDeletionOutbox(
         root,
         fileName: 'narration-deletions.json',
       );
-      final outbox = FileIllustrationDeletionOutbox(root);
+      final outbox = FileCloudDeletionOutbox(
+        root,
+        fileName: 'illustration-deletions.json',
+      );
       await outbox.enqueue('already-pending');
       final store = FileCatalogStore(root);
       expect(await store.load(), isEmpty);
@@ -235,4 +230,38 @@ void main() {
       expect(controller.preferences.settings.mode, ReadingMode.pages);
     },
   );
+
+  testWidgets('a failed debounced position save stays handled', (tester) async {
+    final book = testBook();
+    final store = _FirstSaveFails([book]);
+    final session = CatalogSession(
+      store: store,
+      importer: BookImporter(root: root),
+      picker: FakePicker(const []),
+      wordCounter: FakeWordCounter(),
+      changed: () {},
+    );
+    await session.load();
+    const position = TextPosition(sectionId: 's0', blockId: 'p0', offset: 3);
+    session.recordPosition(book, position, .4, immediate: false);
+    await tester.pump(const Duration(milliseconds: 600));
+    await session.flush();
+    expect(tester.takeException(), isNull);
+    expect(store.books.single.lastPosition, position);
+  });
+}
+
+/// Rejects only the first write so the debounced save fails.
+class _FirstSaveFails extends MemoryCatalogStore {
+  _FirstSaveFails(super.initial);
+  bool _failed = false;
+
+  @override
+  Future<void> save(List<CatalogBook> value) async {
+    if (!_failed) {
+      _failed = true;
+      throw StateError('disk full');
+    }
+    await super.save(value);
+  }
 }

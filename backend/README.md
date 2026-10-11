@@ -14,8 +14,11 @@ authentication for that service.
   injected resources/provider boundary allows local execution without cloud calls.
 - `src/illustration-scenes.ts` owns public scene delivery, durable regeneration
   task submission, and scene tombstone/asset cleanup.
-- `src/illustration-http.ts` shares bounded request validation and expected HTTP
+- `src/http.ts` shares bounded request validation and expected HTTP
   errors between public routes and the worker, preserving status translation.
+- `src/fences.ts` owns shared book/account deletion-fence lookups,
+  `src/illustration-credits.ts` credit reservations and claim fencing, and
+  `src/illustration-jobs.ts` the `/v1` book profile and job routes.
 - `src/illustration-books.ts` owns transactional illustration book registration
   and tombstoned deletion. The first registration initializes pilot credits;
   retries/additional books retain spent/reserved balances. Deleted account/book
@@ -44,8 +47,7 @@ Required configuration:
 - `SERVICE_ROLE=api` on the public mobile service and `SERVICE_ROLE=worker` on
   the private, Cloud Tasks/IAM-only worker service
 - optional `OPENAI_SCENE_MODEL`, `OPENAI_IMAGE_MODEL`,
-  `OPENAI_IMAGE_ORCHESTRATOR_MODEL`, `PILOT_CREDITS`, and `WORKER_TOKEN` for
-  local worker calls
+  `OPENAI_IMAGE_ORCHESTRATOR_MODEL`, and `PILOT_CREDITS`
 
 The OpenAI API organization behind the key must have funded API usage; a ChatGPT
 subscription does not fund these direct API calls. Successful model discovery or

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
-import { asyncRoute, HttpError, requireString, routeParam } from "./illustration-http.js";
+import { asyncRoute, HttpError, requireString, routeParam } from "./http.js";
+import { bookReference, readBookFence } from "./fences.js";
+import { refundReservation } from "./illustration-credits.js";
 
 function stylesFor(title: string): string[] {
   const normalized = title.toLowerCase();
@@ -29,14 +31,13 @@ export function illustrationBookRegistration(dependencies: { db: Firestore; pilo
     const styles = stylesFor(title);
     await db.runTransaction(async (transaction) => {
       const userRef = db.collection("users").doc(uid);
-      const bookRef = userRef.collection("books").doc(bookId);
-      const [user, tombstone, book] = await Promise.all([
+      const bookRef = bookReference(db, "books", uid, bookId);
+      const [user, fence] = await Promise.all([
         transaction.get(userRef),
-        transaction.get(db.collection("narrationAccountTombstones").doc(uid)),
-        transaction.get(bookRef),
+        readBookFence(transaction, db, "books", uid, bookId),
       ]);
-      if (tombstone.exists) throw new HttpError(410, "Account was deleted.");
-      if (book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
+      if (fence.accountDeleted) throw new HttpError(410, "Account was deleted.");
+      if (fence.book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
       transaction.set(bookRef, {
         uid,
         fingerprint,
@@ -68,7 +69,7 @@ export function illustrationBookDeletion(dependencies: { db: Firestore; storage:
   const { db, storage, bucket } = dependencies;
   return asyncRoute(async (req, res) => {
     const uid = req.uid!, bookId = routeParam(req, "bookId");
-    const bookRef = db.collection("users").doc(uid).collection("books").doc(bookId);
+    const bookRef = bookReference(db, "books", uid, bookId);
     await db.runTransaction(async (transaction) => {
       const book = await transaction.get(bookRef);
       if (!book.exists) throw new HttpError(404, "Book not found.");
@@ -83,18 +84,7 @@ export function illustrationBookDeletion(dependencies: { db: Firestore; storage:
       db.collection("worldReferences").where("uid", "==", uid).where("bookId", "==", bookId).get(),
     ]);
     // Deletion owns releasing reservations; a fenced late worker cannot refund.
-    for (const reservation of records[3]!.docs) await db.runTransaction(async (transaction) => {
-      const userRef = db.collection("users").doc(uid);
-      const [current, user, account] = await Promise.all([
-        transaction.get(reservation.ref), transaction.get(userRef),
-        transaction.get(db.collection("narrationAccountTombstones").doc(uid)),
-      ]);
-      if (current.data()?.state !== "reserved") return;
-      if (user.exists && !account.exists) transaction.update(userRef, {
-        creditsReserved: FieldValue.increment(-1), updatedAt: FieldValue.serverTimestamp(),
-      });
-      transaction.update(reservation.ref, { state: "refunded", updatedAt: FieldValue.serverTimestamp() });
-    });
+    for (const reservation of records[3]!.docs) await refundReservation(db, uid, reservation.ref);
     await storage.bucket(bucket).deleteFiles({ prefix: `users/${uid}/books/${bookId}/`, force: true });
     const writer = db.bulkWriter();
     for (const snapshot of records) for (const document of snapshot.docs) writer.delete(document.ref);

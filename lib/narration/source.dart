@@ -7,6 +7,15 @@ import 'narration_manifest.dart';
 import 'narration_voice.dart';
 import 'store.dart';
 
+/// Typed cancellation for fenced synthesis, downloads and staged writes.
+class NarrationCancelled implements Exception {
+  /// Carries no detail; the superseding generation owns any visible state.
+  const NarrationCancelled();
+
+  @override
+  String toString() => 'Narration cancelled.';
+}
+
 /// Generation boundary selected at composition, never a cloud fallback router.
 /// Playback speed belongs to the existing file player, not synthesis identity.
 abstract interface class NarrationSource {

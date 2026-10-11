@@ -4,19 +4,17 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../app/edge_back_gesture.dart';
+import '../app/layout.dart';
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
 import '../illustrations/illustration_scene.dart';
 import '../illustrations/illustration_setup.dart';
 import '../narration/narration_sheet.dart';
-import '../narration/session.dart';
 import '../narration/status_indicator.dart';
 import '../preferences/reading_mode.dart';
 import '../text/document.dart' as text;
 import '../text/document_store.dart' as text;
 import '../text/text_contents_entry.dart' as text;
-import '../text/text_position.dart' as text;
-import '../text/narration_range.dart';
 import '../text/reader_navigation.dart';
 import '../text/viewport.dart';
 import 'illustration_consent_dialog.dart';
@@ -25,6 +23,7 @@ import 'illustration_reveal_dialog.dart';
 import 'reader_contents_sheet.dart';
 import 'reader_controls_transition.dart';
 import 'reader_error.dart';
+import 'reader_narration_binding.dart';
 import 'reader_navigation_bar.dart';
 import 'reader_settings_panel.dart';
 import 'reader_toolbar.dart';
@@ -63,134 +62,33 @@ class _ReaderScreenState extends State<ReaderScreen>
   bool revealingIllustration = false;
   String? chapterTitle;
   Timer? revealTimer;
-  NarrationSession? _highlightSession;
-  // Invalidates deferred presentation attachments on owner/lifecycle changes.
-  int _highlightOwnerEpoch = 0;
-  bool _readerVisible = true;
-  text.TextPosition? _pendingFollow;
-  text.TextPosition? _narrationAnchor;
-  bool _followScheduled = false;
-  int _followEpoch = 0;
+  late final _narration = ReaderNarrationBinding(
+    controller: widget.controller,
+    book: widget.book,
+    navigation: navigation,
+    isMounted: () => mounted,
+    isClosed: () => closed,
+  );
 
   @override
   void initState() {
     super.initState();
-    final lifecycle = WidgetsBinding.instance.lifecycleState;
-    _readerVisible =
-        lifecycle == null || lifecycle == AppLifecycleState.resumed;
     publication = _open();
     widget.controller.addListener(_controllerChanged);
-    widget.controller.narration?.restoreViewport = _restoreNarrationViewport;
     WidgetsBinding.instance.addObserver(this);
-    _syncHighlightOwner();
+    _narration.attach();
   }
 
   Future<text.TextDocument> _open() => store.load(widget.book.path);
 
-  Future<void> _restoreNarrationViewport(
-    CatalogBook book,
-    text.TextPosition anchor,
-  ) async {
-    if (!mounted || book.hash != widget.book.hash) return;
-    await navigation.restore(anchor);
-  }
-
-  int _narrationRevision = 0;
-  bool _listening = false;
-  void _syncHighlightOwner() {
-    final session = widget.controller.narration;
-    final next =
-        _readerVisible && !closed && session?.book?.hash == widget.book.hash
-        ? session
-        : null;
-    if (identical(next, _highlightSession)) return;
-    final previous = _highlightSession;
-    _highlightSession = next;
-    previous?.detachHighlightOwner(this);
-    final epoch = ++_highlightOwnerEpoch;
-    if (next == null) return;
-    // Attaching can synchronously publish a newly visible cue. Reader creation
-    // may be inside a controller builder, so never notify it during that build.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted ||
-          !_readerVisible ||
-          closed ||
-          epoch != _highlightOwnerEpoch ||
-          !identical(next, _highlightSession) ||
-          !identical(next, widget.controller.narration) ||
-          next.book?.hash != widget.book.hash) {
-        return;
-      }
-      next.attachHighlightOwner(this);
-    });
-  }
-
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _readerVisible = state == AppLifecycleState.resumed;
-    _syncHighlightOwner();
+    _narration.visible = state == AppLifecycleState.resumed;
     _controllerChanged();
   }
 
-  void _queueFollow(text.TextPosition? target) {
-    ++_followEpoch;
-    _pendingFollow = target;
-    if (target == null || _followScheduled) return;
-    _followScheduled = true;
-    scheduleMicrotask(() async {
-      try {
-        while (mounted && _pendingFollow != null) {
-          final next = _pendingFollow!;
-          _pendingFollow = null;
-          final epoch = _followEpoch;
-          final session = widget.controller.narration;
-          await navigation.follow(
-            next,
-            isCurrent: () =>
-                mounted &&
-                !closed &&
-                _readerVisible &&
-                epoch == _followEpoch &&
-                identical(session, widget.controller.narration) &&
-                next == _activeNarrationAnchor,
-          );
-        }
-      } on Object catch (error, stack) {
-        FlutterError.reportError(
-          FlutterErrorDetails(
-            exception: error,
-            stack: stack,
-            library: 'reader',
-            context: ErrorDescription('while following spoken text'),
-          ),
-        );
-      } finally {
-        _followScheduled = false;
-      }
-    });
-  }
-
   void _controllerChanged() {
-    _syncHighlightOwner();
-    final session = widget.controller.narration;
-    final listening = session?.ownsPosition(widget.book) == true;
-    final active = _readerVisible ? _activeNarrationAnchor : null;
-    if (active != _narrationAnchor) {
-      _narrationAnchor = active;
-      _queueFollow(active);
-    }
-    if (active == null &&
-        ((!_listening && listening) ||
-            _narrationRevision !=
-                widget.controller.narrationNavigationRevision)) {
-      final anchor = widget.controller.catalog.books
-          .where((item) => item.hash == widget.book.hash)
-          .firstOrNull
-          ?.lastPosition;
-      if (anchor != null) unawaited(navigation.restore(anchor));
-    }
-    _narrationRevision = widget.controller.narrationNavigationRevision;
-    _listening = listening;
+    _narration.sync();
     _queueIllustrationReveal();
   }
 
@@ -254,7 +152,7 @@ class _ReaderScreenState extends State<ReaderScreen>
     final panel = ReaderSettingsPanel(controller: widget.controller);
     // Match the library breakpoint: phones use a reachable bottom sheet while
     // wider tablet windows keep the current passage visible beside a panel.
-    if (MediaQuery.sizeOf(context).width < 700) {
+    if (MediaQuery.sizeOf(context).width < wideLayoutMinWidth) {
       await showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
@@ -357,8 +255,8 @@ class _ReaderScreenState extends State<ReaderScreen>
     final route = ModalRoute.of(context);
     if (closed || route?.isCurrent != true) return;
     closed = true;
-    _queueFollow(null);
-    _syncHighlightOwner();
+    _narration.stopFollowing();
+    _narration.sync();
     await widget.controller.flush();
     if (!mounted) return;
     // A sheet opened during persistence belongs to a different exit action.
@@ -366,7 +264,6 @@ class _ReaderScreenState extends State<ReaderScreen>
       Navigator.pop(context);
     } else {
       closed = false;
-      _syncHighlightOwner();
       _controllerChanged();
     }
   }
@@ -375,17 +272,8 @@ class _ReaderScreenState extends State<ReaderScreen>
   void dispose() {
     revealTimer?.cancel();
     widget.controller.removeListener(_controllerChanged);
-    _readerVisible = false;
-    ++_highlightOwnerEpoch;
-    ++_followEpoch;
-    _pendingFollow = null;
+    _narration.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    _highlightSession?.detachHighlightOwner(this);
-    _highlightSession = null;
-    if (widget.controller.narration?.restoreViewport ==
-        _restoreNarrationViewport) {
-      widget.controller.narration?.restoreViewport = null;
-    }
     widget.controller.flush();
     super.dispose();
   }
@@ -421,7 +309,7 @@ class _ReaderScreenState extends State<ReaderScreen>
                     // Both control areas remain reserved. Changing these heights
                     // would reflow text and interrupt a page curl when chrome toggles.
                     SizedBox(
-                      height: 60,
+                      height: ReaderToolbar.height,
                       child: Stack(
                         children: [
                           ReaderControlsTransition(
@@ -449,7 +337,7 @@ class _ReaderScreenState extends State<ReaderScreen>
                           ReaderControlsTransition(
                             visible: !controls,
                             child: SizedBox(
-                              height: 60,
+                              height: ReaderToolbar.height,
                               child: Align(
                                 alignment: Alignment.centerRight,
                                 child: IconButton(
@@ -477,7 +365,7 @@ class _ReaderScreenState extends State<ReaderScreen>
                       ),
                     ),
                     SizedBox(
-                      height: 62,
+                      height: ReaderNavigationBar.height,
                       child: Stack(
                         alignment: Alignment.center,
                         children: [
@@ -489,11 +377,8 @@ class _ReaderScreenState extends State<ReaderScreen>
                                   ? _narrationStatus()
                                   : null,
                               progress:
-                                  widget.controller.catalog.books
-                                      .where(
-                                        (book) => book.hash == widget.book.hash,
-                                      )
-                                      .firstOrNull
+                                  widget.controller.catalog
+                                      .find(widget.book)
                                       ?.progress ??
                                   widget.book.progress,
                               foreground: _foreground,
@@ -538,25 +423,8 @@ class _ReaderScreenState extends State<ReaderScreen>
     );
   }
 
-  NarrationRange? get _activeNarrationRange {
-    final session = widget.controller.narration;
-    return session?.book?.hash == widget.book.hash &&
-            session?.status == NarrationStatus.playing &&
-            _readerVisible
-        ? session?.activeHighlight
-        : null;
-  }
-
-  text.TextPosition? get _activeNarrationAnchor {
-    final session = widget.controller.narration;
-    return session?.book?.hash == widget.book.hash &&
-            session?.status == NarrationStatus.playing
-        ? session?.activeFollowPosition
-        : null;
-  }
-
   Widget _readerView(text.TextDocument document) {
-    final liveAnchor = _readerVisible ? _activeNarrationAnchor : null;
+    final liveAnchor = _narration.liveAnchor;
     return TextViewport(
       document: document,
       sourcePath: widget.book.path,
@@ -565,15 +433,12 @@ class _ReaderScreenState extends State<ReaderScreen>
       settings: widget.controller.preferences.settings,
       foreground: _foreground,
       background: _background,
-      activeNarrationRange: _activeNarrationRange,
+      activeNarrationRange: _narration.activeRange,
       // Live spoken bounds reopen as presentation, never durable progress.
       initialPositionIsRestoration: liveAnchor != null,
       initialPosition:
           liveAnchor ??
-          widget.controller.catalog.books
-              .where((item) => item.hash == widget.book.hash)
-              .firstOrNull
-              ?.lastPosition ??
+          widget.controller.catalog.find(widget.book)?.lastPosition ??
           widget.book.lastPosition,
       onRestored: (title) {
         if (mounted && chapterTitle != title) {

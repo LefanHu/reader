@@ -80,7 +80,7 @@ class FixtureLocalNarrationSource implements NarrationSource {
     required bool Function() isCurrent,
   }) async {
     if (_cancelled.contains(generation) || !isCurrent()) {
-      throw StateError('Fixture synthesis cancelled');
+      throw const NarrationCancelled();
     }
     if (!voices.any((voice) => voice.identifier == profile.voice)) {
       throw StateError('Choose an installed voice for new audio.');

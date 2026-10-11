@@ -1,28 +1,15 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/app/reader_controller.dart';
-import 'package:reader/importing/book_importer.dart';
 import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/preferences/reader_settings.dart';
 import 'package:reader/preferences/reading_theme.dart';
-import 'package:reader/settings/settings_screen.dart';
-import 'package:reader/theme.dart';
 
-import 'fixtures/catalog_book.dart';
-import 'support/controller_lifecycle.dart';
-import 'support/fake_illustration_api.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_word_counter.dart';
 import 'support/fixture_local_narration_source.dart';
-import 'support/memory_catalog_store.dart';
-import 'support/memory_document_store.dart';
-import 'support/memory_illustration_store.dart';
-import 'support/memory_narration_store.dart';
 import 'support/memory_settings_store.dart';
+import 'support/narration_harness.dart';
 
 void main() {
   testWidgets(
@@ -220,59 +207,16 @@ Future<ReaderController> _mount(
   required FakeNarrationPlayer player,
   ReadingTheme theme = ReadingTheme.paper,
   double textScale = 1,
-}) async {
-  final book = testBook();
-  final controller = ReaderController(
-    catalogStore: MemoryCatalogStore([book]),
-    settingsStore: settings,
-    importer: BookImporter(root: Directory.systemTemp),
-    picker: FakePicker([]),
-    illustrationApi: FakeIllustrationApi(),
-    illustrationStore: MemoryIllustrationStore(),
-    wordCounter: FakeWordCounter(),
-    narrationApi: api,
-    narrationSource: source,
-    narrationPlayer: player,
-    narrationStore: MemoryNarrationStore(),
-    narrationDocuments: MemoryDocumentStore(),
-  );
-  addTearDown(() async {
-    await tester.pumpWidget(const SizedBox());
-    await disposeControllerWithFrames(tester, controller);
-  });
-  await controller.initialize();
-  await tester.pumpWidget(
-    MaterialApp(
-      theme: buildReaderTheme(theme),
-      builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context)
-            .copyWith(textScaler: TextScaler.linear(textScale)),
-        child: child!,
-      ),
-      home: Scaffold(
-        body: Builder(
-          builder: (context) => Column(
-            children: [
-              TextButton(
-                onPressed: () => showNarrationSheet(context, controller, book),
-                child: const Text('Open listening'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => SettingsScreen(controller: controller),
-                  ),
-                ),
-                child: const Text('Settings'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-  return controller;
-}
+}) => pumpNarrationHarness(
+  tester,
+  api: api,
+  source: source,
+  player: player,
+  settings: settings,
+  settingsButton: true,
+  theme: theme,
+  textScale: textScale,
+);
 
 class _UsageCountingApi extends FakeNarrationApi {
   int usageRequests = 0;

@@ -44,4 +44,26 @@ void main() {
       });
     },
   );
+
+  test('read skips a symlinked generation and reports recovery', () async {
+    final root = await Directory.systemTemp.createTemp('atomic_json_read');
+    addTearDown(() => root.delete(recursive: true));
+    final file = File('${root.path}/value.json');
+    final atomic = AtomicJsonFile(file);
+    final outside = File('${root.path}/outside.json')
+      ..writeAsStringSync(jsonEncode({'value': 'outside'}));
+    Link('${file.path}.tmp').createSync(outside.path);
+    File('${file.path}.bak').writeAsStringSync(jsonEncode({'value': 'bak'}));
+
+    final skipped = await atomic.read((json) => json['value'] as String?);
+    expect(skipped?.value, 'bak');
+    expect(skipped?.recovered, isTrue);
+
+    Link('${file.path}.tmp').deleteSync();
+    File('${file.path}.tmp').writeAsStringSync(jsonEncode({'value': 'tmp'}));
+    file.writeAsStringSync('{broken');
+    final recovered = await atomic.read((json) => json['value'] as String?);
+    expect(recovered?.value, 'tmp');
+    expect(recovered?.recovered, isTrue);
+  });
 }

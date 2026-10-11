@@ -4,6 +4,8 @@ import 'narration_chunk.dart';
 import 'text_position.dart';
 import 'text_section.dart';
 
+final _sentenceEnd = RegExp(r'[.!?。！？]\s*$');
+
 /// Chunks one normalized section, preferring paragraphs then sentence endings.
 /// Starting at a committed anchor yields an exact suffix rather than rereading
 /// earlier prose. Each paragraph keeps its original stable block identity.
@@ -22,9 +24,9 @@ List<NarrationChunk> narrationChunks(
       var end = offset;
       var sentence = offset;
       for (final cluster in block.text.substring(offset).characters) {
-        if (end + cluster.length - offset > 3000) break;
+        if (end + cluster.length - offset > maxNarrationClipUnits) break;
         end += cluster.length;
-        if (RegExp(r'[.!?。！？]\s*$').hasMatch(cluster)) sentence = end;
+        if (_sentenceEnd.hasMatch(cluster)) sentence = end;
       }
       // A single pathological extended grapheme cannot be split or uploaded.
       if (end == offset) {

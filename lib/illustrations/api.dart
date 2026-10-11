@@ -10,12 +10,7 @@ import 'unlocked_illustration.dart';
 
 /// Authenticated API used by the reader; implementations never receive EPUBs.
 abstract interface class IllustrationApi {
-  /// User-triggered identity preparation before retrying old privacy requests.
-  Future<void> signIn();
   bool get configured;
-
-  /// Checks existing identity without opening a sign-in prompt.
-  Future<bool> hasSession();
   Future<IllustrationSetup> registerBook(
     CatalogBook book, {
     required int chapterCount,
@@ -30,6 +25,4 @@ abstract interface class IllustrationApi {
   Future<void> regenerateScene(String sceneId);
   Future<void> deleteScene(String sceneId);
   Future<void> deleteBook(String cloudBookId, {bool interactive = true});
-  Future<void> signOut();
-  Future<void> deleteAccount();
 }

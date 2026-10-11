@@ -95,14 +95,14 @@ class CloudNarrationSource implements NarrationSource {
     if (!voices.any((voice) => voice.identifier == profile.voice)) {
       throw StateError('Choose an available cloud narration voice.');
     }
-    if (!isCurrent()) throw StateError('Narration cancelled.');
+    if (!isCurrent()) throw const NarrationCancelled();
     final bytes = await api.audio(
       bookId,
       unit.chunk,
       profile.voice,
       isCurrent: isCurrent,
     );
-    if (!isCurrent()) throw StateError('Narration cancelled.');
+    if (!isCurrent()) throw const NarrationCancelled();
     final path = await store.put(
       book,
       narrationCacheKey(book, profile, unit.chunk),

@@ -11,6 +11,7 @@ import 'package:reader/narration/narration_audio_asset.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/narration_timing.dart';
 import 'package:reader/narration/narration_wav.dart';
+import 'package:reader/narration/source.dart';
 import 'package:reader/narration/store.dart';
 
 /// In-memory cloud cache with fixture-owned staging files for native writers.
@@ -87,9 +88,9 @@ class MemoryNarrationStore implements NarrationStore {
           !_disposed &&
           (_epochs[book.hash] ?? 0) == epoch &&
           (isCurrent?.call() ?? true);
-      if (!current()) throw StateError('Narration generation changed.');
+      if (!current()) throw const NarrationCancelled();
       await _removePublished(key);
-      if (!current()) throw StateError('Narration generation changed.');
+      if (!current()) throw const NarrationCancelled();
       files[key] = '/cache/$key.wav';
       timings.remove(key);
       _sizes[key] = bytes.length;
@@ -124,14 +125,14 @@ class MemoryNarrationStore implements NarrationStore {
     }
     bool current() =>
         !_disposed && (_epochs[book.hash] ?? 0) == epoch && isCurrent();
-    if (!current()) throw StateError('Narration generation changed.');
+    if (!current()) throw const NarrationCancelled();
     final root = await (_fixtureRoot ??= Directory.systemTemp.createTemp(
       'reader_narration_writer_',
     ));
-    if (!current()) throw StateError('Narration generation changed.');
+    if (!current()) throw const NarrationCancelled();
     final directory = Directory('${root.path}/books/${book.hash}/narration');
     await directory.create(recursive: true);
-    if (!current()) throw StateError('Narration generation changed.');
+    if (!current()) throw const NarrationCancelled();
     final file = File('${directory.path}/$key.wav');
     final temporary = File('${file.path}.tmp');
     final companion = File('${directory.path}/$key.timing.json');
@@ -144,7 +145,7 @@ class MemoryNarrationStore implements NarrationStore {
     }
     try {
       final generatedTiming = await writer(temporary.path);
-      if (!current()) throw StateError('Narration generation changed.');
+      if (!current()) throw const NarrationCancelled();
       final duration = await validateNarrationWav(temporary);
       var timing =
           generatedTiming != null &&
@@ -174,7 +175,7 @@ class MemoryNarrationStore implements NarrationStore {
       }
       final audioBytes = await temporary.length();
       final timingBytes = timing == null ? 0 : await timingTemporary.length();
-      if (!current()) throw StateError('Narration generation changed.');
+      if (!current()) throw const NarrationCancelled();
       for (final target in [file, companion, temporary, timingTemporary]) {
         final kind = FileSystemEntity.typeSync(target.path, followLinks: false);
         if (kind != FileSystemEntityType.notFound &&

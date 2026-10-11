@@ -1,16 +1,15 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:reader/account/account_usage.dart';
 import 'package:reader/account/account_usage_exception.dart';
+import 'package:reader/account/api.dart';
+import 'package:reader/account/http_account_api.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/app/reader_controller.dart';
-import 'package:reader/importing/book_importer.dart';
 import 'package:reader/narration/api.dart';
-import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/player.dart';
 import 'package:reader/narration/session.dart';
@@ -23,12 +22,7 @@ import 'package:reader/text/document_store.dart';
 import 'package:reader/text/text_position.dart';
 
 import 'fixtures/catalog_book.dart';
-import 'support/fake_illustration_api.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_word_counter.dart';
-import 'support/memory_catalog_store.dart';
 import 'support/memory_document_store.dart';
-import 'support/memory_illustration_store.dart';
 import 'support/memory_settings_store.dart';
 import 'fixtures/account_usage.dart';
 import 'support/fake_account_api.dart';
@@ -36,6 +30,7 @@ import 'support/cloud_identity_fake.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
 import 'support/memory_narration_store.dart';
+import 'support/test_controller.dart';
 
 /// Holds the first complete preference write to expose ordering regressions.
 class _DelayedSettingsStore extends MemorySettingsStore {
@@ -59,7 +54,7 @@ class _FailingClearStore extends MemoryNarrationStore {
 }
 
 Future<ReaderController> _controller({
-  FakeAccountApi? api,
+  AccountApi? api,
   FakeCloudIdentity? identity,
   MemorySettingsStore? settingsStore,
   NarrationApi? narrationApi,
@@ -68,25 +63,16 @@ Future<ReaderController> _controller({
   TextDocumentStore? narrationDocuments,
   bool disposeOnTeardown = true,
 }) async {
-  final controller = ReaderController(
+  final controller = await testController(
+    books: [testBook()],
+    settingsStore: settingsStore,
     accountApi: api,
     cloudIdentity: identity,
     narrationApi: narrationApi,
-    narrationSource: narrationApi == null
-        ? null
-        : CloudNarrationSource(narrationApi),
     narrationPlayer: narrationPlayer,
     narrationStore: narrationStore,
     narrationDocuments: narrationDocuments,
-    catalogStore: MemoryCatalogStore([testBook()]),
-    settingsStore: settingsStore ?? MemorySettingsStore(),
-    importer: BookImporter(root: Directory.systemTemp),
-    picker: FakePicker(),
-    illustrationStore: MemoryIllustrationStore(),
-    illustrationApi: FakeIllustrationApi(),
-    wordCounter: FakeWordCounter(),
   );
-  await controller.initialize();
   await controller.refreshCloudAccount();
   addTearDown(() async {
     if (disposeOnTeardown) controller.dispose();
@@ -348,18 +334,20 @@ void main() {
 
   test('local cleanup failure reflects deleted identity and retains the complete anchor', () async {
     final identity = FakeCloudIdentity()..email = 'reader@example.test';
-    final api = HttpNarrationApi(
-      identity: identity,
-      baseUri: Uri.parse('https://example.test'),
-      client: MockClient((request) async {
-        expect(request.method, 'DELETE');
-        expect(request.url.path, '/v1/account');
-        return http.Response('', 204);
-      }),
-    );
+    final client = MockClient((request) async {
+      expect(request.method, 'DELETE');
+      expect(request.url.path, '/v1/account');
+      return http.Response('', 204);
+    });
+    final baseUri = Uri.parse('https://example.test');
     final controller = await _controller(
       identity: identity,
-      narrationApi: api,
+      api: HttpAccountApi(identity: identity, baseUri: baseUri, client: client),
+      narrationApi: HttpNarrationApi(
+        identity: identity,
+        baseUri: baseUri,
+        client: client,
+      ),
       narrationPlayer: FakeNarrationPlayer(),
       narrationStore: _FailingClearStore(),
       narrationDocuments: MemoryDocumentStore(),

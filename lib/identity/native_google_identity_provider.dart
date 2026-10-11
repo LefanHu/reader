@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
+import 'cloud_failure_kind.dart';
 import 'cloud_identity_exception.dart';
 import 'google_identity_provider.dart';
 
@@ -27,6 +28,7 @@ class NativeGoogleIdentityProvider implements GoogleIdentityProvider {
     } on Object {
       _initializing = null;
       throw const CloudIdentityException(
+        CloudFailureKind.service,
         'Google sign-in could not initialize. Try again.',
       );
     }
@@ -40,16 +42,18 @@ class NativeGoogleIdentityProvider implements GoogleIdentityProvider {
       final token = account.authentication.idToken;
       if (token == null || token.isEmpty) {
         throw const CloudIdentityException(
+          CloudFailureKind.service,
           'Google did not return an identity token.',
         );
       }
       return token;
     } on GoogleSignInException catch (error) {
+      final canceled = error.code == GoogleSignInExceptionCode.canceled;
       throw CloudIdentityException(
-        error.code == GoogleSignInExceptionCode.canceled
+        canceled ? CloudFailureKind.cancelled : CloudFailureKind.service,
+        canceled
             ? 'Sign-in cancelled.'
             : 'Google sign-in could not be completed. Try again.',
-        cancelled: error.code == GoogleSignInExceptionCode.canceled,
       );
     }
   }

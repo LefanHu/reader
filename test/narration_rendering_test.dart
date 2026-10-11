@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:async';
 import 'dart:ui' as ui;
 
@@ -6,9 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/catalog/catalog_book.dart';
-import 'package:reader/importing/book_importer.dart';
 import 'package:reader/narration/mini_player.dart';
-import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/session.dart';
 import 'package:reader/narration/status_indicator.dart';
 import 'package:reader/preferences/reader_settings.dart';
@@ -30,16 +27,9 @@ import 'package:reader/text/reader_navigation.dart';
 
 import 'fixtures/catalog_book.dart';
 import 'support/controller_lifecycle.dart';
-import 'support/fake_illustration_api.dart';
 import 'support/fake_narration_api.dart';
-import 'support/fake_narration_player.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_word_counter.dart';
-import 'support/memory_catalog_store.dart';
 import 'support/memory_document_store.dart';
-import 'support/memory_illustration_store.dart';
-import 'support/memory_narration_store.dart';
-import 'support/memory_settings_store.dart';
+import 'support/test_controller.dart';
 
 void main() {
   for (final mode in ReadingMode.values) {
@@ -684,24 +674,11 @@ Future<ReaderController> _controller(
   CatalogBook book,
   MemoryDocumentStore documents,
   FakeNarrationApi api,
-) async {
-  final controller = ReaderController(
-    catalogStore: MemoryCatalogStore([book]),
-    settingsStore: MemorySettingsStore(),
-    importer: BookImporter(root: Directory.systemTemp),
-    picker: FakePicker([]),
-    illustrationApi: FakeIllustrationApi(),
-    illustrationStore: MemoryIllustrationStore(),
-    wordCounter: FakeWordCounter(),
-    narrationApi: api,
-    narrationSource: CloudNarrationSource(api),
-    narrationPlayer: FakeNarrationPlayer(),
-    narrationStore: MemoryNarrationStore(),
-    narrationDocuments: documents,
-  );
-  await controller.initialize();
-  return controller;
-}
+) => testController(
+  books: [book],
+  narrationApi: api,
+  narrationDocuments: documents,
+);
 
 NarrationRange _range(
   String section,

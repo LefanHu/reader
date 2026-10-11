@@ -41,11 +41,15 @@ class ReaderNavigationBar extends StatelessWidget {
   final VoidCallback onNextChapter;
 
   /// Optional persistent listening indicator in the existing progress slot.
-  /// Its presence never changes the reserved 62-pixel navigation height.
+  /// Its presence never changes the reserved [height].
   final Widget? listeningStatus;
+
+  /// Reserved even while hidden so text never reflows.
+  static const double height = 62;
+
   @override
   Widget build(BuildContext context) => SizedBox(
-    height: 62,
+    height: height,
     child: Row(
       children: [
         IconButton(

@@ -1,16 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import express, {
-  type Request,
-  type Response,
-  type NextFunction,
-} from "express";
+import express from "express";
 import {
   FieldValue,
   Timestamp,
+  type DocumentData,
   type Firestore,
+  type Transaction,
 } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
 import type { NarrationProvider } from "./narration-provider.js";
+import { asyncRoute, HttpError, routeParam } from "./http.js";
+import {
+  accountTombstoneReference,
+  bookReference,
+  readBookFence,
+} from "./fences.js";
 
 /** Bounded public input; UTF-16 lengths match the native normalized chunker. */
 export interface NarrationInput {
@@ -20,16 +24,6 @@ export interface NarrationInput {
   voice: "marin" | "cedar";
   documentVersion: number;
   chunkVersion: number;
-}
-
-/** Safe HTTP failures expose categories, never prose or provider responses. */
-export class NarrationError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
 }
 
 /** Reject malformed Unicode, unsupported settings, unbounded IDs and digest lies. */
@@ -51,7 +45,7 @@ export function validateNarrationInput(body: unknown): NarrationInput {
         ].includes(key),
     )
   )
-    throw new NarrationError(400, "Invalid narration schema.");
+    throw new HttpError(400, "Invalid narration schema.");
   if (
     !value ||
     typeof value.text !== "string" ||
@@ -67,9 +61,9 @@ export function validateNarrationInput(body: unknown): NarrationInput {
     value.documentVersion !== 1 ||
     value.chunkVersion !== 1
   )
-    throw new NarrationError(400, "Invalid narration chunk.");
+    throw new HttpError(400, "Invalid narration chunk.");
   if (createHash("sha256").update(value.text).digest("hex") !== value.digest)
-    throw new NarrationError(400, "Narration digest mismatch.");
+    throw new HttpError(400, "Narration digest mismatch.");
   return value as NarrationInput;
 }
 
@@ -105,37 +99,14 @@ export interface NarrationDependencies {
   ) => Promise<void>;
 }
 
-type Authed = Request & { uid?: string };
 const retention = 30 * 86400000;
 const lease = 240000;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-const routeId = (req: Request, name: string) => {
-  const value = req.params[name];
-  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value))
-    throw new NarrationError(400, "Invalid narration identifier.");
-  return value;
-};
-const route =
-  (action: (req: Authed, res: Response) => Promise<void>) =>
-  (req: Authed, res: Response, next: NextFunction) => {
-    action(req, res).catch(next);
-  };
+const narrationId = /^[a-f0-9]{64}$/;
 
 /** Owns jobs, allowance reservations, leases and tombstones behind shared auth. */
 export class NarrationBackend {
   constructor(readonly dependencies: NarrationDependencies) {}
-  private book(uid: string, id: string) {
-    return this.dependencies.db
-      .collection("users")
-      .doc(uid)
-      .collection("narrationBooks")
-      .doc(id);
-  }
-  private account(uid: string) {
-    return this.dependencies.db
-      .collection("narrationAccountTombstones")
-      .doc(uid);
-  }
   private counters(uid: string, now: Date) {
     const db = this.dependencies.db;
     const day = now.toISOString().slice(0, 10);
@@ -147,10 +118,45 @@ export class NarrationBackend {
     };
   }
 
+  /** Reserves `characters` against both UTC counters, or returns null when exhausted. */
+  private async reserveAllowance(
+    tx: Transaction,
+    uid: string,
+    characters: number,
+  ): Promise<{ monthCounter: string; dayCounter: string } | null> {
+    const counters = this.counters(uid, new Date()),
+      limits = narrationLimits();
+    const [month, day] = await Promise.all([
+      tx.get(counters.month),
+      tx.get(counters.day),
+    ]);
+    const monthUsed = Number(month.data()?.used ?? 0),
+      dayUsed = Number(day.data()?.used ?? 0);
+    if (
+      monthUsed + characters > limits.monthly ||
+      dayUsed + characters > limits.daily
+    )
+      return null;
+    tx.set(counters.month, { uid, used: monthUsed + characters });
+    tx.set(counters.day, { used: dayUsed + characters });
+    return { monthCounter: counters.month.id, dayCounter: counters.day.id };
+  }
+
+  /** Returns a job's reserved characters to the counters it was charged against. */
+  private refundAllowance(tx: Transaction, data: DocumentData): void {
+    const { db } = this.dependencies;
+    tx.update(db.collection("narrationUsage").doc(data.monthCounter), {
+      used: FieldValue.increment(-data.characters),
+    });
+    tx.update(db.collection("narrationDailyUsage").doc(data.dayCounter), {
+      used: FieldValue.increment(-data.characters),
+    });
+  }
+
   /** Durable tombstones fence claims and publishing, including late worker writes. */
   async deleteBook(uid: string, id: string): Promise<void> {
     const { db, storage, bucket } = this.dependencies;
-    await this.book(uid, id).set(
+    await bookReference(db, "narrationBooks", uid, id).set(
       { uid, deleted: true, updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
@@ -179,8 +185,10 @@ export class NarrationBackend {
 
   /** Account tombstones precede purging so delayed workers cannot recreate data. */
   async deleteAccount(uid: string): Promise<void> {
-    await this.account(uid).set({ deletedAt: FieldValue.serverTimestamp() });
     const { db } = this.dependencies;
+    await accountTombstoneReference(db, uid).set({
+      deletedAt: FieldValue.serverTimestamp(),
+    });
     const books = await db
       .collection("users")
       .doc(uid)
@@ -216,12 +224,7 @@ export class NarrationBackend {
         (expectedToken != null && data.token !== expectedToken)
       )
         return;
-      tx.update(db.collection("narrationUsage").doc(data.monthCounter), {
-        used: FieldValue.increment(-data.characters),
-      });
-      tx.update(db.collection("narrationDailyUsage").doc(data.dayCounter), {
-        used: FieldValue.increment(-data.characters),
-      });
+      this.refundAllowance(tx, data);
       tx.update(ref, { reserved: false });
     });
   }
@@ -255,12 +258,7 @@ export class NarrationBackend {
           (input.data()?.expiresAt?.toMillis() ?? 0) > Date.now()
         )
           return;
-        tx.update(db.collection("narrationUsage").doc(data.monthCounter), {
-          used: FieldValue.increment(-data.characters),
-        });
-        tx.update(db.collection("narrationDailyUsage").doc(data.dayCounter), {
-          used: FieldValue.increment(-data.characters),
-        });
+        this.refundAllowance(tx, data);
         tx.update(entry.ref, {
           status: "failed",
           reserved: false,
@@ -278,14 +276,14 @@ export class NarrationBackend {
     const { db, enabled } = this.dependencies;
     router.delete(
       "/books/:bookId",
-      route(async (req, res) => {
-        await this.deleteBook(req.uid!, routeId(req, "bookId"));
+      asyncRoute(async (req, res) => {
+        await this.deleteBook(req.uid!, routeParam(req, "bookId", narrationId));
         res.status(204).end();
       }),
     );
     router.get(
       "/config",
-      route(async (req, res) => {
+      asyncRoute(async (req, res) => {
         await this.reclaim(req.uid!);
         const limits = narrationLimits();
         const counter = await this.counters(req.uid!, new Date()).month.get();
@@ -314,18 +312,18 @@ export class NarrationBackend {
     });
     router.post(
       "/books",
-      route(async (req, res) => {
+      asyncRoute(async (req, res) => {
         if (
           typeof req.body?.fingerprint !== "string" ||
           !/^[a-f0-9]{64}$/.test(req.body.fingerprint)
         )
-          throw new NarrationError(400, "Valid fingerprint required.");
+          throw new HttpError(400, "Valid fingerprint required.");
         const uid = req.uid!;
         const id = hash(`${uid}:${req.body.fingerprint}:${randomUUID()}`);
         await db.runTransaction(async (tx) => {
-          if ((await tx.get(this.account(uid))).exists)
-            throw new NarrationError(410, "Account was deleted.");
-          tx.create(this.book(uid, id), {
+          if ((await tx.get(accountTombstoneReference(db, uid))).exists)
+            throw new HttpError(410, "Account was deleted.");
+          tx.create(bookReference(db, "narrationBooks", uid, id), {
             uid,
             fingerprint: req.body.fingerprint,
             deleted: false,
@@ -343,9 +341,9 @@ export class NarrationBackend {
     );
     router.post(
       "/books/:bookId/jobs",
-      route(async (req, res) => {
+      asyncRoute(async (req, res) => {
         const uid = req.uid!,
-          bookId = routeId(req, "bookId"),
+          bookId = routeParam(req, "bookId", narrationId),
           input = validateNarrationInput(req.body);
         const id = hash(
           JSON.stringify({
@@ -360,18 +358,14 @@ export class NarrationBackend {
             format: "pcm-24000-mono-v1",
           }),
         );
-        const ref = db.collection("narrationJobs").doc(id),
-          counters = this.counters(uid, new Date());
+        const ref = db.collection("narrationJobs").doc(id);
         const attempt = await db.runTransaction(async (tx) => {
-          const [book, account, job, month, day] = await Promise.all([
-            tx.get(this.book(uid, bookId)),
-            tx.get(this.account(uid)),
+          const [fence, job] = await Promise.all([
+            readBookFence(tx, db, "narrationBooks", uid, bookId),
             tx.get(ref),
-            tx.get(counters.month),
-            tx.get(counters.day),
           ]);
-          if (!book.exists || book.data()?.deleted || account.exists)
-            throw new NarrationError(410, "Narration book was deleted.");
+          if (!fence.live)
+            throw new HttpError(410, "Narration book was deleted.");
           const existing = job.data();
           const expired =
             existing?.status === "ready" &&
@@ -383,17 +377,14 @@ export class NarrationBackend {
                 (["generating", "ready"].includes(existing?.status) ? 1 : 0),
             );
           if (!expired && Number(existing?.attempts ?? 0) >= 2)
-            throw new NarrationError(409, "Narration retry limit reached.");
-          const limits = narrationLimits();
-          const monthUsed = Number(month.data()?.used ?? 0),
-            dayUsed = Number(day.data()?.used ?? 0);
-          if (
-            monthUsed + input.text.length > limits.monthly ||
-            dayUsed + input.text.length > limits.daily
-          )
-            throw new NarrationError(429, "Narration allowance exhausted.");
-          tx.set(counters.month, { uid, used: monthUsed + input.text.length });
-          tx.set(counters.day, { used: dayUsed + input.text.length });
+            throw new HttpError(409, "Narration retry limit reached.");
+          const reservation = await this.reserveAllowance(
+            tx,
+            uid,
+            input.text.length,
+          );
+          if (!reservation)
+            throw new HttpError(429, "Narration allowance exhausted.");
           // Counters include both reserved and submitted units. Each retry receives
           // a new reservation; only pre-submission failures release its units.
           tx.set(ref, {
@@ -403,8 +394,7 @@ export class NarrationBackend {
             voice: input.voice,
             characters: input.text.length,
             digest: input.digest,
-            monthCounter: counters.month.id,
-            dayCounter: counters.day.id,
+            ...reservation,
             reserved: true,
             submitted: false,
             attempts: expired ? 0 : Number(existing?.attempts ?? 0),
@@ -430,15 +420,20 @@ export class NarrationBackend {
     );
     router.get(
       "/jobs/:jobId",
-      route(async (req, res) => {
-        const id = routeId(req, "jobId"),
+      asyncRoute(async (req, res) => {
+        const id = routeParam(req, "jobId", narrationId),
           job = await db.collection("narrationJobs").doc(id).get();
         const data = job.data();
         if (!data || data.uid !== req.uid)
-          throw new NarrationError(404, "Narration job not found.");
-        const book = await this.book(req.uid!, data.bookId).get();
+          throw new HttpError(404, "Narration job not found.");
+        const book = await bookReference(
+          db,
+          "narrationBooks",
+          req.uid!,
+          data.bookId,
+        ).get();
         if (book.data()?.deleted)
-          throw new NarrationError(410, "Narration book was deleted.");
+          throw new HttpError(410, "Narration book was deleted.");
         if (data.status !== "ready") {
           res.json({ status: data.status });
           return;
@@ -466,10 +461,10 @@ export class NarrationBackend {
     const router = express.Router();
     router.post(
       "/:jobId",
-      route(async (req, res) => {
+      asyncRoute(async (req, res) => {
         if (!this.dependencies.enabled)
-          throw new NarrationError(503, "Narration generation is disabled.");
-        await this.run(routeId(req, "jobId"));
+          throw new HttpError(503, "Narration generation is disabled.");
+        await this.run(routeParam(req, "jobId", narrationId));
         res.status(204).end();
       }),
     );
@@ -488,41 +483,27 @@ export class NarrationBackend {
       if (!value || ["ready", "failed", "deleted"].includes(value.status))
         return null;
       if ((value.leaseUntil?.toMillis() ?? 0) > Date.now())
-        throw new NarrationError(409, "Narration claim is busy.");
-      const [book, account] = await Promise.all([
-        tx.get(this.book(value.uid, value.bookId)),
-        tx.get(this.account(value.uid)),
-      ]);
-      if (!book.exists || book.data()?.deleted || account.exists) return null;
+        throw new HttpError(409, "Narration claim is busy.");
+      if (
+        !(await readBookFence(tx, db, "narrationBooks", value.uid, value.bookId))
+          .live
+      )
+        return null;
       if (value.attempts >= 2) {
         tx.update(ref, { status: "failed" });
         return null;
       }
       if (value.submitted) {
-        const counters = this.counters(value.uid, new Date()),
-          limits = narrationLimits();
-        const [month, day] = await Promise.all([
-          tx.get(counters.month),
-          tx.get(counters.day),
-        ]);
-        const monthUsed = Number(month.data()?.used ?? 0),
-          dayUsed = Number(day.data()?.used ?? 0);
-        if (
-          monthUsed + value.characters > limits.monthly ||
-          dayUsed + value.characters > limits.daily
-        ) {
+        const reservation = await this.reserveAllowance(
+          tx,
+          value.uid,
+          value.characters,
+        );
+        if (!reservation) {
           tx.update(ref, { status: "failed" });
           return null;
         }
-        tx.set(counters.month, {
-          uid: value.uid,
-          used: monthUsed + value.characters,
-        });
-        tx.set(counters.day, { used: dayUsed + value.characters });
-        tx.update(ref, {
-          monthCounter: counters.month.id,
-          dayCounter: counters.day.id,
-        });
+        tx.update(ref, reservation);
       }
       tx.update(ref, {
         status: "generating",
@@ -550,17 +531,11 @@ export class NarrationBackend {
         data.voice,
         async () => {
           await db.runTransaction(async (tx) => {
-            const [job, book, account] = await Promise.all([
+            const [job, fence] = await Promise.all([
               tx.get(ref),
-              tx.get(this.book(data.uid, data.bookId)),
-              tx.get(this.account(data.uid)),
+              readBookFence(tx, db, "narrationBooks", data.uid, data.bookId),
             ]);
-            if (
-              job.data()?.token !== token ||
-              book.data()?.deleted ||
-              !book.exists ||
-              account.exists
-            )
+            if (job.data()?.token !== token || !fence.live)
               throw new Error("Narration claim was cancelled");
             tx.update(ref, { submitted: true });
           });
@@ -575,17 +550,11 @@ export class NarrationBackend {
           preconditionOpts: { ifGenerationMatch: 0 },
         });
       await db.runTransaction(async (tx) => {
-        const [job, book, account] = await Promise.all([
+        const [job, fence] = await Promise.all([
           tx.get(ref),
-          tx.get(this.book(data.uid, data.bookId)),
-          tx.get(this.account(data.uid)),
+          readBookFence(tx, db, "narrationBooks", data.uid, data.bookId),
         ]);
-        if (
-          job.data()?.token !== token ||
-          book.data()?.deleted ||
-          !book.exists ||
-          account.exists
-        )
+        if (job.data()?.token !== token || !fence.live)
           throw new Error("Narration publication was cancelled");
         tx.update(ref, {
           status: "ready",

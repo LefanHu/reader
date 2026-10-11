@@ -4,7 +4,8 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../atomic_json_file.dart';
-import '../illustrations/file_illustration_deletion_outbox.dart';
+import '../file_cloud_deletion_outbox.dart';
+import 'book_storage.dart';
 import 'catalog_book.dart';
 import 'catalog_store.dart';
 
@@ -38,28 +39,25 @@ class FileCatalogStore implements CatalogStore {
     }
     if (await _reset.exists()) await _finishReset();
     var legacy = false;
-    for (final candidate in _catalogFile.generations) {
-      if (!await candidate.exists()) continue;
-      try {
-        final json = jsonDecode(await candidate.readAsString());
-        if (json is! Map || json['books'] is! List) continue;
-        if (json['version'] != 2) {
-          legacy = true;
-          continue;
-        }
-        final books = (json['books'] as List)
-            .whereType<Map>()
-            .map((item) => CatalogBook.fromJson(item.cast<String, dynamic>()))
-            .where(
-              (book) =>
-                  _ownedDirectory(book) != null && File(book.path).existsSync(),
-            )
-            .toList();
-        if (candidate.path != _catalogFile.file.path) await save(books);
-        return books;
-      } on Object {
-        continue;
+    final stored = await _catalogFile.read((json) {
+      if (json['books'] is! List) return null;
+      if (json['version'] != 2) {
+        legacy = true;
+        return null;
       }
+      return (json['books'] as List)
+          .whereType<Map>()
+          .map((item) => CatalogBook.fromJson(item.cast<String, dynamic>()))
+          .where(
+            (book) =>
+                ownedBookDirectory(root, book) != null &&
+                File(book.path).existsSync(),
+          )
+          .toList();
+    });
+    if (stored != null) {
+      if (stored.recovered) await save(stored.value);
+      return stored.value;
     }
     // Also clear orphaned legacy imports if their catalog was lost/corrupted.
     if (legacy || await Directory('${root.path}/books').exists()) {
@@ -70,7 +68,7 @@ class FileCatalogStore implements CatalogStore {
           final hash = entry.uri.pathSegments
               .where((part) => part.isNotEmpty)
               .last;
-          if (entry is Directory && RegExp(r'^[a-f0-9]{64}$').hasMatch(hash)) {
+          if (entry is Directory && RegExp(sha256HexPattern).hasMatch(hash)) {
             hashes.add(hash);
           }
         }
@@ -89,9 +87,12 @@ class FileCatalogStore implements CatalogStore {
     final marker = jsonDecode(await _reset.readAsString()) as Map;
     final hashes = (marker['hashes'] as List)
         .whereType<String>()
-        .where((hash) => RegExp(r'^[a-f0-9]{64}$').hasMatch(hash))
+        .where((hash) => RegExp(sha256HexPattern).hasMatch(hash))
         .toList();
-    final outbox = FileIllustrationDeletionOutbox(root);
+    final outbox = FileCloudDeletionOutbox(
+      root,
+      fileName: 'illustration-deletions.json',
+    );
     for (final hash in hashes) {
       final directory = Directory('${root.path}/books/$hash');
       if (await FileSystemEntity.type(directory.path, followLinks: false) !=
@@ -123,7 +124,7 @@ class FileCatalogStore implements CatalogStore {
     }
     // Narration sidecars are additive, but their cloud privacy receipts must
     // survive a legacy reset just like illustration receipts.
-    final narrationOutbox = FileIllustrationDeletionOutbox(
+    final narrationOutbox = FileCloudDeletionOutbox(
       root,
       fileName: 'narration-deletions.json',
     );
@@ -142,7 +143,7 @@ class FileCatalogStore implements CatalogStore {
         try {
           final id =
               (jsonDecode(await file.readAsString()) as Map)['cloudBookId'];
-          if (id is String && RegExp(r'^[a-f0-9]{64}$').hasMatch(id)) {
+          if (id is String && RegExp(sha256HexPattern).hasMatch(id)) {
             await narrationOutbox.enqueue(id);
           }
         } on Object {
@@ -167,24 +168,9 @@ class FileCatalogStore implements CatalogStore {
     'books': books.map((book) => book.toJson()).toList(),
   });
 
-  Directory? _ownedDirectory(CatalogBook book) {
-    if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(book.hash)) return null;
-    if (FileSystemEntity.typeSync('${root.path}/books', followLinks: false) !=
-        FileSystemEntityType.directory) {
-      return null;
-    }
-    final expected = Directory('${root.absolute.path}/books/${book.hash}');
-    if (File(book.path).absolute.parent.path != expected.path) return null;
-    if (FileSystemEntity.typeSync(expected.path, followLinks: false) !=
-        FileSystemEntityType.directory) {
-      return null;
-    }
-    return expected;
-  }
-
   @override
   Future<void> deleteFiles(CatalogBook book) async {
-    final directory = _ownedDirectory(book);
+    final directory = ownedBookDirectory(root, book);
     if (directory == null) {
       throw const FormatException('Book path is outside owned storage.');
     }

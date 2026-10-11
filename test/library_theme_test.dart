@@ -16,6 +16,7 @@ import 'package:reader/theme.dart';
 import 'support/memory_document_store.dart';
 import 'support/memory_settings_store.dart';
 import 'support/test_controller.dart';
+import 'support/fonts.dart';
 
 /// Stable catalog metadata used to inspect layout without file or cloud imports.
 List<CatalogBook> _books({bool longTitles = false, String? cover}) => [
@@ -52,16 +53,8 @@ double _contrast(Color a, Color b) {
 }
 
 void main() {
-  setUpAll(() async {
-    // Use bundled fonts so snapshots represent production typography, not Ahem.
-    for (final (family, path) in [
-      ('Lora', 'assets/fonts/Lora.ttf'),
-      ('DM Sans', 'assets/fonts/DMSans.ttf'),
-      ('MaterialIcons', 'fonts/MaterialIcons-Regular.otf'),
-    ]) {
-      await (FontLoader(family)..addFont(rootBundle.load(path))).load();
-    }
-  });
+  // Use bundled fonts so snapshots represent production typography, not Ahem.
+  setUpAll(loadReaderFonts);
   setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.iOS);
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 

@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
-import '../text/document.dart';
 import '../text/text_position.dart';
 import 'session.dart';
 
@@ -283,11 +282,10 @@ class _NarrationSheetState extends State<NarrationSheet> {
                     Tooltip(
                       message: 'Back 15 seconds',
                       child: TextButton.icon(
-                        onPressed: ready && session.manifest.chunkId != null
+                        onPressed: ready && session.canSeek
                             ? () => _perform(
-                                () => session.seek(
-                                  session.player.position -
-                                      const Duration(seconds: 15),
+                                () => session.seekBy(
+                                  const Duration(seconds: -15),
                                 ),
                               )
                             : null,
@@ -298,12 +296,10 @@ class _NarrationSheetState extends State<NarrationSheet> {
                     Tooltip(
                       message: 'Forward 15 seconds',
                       child: TextButton.icon(
-                        onPressed: ready && session.manifest.chunkId != null
+                        onPressed: ready && session.canSeek
                             ? () => _perform(
-                                () => session.seek(
-                                  session.player.position +
-                                      const Duration(seconds: 15),
-                                ),
+                                () =>
+                                    session.seekBy(const Duration(seconds: 15)),
                               )
                             : null,
                         icon: const Icon(Icons.forward),
@@ -443,25 +439,10 @@ class _NarrationSheetState extends State<NarrationSheet> {
                       : (id) {
                           if (id == null) return;
                           unawaited(
-                            _perform(() async {
-                              final target = session.book!;
-                              await session.navigate(target);
-                              final section = await session.documents
-                                  .loadSection(target.path, id);
-                              // Loading a chapter must not navigate a replaced book.
-                              if (!mounted ||
-                                  session.book?.hash != target.hash) {
-                                return;
-                              }
-                              final document = session.document as TextDocument;
-                              await controller.savePosition(
-                                target,
-                                section.start,
-                                document.progress(section, section.start),
-                                fromNarration: true,
-                              );
-                              controller.notifyNarrationNavigation();
-                            }),
+                            _perform(
+                              () =>
+                                  controller.narrateChapter(session.book!, id),
+                            ),
                           );
                         },
                 ),
@@ -485,16 +466,7 @@ class _NarrationSheetState extends State<NarrationSheet> {
                       TextButton(
                         onPressed: !ready
                             ? null
-                            : () => _perform(() async {
-                                final config = await session.api
-                                    .configuration();
-                                if (!mounted ||
-                                    session.book?.hash != book.hash) {
-                                  return;
-                                }
-                                session.remaining = config['remaining'] as int?;
-                                controller.notifyNarrationNavigation();
-                              }),
+                            : () => _perform(session.refreshAllowance),
                         child: const Text('Refresh allowance'),
                       ),
                     TextButton(

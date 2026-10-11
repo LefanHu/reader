@@ -19,6 +19,8 @@ import 'package:reader/narration/session.dart';
 import 'package:reader/text/viewport.dart';
 
 import '../../test/fixtures/narration_audio.dart';
+import '../../test/support/cloud_identity_fake.dart';
+import '../../test/support/fake_account_api.dart';
 import '../../test/support/fake_narration_api.dart';
 import '../support/native_test_app.dart';
 import '../support/apple_narration_probe.dart';
@@ -618,7 +620,14 @@ void registerNarrationTests() {
   testWidgets(
     'registration, native media controls, offline replay and deletion preserve reading progress',
     (tester) async {
-      final app = await NativeTestApp.launch(tester, narration: true);
+      final identity = FakeCloudIdentity();
+      final account = FakeAccountApi();
+      final app = await NativeTestApp.launch(
+        tester,
+        narration: true,
+        cloudIdentity: identity,
+        accountApi: account,
+      );
       final book = app.book('Unicode Test');
       final session = app.controller.narration!;
       final api = session.api as FakeNarrationApi;
@@ -690,9 +699,9 @@ void registerNarrationTests() {
       expect(await File(book.path).exists(), isFalse);
       expect(find.byTooltip('Play narration'), findsNothing);
       await app.runWithFrames(app.controller.signOutOfCloud);
-      expect(api.signOuts, 1);
+      expect(identity.signOuts, 1);
       await app.runWithFrames(app.controller.deleteCloudAccount);
-      expect(api.accountDeletions, 1);
+      expect(account.deletions, 1);
       expect(app.controller.catalog.books, hasLength(1));
     },
   );

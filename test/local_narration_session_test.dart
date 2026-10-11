@@ -6,6 +6,7 @@ import 'package:reader/catalog/file_catalog_store.dart';
 import 'package:reader/narration/narration_cache_key.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/session.dart';
+import 'package:reader/narration/source.dart';
 import 'package:reader/text/narration_range.dart';
 import 'package:reader/text/text_block.dart';
 import 'package:reader/text/text_position.dart';
@@ -466,7 +467,7 @@ void main() {
           await request.finished.future;
           expect(gate.cancelled, isTrue);
           expect(request.isCurrent(), isFalse);
-          expect(request.failure, isA<StateError>());
+          expect(request.failure, isA<NarrationCancelled>());
           expect(request.asset, isNull);
           expect(
             fixture.source.cancelledGenerations,
@@ -529,7 +530,7 @@ void main() {
       expect(replacements.last.key, stale.key);
       expect(replacements.last.generation, isNot(stale.generation));
       expect(stale.asset, isNull);
-      expect(stale.failure, isA<StateError>());
+      expect(stale.failure, isA<NarrationCancelled>());
       expect(replacements.last.asset, isNotNull);
       expect(fixture.player.token, token);
       expect(fixture.session.status, NarrationStatus.playing);

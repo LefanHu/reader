@@ -7,27 +7,28 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reader/account/api.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/identity/cloud_identity.dart';
-import 'package:reader/importing/book_importer.dart';
+import 'package:reader/illustrations/document_text_indexer.dart';
+import 'package:reader/illustrations/file_illustration_store.dart';
 import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/library/library_screen.dart';
 import 'package:reader/app/reader_app.dart';
 import 'package:reader/narration/file_narration_store.dart';
 import 'package:reader/narration/native_narration_player.dart';
 import 'package:reader/narration/apple_narration_source.dart';
-import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/player.dart';
 import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/text/document_store.dart';
+import 'package:reader/text/file_book_word_counter.dart';
 import 'package:reader/text/viewport.dart';
 
-import '../../test/support/fake_illustration_api.dart';
-import '../../test/support/fake_picker.dart';
-import '../../test/support/memory_settings_store.dart';
 import '../../test/fixtures/epub.dart';
 import '../../test/support/fake_narration_api.dart';
+import '../../test/support/test_controller.dart';
 
 /// Owns one native test's real private catalog, parser, and application routes.
 /// Only picker input, preferences, and cloud services are replaced with fakes.
@@ -64,6 +65,7 @@ class NativeTestApp {
     bool narration = false,
     bool localNarration = false,
     CloudIdentity? cloudIdentity,
+    AccountApi? accountApi,
     Uint8List? textBytes,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
@@ -89,18 +91,11 @@ class NativeTestApp {
           ),
         );
     final epub = epubFixture();
-    app.controller = ReaderController(
-      cloudIdentity: cloudIdentity,
-      narrationApi: api,
-      narrationSource:
-          app.localNarrationSource ??
-          (api == null ? null : CloudNarrationSource(api)),
-      narrationPlayer: app._initializingPlayer,
-      narrationStore: hasNarration ? FileNarrationStore(root) : null,
+    app.controller = await testController(
+      initialize: false,
       catalogStore: app.store,
-      settingsStore: MemorySettingsStore(),
-      importer: BookImporter(root: root),
-      picker: FakePicker([
+      root: root,
+      files: [
         ImportCandidate(
           name: 'Unicode Test.txt',
           size: txt.length,
@@ -111,8 +106,18 @@ class NativeTestApp {
           size: epub.length,
           readBytes: () async => epub,
         ),
-      ]),
-      illustrationApi: FakeIllustrationApi(),
+      ],
+      illustrationStore: FileIllustrationStore(root),
+      textIndexer: DocumentTextIndexer(),
+      wordCounter: FileBookWordCounter(),
+      cloudIdentity: cloudIdentity,
+      accountApi: accountApi,
+      narrationApi: api,
+      narrationSource: app.localNarrationSource,
+      narrationPlayer: app._initializingPlayer,
+      narrationStore: hasNarration ? FileNarrationStore(root) : null,
+      // Native scenarios narrate the real normalized sidecars.
+      narrationDocuments: hasNarration ? TextDocumentStore() : null,
     );
     app._ownedController = app.controller;
     await app.controller.initialize();

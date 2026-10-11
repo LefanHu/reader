@@ -8,7 +8,9 @@ import type {
   analyzeNarrative, composeImagePrompt, moderateImage, moderateText,
   ImageGenerationProvider,
 } from "./openai.js";
-import { asyncRoute, HttpError, routeParam } from "./illustration-http.js";
+import { asyncRoute, HttpError, routeParam } from "./http.js";
+import { bookReference, readBookFence } from "./fences.js";
+import { CancelledClaim, reserveCredit, settleCredit } from "./illustration-credits.js";
 import type {
   ChapterInput, SceneGenerationSpec, WorldReference, WorldRevision, WorldSnapshot,
 } from "./types.js";
@@ -27,7 +29,6 @@ export interface IllustrationWorkerDependencies {
 }
 
 class SafetyError extends Error {}
-class CancelledClaim extends Error {}
 
 type Claim = {
   reference: DocumentReference;
@@ -63,18 +64,14 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     imageGenerationProvider,
   } = dependencies;
   const router = express.Router();
-  const bookReference = (uid: string, bookId: string) => db.collection("users").doc(uid).collection("books").doc(bookId);
-  const accountReference = (uid: string) => db.collection("narrationAccountTombstones").doc(uid);
 
   async function liveClaim(transaction: Transaction, claim: Claim) {
-    const [record, book, account] = await Promise.all([
+    const [record, fence] = await Promise.all([
       transaction.get(claim.reference),
-      transaction.get(bookReference(claim.uid, claim.bookId)),
-      transaction.get(accountReference(claim.uid)),
+      readBookFence(transaction, db, "books", claim.uid, claim.bookId),
     ]);
     const data = record.data();
-    if (!data || data.deleted || data[claim.tokenField] !== claim.token ||
-      !book.exists || book.data()?.deleted || account.exists) throw new CancelledClaim();
+    if (!data || data.deleted || data[claim.tokenField] !== claim.token || !fence.live) throw new CancelledClaim();
     // A still-owned but expired lease must be retried, not acknowledged and stranded.
     if ((data[claim.leaseField]?.toMillis() ?? 0) <= Date.now()) {
       throw new HttpError(409, "Illustration claim expired.");
@@ -82,49 +79,11 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     return data;
   }
 
-  function creditReservation(uid: string, operationId: string) {
-    return db.collection("creditReservations").doc(createHash("sha256").update(`${uid}:${operationId}`).digest("hex"));
-  }
-
-  async function reserveCredit(claim: Claim, operationId: string) {
+  /** Fences the claim and reserves its credit in one transaction. */
+  async function reserveClaimCredit(claim: Claim, operationId: string) {
     return db.runTransaction(async (transaction) => {
       await liveClaim(transaction, claim);
-      const userRef = db.collection("users").doc(claim.uid);
-      const reservationRef = creditReservation(claim.uid, operationId);
-      const [user, reservation] = await Promise.all([transaction.get(userRef), transaction.get(reservationRef)]);
-      if (!user.exists) throw new CancelledClaim();
-      if (reservation.data()?.state === "committed") return false;
-      const alreadyReserved = reservation.data()?.state === "reserved";
-      const remaining = Number(user.data()?.creditsRemaining ?? 0);
-      const reserved = Number(user.data()?.creditsReserved ?? 0);
-      if (!alreadyReserved && remaining - reserved < 1) return false;
-      if (!alreadyReserved) transaction.update(userRef, {
-        creditsReserved: reserved + 1, updatedAt: FieldValue.serverTimestamp(),
-      });
-      // An expired lease transfers its existing reservation, never charging twice.
-      transaction.set(reservationRef, {
-        uid: claim.uid, bookId: claim.bookId, operationId, claimToken: claim.token,
-        sceneId: operationId.split(":generation:")[0], state: "reserved",
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return true;
-    });
-  }
-
-  /** Call only after liveClaim, before any writes, so settlement is atomic with publication. */
-  async function settleCredit(transaction: Transaction, claim: Claim, operationId: string, commit: boolean) {
-    const userRef = db.collection("users").doc(claim.uid);
-    const reservationRef = creditReservation(claim.uid, operationId);
-    const [user, reservation] = await Promise.all([transaction.get(userRef), transaction.get(reservationRef)]);
-    if (!user.exists || reservation.data()?.state !== "reserved" || reservation.data()?.claimToken !== claim.token) {
-      throw new CancelledClaim();
-    }
-    transaction.update(userRef, {
-      ...(commit ? { creditsRemaining: FieldValue.increment(-1) } : {}),
-      creditsReserved: FieldValue.increment(-1), updatedAt: FieldValue.serverTimestamp(),
-    });
-    transaction.update(reservationRef, {
-      state: commit ? "committed" : "refunded", updatedAt: FieldValue.serverTimestamp(),
+      return reserveCredit(transaction, db, claim, operationId);
     });
   }
 
@@ -182,10 +141,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
       if (!data) throw new HttpError(404, "Job not found.");
       if (["complete", "failed", "insufficient_credits"].includes(data.status)) return null;
       if ((data.leaseUntil?.toMillis() ?? 0) > Date.now()) return null;
-      const [book, account] = await Promise.all([
-        transaction.get(bookReference(data.uid, data.bookId)), transaction.get(accountReference(data.uid)),
-      ]);
-      if (!book.exists || book.data()?.deleted || account.exists) return null;
+      if (!(await readBookFence(transaction, db, "books", data.uid, data.bookId)).live) return null;
       transaction.update(jobRef, {
         status: "analyzing", claimToken: token,
         leaseUntil: Timestamp.fromMillis(Date.now() + 10 * 60 * 1000), updatedAt: FieldValue.serverTimestamp(),
@@ -203,7 +159,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
         const inputSnapshot = await inputRef.get();
         if (!inputSnapshot.exists) { failureCategory = "missing_input"; throw new HttpError(404, "Job input not found."); }
         const input = inputSnapshot.data()?.input as ChapterInput;
-        const book = await bookReference(uid, bookId).get();
+        const book = await bookReference(db, "books", uid, bookId).get();
         const profile = book.data()?.profile as { style?: string } | undefined;
         if (!profile?.style) throw new Error("Book profile is incomplete");
         const siblingJobs = await db.collection("illustrationJobs").where("uid", "==", uid).where("bookId", "==", bookId).get();
@@ -253,7 +209,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
             const id = createHash("sha256").update(`${jobId}:${revision.entityId}:${revision.paragraphId}`).digest("hex");
             transaction.set(db.collection("worldRevisions").doc(id), { ...revision, createdAt: FieldValue.serverTimestamp() });
           }
-          transaction.update(bookReference(uid, bookId), {
+          transaction.update(bookReference(db, "books", uid, bookId), {
             worldVersion: FieldValue.increment(revisions.length), visualBibleVersion: FieldValue.increment(revisions.length), updatedAt: FieldValue.serverTimestamp(),
           });
           transaction.update(jobRef, { plan, updatedAt: FieldValue.serverTimestamp() });
@@ -286,7 +242,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
         const spec = { ...candidate.generationSpec, world };
         const prompt = composeImagePrompt({ ...spec, sceneText: sceneText.get(candidate.id) ?? spec.facts.join("; ") });
         if (await moderateText(prompt)) { console.info(JSON.stringify({ category: "safety", outcome: "text_blocked" })); continue; }
-        if (!(await reserveCredit(claim, candidate.id))) { finalStatus = "insufficient_credits"; break; }
+        if (!(await reserveClaimCredit(claim, candidate.id))) { finalStatus = "insufficient_credits"; break; }
         const prefix = `users/${uid}/books/${bookId}/scenes/${candidate.id}.claim-${token}`;
         const imageObject = `${prefix}.webp`, thumbnailObject = `${prefix}.thumb.webp`;
         let published = false;
@@ -299,7 +255,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
             await liveClaim(transaction, claim);
             const scene = await transaction.get(sceneRef);
             if (scene.exists) throw new CancelledClaim();
-            await settleCredit(transaction, claim, candidate.id, true);
+            await settleCredit(transaction, db, claim, candidate.id, true);
             transaction.create(sceneRef, { uid, bookId, jobId, chapterOrdinal, status: "ready_locked",
               anchor: candidate.anchor, altText: candidate.altText, caption: candidate.caption,
               generationSpec: spec, entityIds: candidate.entityIds, imageObject, thumbnailObject, generationVersion: 1,
@@ -318,7 +274,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
           if (error instanceof CancelledClaim) throw error;
           await db.runTransaction(async (transaction) => {
             await liveClaim(transaction, claim);
-            await settleCredit(transaction, claim, candidate.id, false);
+            await settleCredit(transaction, db, claim, candidate.id, false);
           });
           console.info(JSON.stringify({ category: "candidate", outcome: error instanceof SafetyError ? "image_blocked" : "generation_failed" }));
         } finally { if (!published) await deleteObjects(imageObject, thumbnailObject); }
@@ -349,10 +305,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
       const value = scene.data();
       if (!value) throw new HttpError(404, "Scene not found.");
       if (value.deleted || Number(value.generationVersion ?? 1) >= targetGeneration) return null;
-      const [book, account] = await Promise.all([
-        transaction.get(bookReference(value.uid, value.bookId)), transaction.get(accountReference(value.uid)),
-      ]);
-      if (!book.exists || book.data()?.deleted || account.exists) return null;
+      if (!(await readBookFence(transaction, db, "books", value.uid, value.bookId)).live) return null;
       if (value.regenerationTarget !== targetGeneration || value.status !== "regenerating" ||
         value.regenerationTaskId !== req.body.taskId) return null;
       if ((value.regenerationLeaseUntil?.toMillis() ?? 0) > Date.now()) throw new HttpError(409, "Regeneration is already running.");
@@ -372,7 +325,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     let reserved = false, published = false;
     try {
       if (!refresh) {
-        reserved = await reserveCredit(claim, operationId);
+        reserved = await reserveClaimCredit(claim, operationId);
         if (!reserved) throw new HttpError(402, "Insufficient credits.");
       }
       const prompt = composeImagePrompt({ style: spec.style, sceneText: spec.facts.join("; "), facts: spec.facts, world });
@@ -385,7 +338,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
         await liveClaim(transaction, claim);
         const worldReference = db.collection("worldReferences").doc(reference.id);
         const existingReference = await transaction.get(worldReference);
-        if (!refresh) await settleCredit(transaction, claim, operationId, true);
+        if (!refresh) await settleCredit(transaction, db, claim, operationId, true);
         transaction.update(reference, { status: "ready_locked", imageObject, thumbnailObject, generationVersion: targetGeneration,
           assetExpiresAt: Timestamp.fromMillis(Date.now() + assetRetentionMilliseconds),
           regenerationTarget: FieldValue.delete(), regenerationRefresh: FieldValue.delete(), regenerationTaskId: FieldValue.delete(),
@@ -398,7 +351,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     } catch (error) {
       if (!published) await db.runTransaction(async (transaction) => {
         try { await liveClaim(transaction, claim); } catch (failure) { if (failure instanceof CancelledClaim) return; throw failure; }
-        if (reserved) await settleCredit(transaction, claim, operationId, false);
+        if (reserved) await settleCredit(transaction, db, claim, operationId, false);
         transaction.update(reference, { status: "unlocked", regenerationTarget: FieldValue.delete(), regenerationRefresh: FieldValue.delete(),
           regenerationTaskId: FieldValue.delete(), regenerationToken: FieldValue.delete(), regenerationLeaseUntil: FieldValue.delete(),
           failureCategory: error instanceof HttpError && error.status === 402 ? "insufficient_credits" : error instanceof SafetyError ? "safety_blocked" : "regeneration_failed",

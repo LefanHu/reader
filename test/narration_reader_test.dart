@@ -1,14 +1,8 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/importing/book_importer.dart';
-import 'package:reader/app/reader_controller.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/narration/session.dart';
-import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/reader/reader_screen.dart';
 import 'package:reader/theme.dart';
@@ -19,54 +13,30 @@ import 'package:reader/text/viewport.dart';
 
 import 'fixtures/catalog_book.dart';
 import 'support/controller_lifecycle.dart';
-import 'support/fake_illustration_api.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_word_counter.dart';
-import 'support/memory_catalog_store.dart';
 import 'support/memory_document_store.dart';
-import 'support/memory_illustration_store.dart';
-import 'support/memory_settings_store.dart';
 import 'support/test_controller.dart';
+import 'support/fake_account_api.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
 import 'support/memory_narration_store.dart';
 import 'support/fixture_local_narration_source.dart';
+import 'support/fonts.dart';
 
 void main() {
-  setUpAll(() async {
-    for (final (family, path) in [
-      ('Lora', 'assets/fonts/Lora.ttf'),
-      ('DM Sans', 'assets/fonts/DMSans.ttf'),
-      ('MaterialIcons', 'fonts/MaterialIcons-Regular.otf'),
-    ]) {
-      await (FontLoader(family)..addFont(rootBundle.load(path))).load();
-    }
-  });
+  setUpAll(loadReaderFonts);
   testWidgets(
     'Listen opens registered controls without a consent dialog; hidden button loses semantics',
     (tester) async {
       final api = FakeNarrationApi(), player = FakeNarrationPlayer();
       final book = testBook();
       final documents = MemoryDocumentStore();
-      final controller = ReaderController(
-        catalogStore: MemoryCatalogStore([book]),
-        settingsStore: MemorySettingsStore(),
-        importer: BookImporter(root: Directory.systemTemp),
-        picker: FakePicker([]),
-        illustrationApi: FakeIllustrationApi(),
-        illustrationStore: MemoryIllustrationStore(),
-        wordCounter: FakeWordCounter(),
+      final controller = await testController(
+        books: [book],
         narrationApi: api,
-        narrationSource: CloudNarrationSource(api),
         narrationPlayer: player,
-        narrationStore: MemoryNarrationStore(),
         narrationDocuments: documents,
       );
-      await controller.initialize();
-      addTearDown(() async {
-        await tester.pumpWidget(const SizedBox());
-        await disposeControllerWithFrames(tester, controller);
-      });
+      addControllerTeardown(tester, controller);
       await tester.pumpWidget(
         MaterialApp(
           debugShowCheckedModeBanner: false,
@@ -109,25 +79,13 @@ void main() {
       final book = testBook(position: committed, progress: .1);
       final api = FakeNarrationApi(), player = FakeNarrationPlayer();
       final cache = MemoryNarrationStore();
-      final controller = ReaderController(
-        catalogStore: MemoryCatalogStore([book]),
-        settingsStore: MemorySettingsStore(),
-        importer: BookImporter(root: Directory.systemTemp),
-        picker: FakePicker([]),
-        illustrationApi: FakeIllustrationApi(),
-        illustrationStore: MemoryIllustrationStore(),
-        wordCounter: FakeWordCounter(),
+      final controller = await testController(
+        books: [book],
         narrationApi: api,
-        narrationSource: CloudNarrationSource(api),
         narrationPlayer: player,
         narrationStore: cache,
-        narrationDocuments: MemoryDocumentStore(),
       );
-      await controller.initialize();
-      addTearDown(() async {
-        await tester.pumpWidget(const SizedBox());
-        await disposeControllerWithFrames(tester, controller);
-      });
+      addControllerTeardown(tester, controller);
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -178,25 +136,13 @@ void main() {
           ),
         ],
       );
-      final controller = ReaderController(
-        catalogStore: MemoryCatalogStore([book]),
-        settingsStore: MemorySettingsStore(),
-        importer: BookImporter(root: Directory.systemTemp),
-        picker: FakePicker([]),
-        illustrationApi: FakeIllustrationApi(),
-        illustrationStore: MemoryIllustrationStore(),
-        wordCounter: FakeWordCounter(),
+      final controller = await testController(
+        books: [book],
         narrationApi: api,
-        narrationSource: CloudNarrationSource(api),
         narrationPlayer: player,
-        narrationStore: MemoryNarrationStore(),
         narrationDocuments: documents,
       );
-      await controller.initialize();
-      addTearDown(() async {
-        await tester.pumpWidget(const SizedBox());
-        await disposeControllerWithFrames(tester, controller);
-      });
+      addControllerTeardown(tester, controller);
       await tester.pumpWidget(
         MaterialApp(
           debugShowCheckedModeBanner: false,
@@ -298,25 +244,14 @@ void main() {
   ) async {
     final book = testBook(), documents = MemoryDocumentStore();
     final api = FakeNarrationApi();
-    final controller = ReaderController(
-      catalogStore: MemoryCatalogStore([book]),
-      settingsStore: MemorySettingsStore(),
-      importer: BookImporter(root: Directory.systemTemp),
-      picker: FakePicker([]),
-      illustrationApi: FakeIllustrationApi(),
-      illustrationStore: MemoryIllustrationStore(),
-      wordCounter: FakeWordCounter(),
+    final account = FakeAccountApi();
+    final controller = await testController(
+      books: [book],
       narrationApi: api,
-      narrationSource: CloudNarrationSource(api),
-      narrationPlayer: FakeNarrationPlayer(),
-      narrationStore: MemoryNarrationStore(),
       narrationDocuments: documents,
+      accountApi: account,
     );
-    await controller.initialize();
-    addTearDown(() async {
-      await tester.pumpWidget(const SizedBox());
-      await disposeControllerWithFrames(tester, controller);
-    });
+    addControllerTeardown(tester, controller);
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
@@ -347,7 +282,6 @@ void main() {
     );
     expect(controller.narration!.manifest.chunkId, isNull);
     expect(tester.takeException(), isNull);
-    final cloudApi = controller.narration!.api as FakeNarrationApi;
     final anchor = controller.catalog.books.single.lastPosition;
     await tester.ensureVisible(find.byTooltip('Cloud account'));
     await tester.tap(find.byTooltip('Cloud account'));
@@ -356,7 +290,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
-    expect(cloudApi.accountDeletions, 0);
+    expect(account.deletions, 0);
     expect(controller.narration!.manifest.cloudBookId, isNotNull);
     await tester.tap(find.byTooltip('Cloud account'));
     await tester.pumpAndSettle();
@@ -364,7 +298,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Delete account'));
     await tester.pumpAndSettle();
-    expect(cloudApi.accountDeletions, 1);
+    expect(account.deletions, 1);
     expect(controller.catalog.books.single.lastPosition, anchor);
     expect(controller.narration!.manifest.cloudBookId, isNull);
     expect(tester.takeException(), isNull);
@@ -374,24 +308,14 @@ void main() {
     final book = testBook(), documents = MemoryDocumentStore();
     final source = FixtureLocalNarrationSource();
     final api = FakeNarrationApi();
-    final controller = ReaderController(
-      catalogStore: MemoryCatalogStore([book]),
-      settingsStore: MemorySettingsStore(),
-      importer: BookImporter(root: Directory.systemTemp),
-      picker: FakePicker([]),
-      illustrationApi: FakeIllustrationApi(),
-      illustrationStore: MemoryIllustrationStore(),
-      wordCounter: FakeWordCounter(),
+    final controller = await testController(
+      books: [book],
       narrationApi: api,
       narrationSource: source,
-      narrationPlayer: FakeNarrationPlayer(),
-      narrationStore: MemoryNarrationStore(),
       narrationDocuments: documents,
+      initialize: false,
     );
-    addTearDown(() async {
-      await tester.pumpWidget(const SizedBox());
-      await disposeControllerWithFrames(tester, controller);
-    });
+    addControllerTeardown(tester, controller);
     await controller.initialize();
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));

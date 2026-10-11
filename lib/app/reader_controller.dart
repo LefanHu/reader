@@ -12,19 +12,20 @@ import '../catalog/catalog_book.dart';
 import '../catalog/catalog_session.dart';
 import '../catalog/catalog_store.dart';
 import '../catalog/file_catalog_store.dart';
+import '../cloud_deletion_outbox.dart';
+import '../cloud_deletion_queue.dart';
+import '../file_cloud_deletion_outbox.dart';
+import '../identity/cloud_failure_kind.dart';
 import '../identity/cloud_identity.dart';
 import '../identity/cloud_identity_exception.dart';
 import '../identity/firebase_cloud_identity.dart';
 import '../illustrations/api.dart';
 import '../illustrations/document_text_indexer.dart';
-import '../illustrations/file_illustration_deletion_outbox.dart';
 import '../illustrations/file_illustration_store.dart';
 import '../illustrations/gate.dart';
 import '../illustrations/http_illustration_api.dart';
 import '../illustrations/illustration_coordinator.dart';
 import '../illustrations/indexer.dart';
-import '../illustrations/memory_illustration_deletion_outbox.dart';
-import '../illustrations/outbox.dart';
 import '../illustrations/store.dart';
 import '../importing/book_importer.dart';
 import '../importing/book_picker.dart';
@@ -35,7 +36,6 @@ import '../narration/apple_narration_source.dart';
 import '../narration/cloud_narration_source.dart';
 import '../narration/file_narration_store.dart';
 import '../narration/http_narration_api.dart';
-import '../narration/narration_manifest.dart';
 import '../narration/native_narration_player.dart';
 import '../narration/player.dart';
 import '../narration/session.dart';
@@ -48,12 +48,19 @@ import '../text/document_store.dart';
 import '../text/file_book_word_counter.dart';
 import '../text/text_position.dart';
 
+/// Narration dependencies installed together; absent graphs have no narration.
+typedef NarrationServices = ({
+  NarrationApi api,
+  NarrationPlayer player,
+  NarrationStore store,
+  TextDocumentStore? documents,
+});
+
 /// Owns session state and coordinates UI, persistence, normalized text, and art jobs.
 ///
-/// This remains the app's only shared [ChangeNotifier]. Illustration services
-/// are injected boundaries so reading and tests never depend on cloud plugins.
-/// Account usage owns its request lifecycle separately; the mutable usage
-/// accessors preserve the controller's existing presentation-state contract.
+/// This remains the app's only shared [ChangeNotifier]. Every service is
+/// injected by [create] or tests, so reading never depends on cloud plugins.
+/// Account usage owns its request lifecycle separately.
 class ReaderController extends ChangeNotifier {
   /// Composes authoritative owners before installing optional narration.
   ReaderController({
@@ -61,76 +68,58 @@ class ReaderController extends ChangeNotifier {
     required SettingsStore settingsStore,
     required BookImporter importer,
     required BookPicker picker,
-    IllustrationStore? illustrationStore,
-    TextIndexer? textIndexer,
-    BookWordCounter? wordCounter,
-    IllustrationApi? illustrationApi,
-    IllustrationDeletionOutbox? illustrationDeletionOutbox,
-    NarrationApi? narrationApi,
-    NarrationSource? narrationSource,
-    NarrationPlayer? narrationPlayer,
-    NarrationStore? narrationStore,
-    TextDocumentStore? narrationDocuments,
-    IllustrationDeletionOutbox? narrationDeletionOutbox,
-    this.cloudIdentity,
+    required IllustrationStore illustrationStore,
+    required TextIndexer textIndexer,
+    required BookWordCounter wordCounter,
+    required IllustrationApi illustrationApi,
+    required CloudDeletionOutbox illustrationDeletionOutbox,
+    required this.narrationSource,
+    required CloudDeletionOutbox narrationDeletionOutbox,
+    required this.cloudIdentity,
+    NarrationServices? narration,
     this.accountApi,
     IllustrationGate illustrationGate = const IllustrationGate(),
-  }) : narrationSource =
-           narrationSource ??
-           CloudNarrationSource(
-             narrationApi ??
-                 HttpNarrationApi(
-                   identity: cloudIdentity ?? FirebaseCloudIdentity(),
-                 ),
-           ),
-       narrationDeletionOutbox =
-           narrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox() {
-    if ((narrationApi != null ||
-            narrationPlayer != null ||
-            narrationStore != null) &&
-        (narrationApi == null ||
-            narrationPlayer == null ||
-            narrationStore == null ||
-            narrationSource == null)) {
-      throw ArgumentError(
-        'Narration requires an explicit source, API, player, and store.',
-      );
-    }
+  }) {
     catalog = CatalogSession(
       store: catalogStore,
       importer: importer,
       picker: picker,
-      wordCounter: wordCounter ?? FileBookWordCounter(),
+      wordCounter: wordCounter,
       changed: notifyListeners,
     );
     preferences = ReaderPreferencesCoordinator(
       store: settingsStore,
-      isNarrationVoiceAvailable: (voice) => this.narrationSource.voices.any(
+      isNarrationVoiceAvailable: (voice) => narrationSource.voices.any(
         (candidate) => candidate.identifier == voice,
       ),
-      defaultNarrationVoice: () => this.narrationSource.defaultVoice,
+      defaultNarrationVoice: () => narrationSource.defaultVoice,
       applyNarrationPreferences: (settings) async {
-        await narration?.applyPreferences(settings);
+        await this.narration?.applyPreferences(settings);
       },
       changed: notifyListeners,
     );
     illustrations = IllustrationCoordinator(
-      store: illustrationStore ?? FileIllustrationStore(),
-      textIndexer: textIndexer ?? DocumentTextIndexer(),
-      api:
-          illustrationApi ??
-          // Reuse the account/narration session on both native Apple platforms.
-          HttpIllustrationApi(
-            identity: cloudIdentity ?? FirebaseCloudIdentity(),
-          ),
-      deletionOutbox:
-          illustrationDeletionOutbox ?? MemoryIllustrationDeletionOutbox(),
+      store: illustrationStore,
+      textIndexer: textIndexer,
+      api: illustrationApi,
+      identity: cloudIdentity,
+      deletionOutbox: illustrationDeletionOutbox,
       gate: illustrationGate,
-      currentBook: (book) =>
-          catalog.books.where((item) => item.hash == book.hash).firstOrNull,
-      narrationOwnsPosition: (book) => narration?.ownsPosition(book) == true,
+      currentBook: catalog.find,
+      narrationOwnsPosition: (book) =>
+          this.narration?.ownsPosition(book) == true,
       refreshCloudAccount: refreshCloudAccount,
       changed: notifyListeners,
+    );
+    _narrationDeletions = CloudDeletionQueue(
+      outbox: narrationDeletionOutbox,
+      ready: () async {
+        final api = this.narration?.api;
+        return api != null &&
+            api.configured &&
+            await cloudIdentity.hasSession();
+      },
+      delete: (id) => this.narration!.api.deleteBook(id),
     );
     _usage = AccountUsageCoordinator(
       api: accountApi,
@@ -138,35 +127,25 @@ class ReaderController extends ChangeNotifier {
       accountBusy: () => cloudAccountBusy,
       changed: notifyListeners,
     );
-    if (narrationApi != null &&
-        narrationPlayer != null &&
-        narrationStore != null) {
-      narration = NarrationSession(
-        api: narrationApi,
-        source: this.narrationSource,
-        player: narrationPlayer,
-        store: narrationStore,
-        documents: narrationDocuments,
+    if (narration != null) {
+      this.narration = NarrationSession(
+        api: narration.api,
+        source: narrationSource,
+        player: narration.player,
+        store: narration.store,
+        documents: narration.documents,
         preferences: () => preferences.settings,
-        isBookAvailable: (candidate) => catalog.books.any(
-          (book) =>
-              book.hash == candidate.hash &&
-              book.path == candidate.path &&
-              book.addedAt == candidate.addedAt,
-        ),
+        isBookAvailable: catalog.isLive,
         abandonRegistration: (id) async {
-          await this.narrationDeletionOutbox.enqueue(id);
-          unawaited(drainNarrationDeletions());
+          await _narrationDeletions.enqueue(id);
+          unawaited(_narrationDeletions.drain());
         },
         changed: () {
           if (!_disposed) notifyListeners();
         },
         commit: (book, position, progress) =>
             savePosition(book, position, progress, fromNarration: true),
-        currentPosition: (book) => catalog.books
-            .where((item) => item.hash == book.hash)
-            .firstOrNull
-            ?.lastPosition,
+        currentPosition: (book) => catalog.find(book)?.lastPosition,
       );
     }
   }
@@ -178,26 +157,22 @@ class ReaderController extends ChangeNotifier {
   final NarrationSource narrationSource;
 
   /// Shared account boundary works with core-only configuration and no API URL.
-  final CloudIdentity? cloudIdentity;
+  final CloudIdentity cloudIdentity;
 
   /// Read-only usage service; absent in offline or core-only dependency graphs.
   final AccountApi? accountApi;
 
   /// Latest server snapshot belongs only to the currently displayed account.
   AccountUsage? get accountUsage => _usage.usage;
-  set accountUsage(AccountUsage? value) => _usage.usage = value;
 
   /// Prevents duplicate refresh actions without blocking local preferences.
   bool get usageLoading => _usage.loading;
-  set usageLoading(bool value) => _usage.loading = value;
 
   /// Safe display message; failed refreshes never substitute invented balances.
   String? get usageError => _usage.error;
-  set usageError(String? value) => _usage.error = value;
 
   /// Distinguishes offline, attestation, and service failures in Settings.
   AccountUsageFailureKind? get usageFailure => _usage.failure;
-  set usageFailure(AccountUsageFailureKind? value) => _usage.failure = value;
 
   late final AccountUsageCoordinator _usage;
 
@@ -208,7 +183,7 @@ class ReaderController extends ChangeNotifier {
   bool cloudAccountBusy = false;
 
   /// Narration deletion retries stay outside book directories and never sign in.
-  final IllustrationDeletionOutbox narrationDeletionOutbox;
+  late final CloudDeletionQueue _narrationDeletions;
 
   /// Authoritative catalog, serial imports, recency, and position persistence.
   late final CatalogSession catalog;
@@ -234,11 +209,14 @@ class ReaderController extends ChangeNotifier {
     final controller = ReaderController(
       cloudIdentity: identity,
       accountApi: HttpAccountApi(identity: identity),
-      narrationApi: narrationApi,
       narrationSource: source,
-      narrationPlayer: await NativeNarrationPlayer.create(),
-      narrationStore: FileNarrationStore(store.root),
-      narrationDeletionOutbox: FileIllustrationDeletionOutbox(
+      narration: (
+        api: narrationApi,
+        player: await NativeNarrationPlayer.create(),
+        store: FileNarrationStore(store.root),
+        documents: null,
+      ),
+      narrationDeletionOutbox: FileCloudDeletionOutbox(
         store.root,
         fileName: 'narration-deletions.json',
       ),
@@ -246,7 +224,14 @@ class ReaderController extends ChangeNotifier {
       settingsStore: PreferenceSettingsStore(),
       importer: BookImporter(root: store.root),
       picker: NativeBookPicker(),
-      illustrationDeletionOutbox: FileIllustrationDeletionOutbox(store.root),
+      illustrationDeletionOutbox: FileCloudDeletionOutbox(
+        store.root,
+        fileName: 'illustration-deletions.json',
+      ),
+      illustrationStore: FileIllustrationStore(store.root),
+      illustrationApi: HttpIllustrationApi(identity: identity),
+      textIndexer: DocumentTextIndexer(),
+      wordCounter: FileBookWordCounter(),
     );
     await controller.initialize();
     return controller;
@@ -263,7 +248,7 @@ class ReaderController extends ChangeNotifier {
     }
     await illustrations.loadManifests(catalog.books);
     unawaited(illustrations.drainDeletions());
-    unawaited(drainNarrationDeletions());
+    unawaited(_narrationDeletions.drain());
     unawaited(catalog.backfillWordCounts());
     unawaited(refreshCloudAccount());
     notifyListeners();
@@ -285,7 +270,7 @@ class ReaderController extends ChangeNotifier {
     bool fromNarration = false,
   }) async {
     if (!fromNarration && narration?.ownsPosition(book) == true) return;
-    if (_disposed || !catalog.books.any((item) => item.hash == book.hash)) {
+    if (_disposed || catalog.find(book) == null) {
       return;
     }
     final saved = catalog.recordPosition(
@@ -299,6 +284,28 @@ class ReaderController extends ChangeNotifier {
       await saved;
     }
     unawaited(illustrations.advance(book, position));
+  }
+
+  /// Commits a listening-sheet chapter choice as narration-owned progress and
+  /// asks the mounted reader to restore it; interrupted audio is invalidated.
+  Future<void> narrateChapter(CatalogBook book, String sectionId) async {
+    final session = narration;
+    if (session == null || session.book?.hash != book.hash) return;
+    await session.navigate(book);
+    final section = await session.documents.loadSection(book.path, sectionId);
+    final document = session.document;
+    // Loading a chapter must not navigate a replaced book.
+    if (_disposed || document == null || session.book?.hash != book.hash) {
+      return;
+    }
+    await savePosition(
+      book,
+      section.start,
+      document.progress(section, section.start),
+      fromNarration: true,
+    );
+    narrationNavigationRevision++;
+    notifyListeners();
   }
 
   Future<void>? _narrationShutdown;
@@ -318,8 +325,8 @@ class ReaderController extends ChangeNotifier {
       await audio.detach(book);
       final profile = await audio.store.load(book);
       if (profile.cloudBookId != null) {
-        await narrationDeletionOutbox.enqueue(profile.cloudBookId!);
-        unawaited(drainNarrationDeletions());
+        await _narrationDeletions.enqueue(profile.cloudBookId!);
+        unawaited(_narrationDeletions.drain());
       }
     }
     await illustrations.requestBookDeletion(book);
@@ -333,38 +340,14 @@ class ReaderController extends ChangeNotifier {
   /// External narration chapter changes request a viewport restore without writes.
   int narrationNavigationRevision = 0;
 
-  /// Signals a committed narration chapter selection or allowance refresh.
-  void notifyNarrationNavigation() {
-    narrationNavigationRevision++;
-    notifyListeners();
-  }
-
-  /// Retries durable narration privacy requests using only an existing session.
-  Future<void> drainNarrationDeletions() async {
-    final api = narration?.api;
-    try {
-      if (api == null || !api.configured || !await api.hasSession()) return;
-      for (final item in await narrationDeletionOutbox.load()) {
-        try {
-          await api.deleteBook(item.cloudBookId);
-          await narrationDeletionOutbox.remove(item.cloudBookId);
-        } on Object {
-          /* Keep failed requests durable. */
-        }
-      }
-    } on Object {
-      /* Startup retries must never prevent offline reading. */
-    }
-  }
-
   /// Drains durable cleanup before creating an authenticated book registration.
   Future<void> registerNarration(CatalogBook book) async {
     if (!narrationSource.requiresCloudRegistration) {
       await narration?.attach(book);
       return;
     }
-    await drainNarrationDeletions();
-    if ((await narrationDeletionOutbox.load()).isNotEmpty) {
+    await _narrationDeletions.drain();
+    if (await _narrationDeletions.hasPending) {
       throw StateError('Cloud cleanup is pending. Retry when connected.');
     }
     await narration?.register(book);
@@ -374,7 +357,7 @@ class ReaderController extends ChangeNotifier {
   /// Restores account metadata without sign-in, attestation or feature requests.
   Future<void> refreshCloudAccount() async {
     final identity = cloudIdentity;
-    if (identity == null || !identity.configured) return;
+    if (!identity.configured) return;
     try {
       final email = await identity.hasSession() ? identity.email : null;
       if (_disposed) return;
@@ -386,88 +369,78 @@ class ReaderController extends ChangeNotifier {
     }
   }
 
+  /// Runs one exclusive account action; [settle] records the resulting email.
+  Future<void> _accountAction(
+    Future<void> Function() action, {
+    required void Function() settle,
+  }) async {
+    if (cloudAccountBusy) return;
+    cloudAccountBusy = true;
+    _usage.invalidate();
+    notifyListeners();
+    try {
+      await action();
+    } finally {
+      settle();
+      cloudAccountBusy = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   /// Explicit library sign-in is independent of cloud generation registration.
   Future<void> signInToCloud() async {
     if (cloudAccountBusy) return;
-    final identity = cloudIdentity;
-    if (identity == null || !identity.configured) {
+    if (!cloudIdentity.configured) {
       throw const CloudIdentityException(
+        CloudFailureKind.notConfigured,
         'Google sign-in is not configured in this build.',
       );
     }
-    cloudAccountBusy = true;
-    _usage.invalidate();
-    notifyListeners();
-    try {
-      await identity.signIn();
+    await _accountAction(() async {
+      await cloudIdentity.signIn();
       await refreshCloudAccount();
       unawaited(illustrations.drainDeletions());
-      unawaited(drainNarrationDeletions());
-    } finally {
-      cloudAccountBusy = false;
-      if (!_disposed) notifyListeners();
-    }
+      unawaited(_narrationDeletions.drain());
+    }, settle: () {});
   }
 
   /// Ends the shared cloud identity session; offline reading is unchanged.
-  Future<void> signOutOfCloud() async {
-    if (cloudAccountBusy) return;
-    cloudAccountBusy = true;
-    _usage.invalidate();
-    notifyListeners();
-    try {
+  Future<void> signOutOfCloud() => _accountAction(
+    () async {
       await narration?.stop();
-      if (cloudIdentity != null) {
-        await cloudIdentity!.signOut();
-      } else if (narration?.api.configured == true) {
-        await narration!.api.signOut();
-      } else {
-        await illustrations.api.signOut();
-      }
-    } finally {
-      // Native selector cleanup can fail after Firebase successfully signs out.
-      // Reflect the actual Firebase account rather than a stale UI label.
-      cloudEmail = cloudIdentity?.email;
-      cloudAccountBusy = false;
-      if (!_disposed) notifyListeners();
-    }
-  }
+      await cloudIdentity.signOut();
+    },
+    // Native selector cleanup can fail after Firebase successfully signs out.
+    // Reflect the actual Firebase account rather than a stale UI label.
+    settle: () => cloudEmail = cloudIdentity.email,
+  );
 
-  /// Purges both cloud features before removing the Firebase user. Narration's
-  /// shared identity boundary supports macOS without enabling illustrations.
+  /// Purges every cloud feature through the account API before removing the
+  /// Firebase user, then clears local cloud-derived data.
   Future<void> deleteCloudAccount() async {
     if (cloudAccountBusy) return;
-    if (narration?.api.configured != true && !illustrations.api.configured) {
+    final account = accountApi;
+    if (account == null || !account.configured) {
       throw const CloudIdentityException(
+        CloudFailureKind.notConfigured,
         'Connect to the cloud service before deleting your account.',
       );
     }
-    cloudAccountBusy = true;
-    _usage.invalidate();
-    notifyListeners();
-    try {
-      final active = narration?.book;
-      if (active != null) await narration!.detach(active);
-      if (narration?.api.configured == true) {
-        await narration!.api.deleteAccount();
-      } else {
-        await illustrations.api.deleteAccount();
-      }
-      if (narration != null) {
-        for (final book in catalog.books) {
-          await narration!.store.clear(book);
-          await narration!.store.save(book, const NarrationManifest());
+    await _accountAction(
+      () async {
+        final active = narration?.book;
+        if (active != null) await narration!.detach(active);
+        await account.deleteAccount();
+        if (narration != null) {
+          await narration!.forgetCloudAccount(List.of(catalog.books));
+          if (active != null) await narration!.attach(active);
         }
-        if (active != null) await narration!.attach(active);
-      }
-      await illustrations.clearLocalAccountData(catalog.books);
-      cloudEmail = null;
-    } finally {
+        await illustrations.clearLocalAccountData(catalog.books);
+        cloudEmail = null;
+      },
       // Local cleanup can fail after Firebase deletion; show the actual identity.
-      if (cloudIdentity != null) cloudEmail = cloudIdentity!.email;
-      cloudAccountBusy = false;
-      if (!_disposed) notifyListeners();
-    }
+      settle: () => cloudEmail = cloudIdentity.email,
+    );
   }
 
   /// Refreshes owned usage without prompting for sign-in or registering books.

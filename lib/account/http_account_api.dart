@@ -1,47 +1,32 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:firebase_core/firebase_core.dart';
 import 'package:http/http.dart' as http;
 
+import '../identity/cloud_failure_kind.dart';
+import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
 import '../identity/cloud_identity_exception.dart';
+import '../identity/cloud_service_exception.dart';
 import 'account_usage.dart';
 import 'account_usage_exception.dart';
 import 'api.dart';
 
-/// Firebase/Auth and App Check protected read-only account REST boundary.
+/// Firebase/Auth and App Check protected account REST boundary.
 class HttpAccountApi implements AccountApi {
   /// Injectable identity and transport keep offline tests free of Firebase SDKs.
   HttpAccountApi({required this.identity, http.Client? client, Uri? baseUri})
-    : client = client ?? http.Client(),
-      baseUri =
-          baseUri ??
-          Uri.parse(
-            const String.fromEnvironment(
-              'NARRATION_API_BASE_URL',
-              defaultValue: String.fromEnvironment('ILLUSTRATION_API_BASE_URL'),
-            ),
-          );
+    : _http = CloudHttpClient(
+        identity: identity,
+        client: client,
+        baseUri: baseUri,
+      );
 
-  /// Shared lazy native identity; this client never opens sign-in UI.
+  /// Shared lazy native identity; usage reads never open sign-in UI.
   final CloudIdentity identity;
 
-  /// Injectable request transport.
-  final http.Client client;
+  final CloudHttpClient _http;
 
-  /// Public HTTPS service origin; no provider credentials enter the client.
-  final Uri baseUri;
   @override
-  bool get configured =>
-      identity.configured &&
-      baseUri.scheme == 'https' &&
-      baseUri.host.isNotEmpty &&
-      baseUri.userInfo.isEmpty &&
-      !baseUri.hasQuery &&
-      !baseUri.hasFragment;
+  bool get configured => _http.configured;
 
   @override
   Future<AccountUsage> usage() async {
@@ -52,87 +37,48 @@ class HttpAccountApi implements AccountApi {
       );
     }
     try {
-      Map<String, String> headers;
-      try {
-        headers = await identity.authorizationHeaders(interactive: false);
-      } on CloudIdentityException catch (error) {
-        final attestation =
-            error.message.toLowerCase().contains('attest') ||
-            error.message.contains('macOS 14');
-        throw AccountUsageException(
-          attestation
-              ? AccountUsageFailureKind.attestation
-              : AccountUsageFailureKind.service,
-          attestation
-              ? 'This installation could not verify App Check.'
-              : 'Sign in again to view account usage.',
-        );
-      } on FirebaseException catch (error) {
-        final attestation = error.plugin == 'firebase_app_check';
-        throw AccountUsageException(
-          attestation
-              ? AccountUsageFailureKind.attestation
-              : AccountUsageFailureKind.service,
-          attestation
-              ? 'This installation could not verify App Check.'
-              : 'Account authentication could not be verified.',
-        );
-      }
-      final request = http.Request('GET', baseUri.resolve('/v1/account/usage'))
-        ..headers.addAll(headers)
-        ..followRedirects = false;
-      final response = await client
-          .send(request)
-          .timeout(const Duration(seconds: 30));
-      if (response.statusCode == 401 || response.statusCode == 403) {
+      final json = await _http.json('GET', '/v1/account/usage');
+      return AccountUsage.fromJson(json);
+    } on AccountUsageException {
+      rethrow;
+    } on CloudIdentityException catch (error) {
+      final attestation = error.kind == CloudFailureKind.attestation;
+      throw AccountUsageException(
+        attestation
+            ? AccountUsageFailureKind.attestation
+            : AccountUsageFailureKind.service,
+        attestation
+            ? 'This installation could not verify App Check.'
+            : 'Sign in again to view account usage.',
+      );
+    } on FirebaseException catch (error) {
+      final attestation = error.plugin == 'firebase_app_check';
+      throw AccountUsageException(
+        attestation
+            ? AccountUsageFailureKind.attestation
+            : AccountUsageFailureKind.service,
+        attestation
+            ? 'This installation could not verify App Check.'
+            : 'Account authentication could not be verified.',
+      );
+    } on CloudServiceException catch (error) {
+      if (error.statusCode == 401 || error.statusCode == 403) {
         throw const AccountUsageException(
           AccountUsageFailureKind.attestation,
           'Account authentication or App Check could not be verified.',
         );
       }
-      const limit = 64 * 1024;
-      if (response.statusCode != 200 || (response.contentLength ?? 0) > limit) {
-        throw const AccountUsageException(
-          AccountUsageFailureKind.service,
-          'Account usage is temporarily unavailable.',
+      if (error.kind == CloudFailureKind.offline) {
+        throw AccountUsageException(
+          AccountUsageFailureKind.offline,
+          error.message.contains('timed out')
+              ? 'Account usage timed out. Check your connection and retry.'
+              : 'Connect to the internet to view account usage.',
         );
       }
-      // Bound memory while streaming rather than trusting Content-Length or
-      // materializing an arbitrarily large response before validating it.
-      final bytes = await (() async {
-        final buffer = BytesBuilder(copy: false);
-        await for (final part in response.stream) {
-          if (buffer.length + part.length > limit) {
-            throw const AccountUsageException(
-              AccountUsageFailureKind.service,
-              'Account usage response exceeded its limit.',
-            );
-          }
-          buffer.add(part);
-        }
-        return buffer.takeBytes();
-      })().timeout(const Duration(seconds: 30));
-      final json = jsonDecode(utf8.decode(bytes));
-      if (json is! Map<String, dynamic>) {
-        throw const FormatException('Invalid usage response.');
-      }
-      return AccountUsage.fromJson(json);
-    } on AccountUsageException {
-      rethrow;
-    } on SocketException {
       throw const AccountUsageException(
-        AccountUsageFailureKind.offline,
-        'Connect to the internet to view account usage.',
-      );
-    } on http.ClientException {
-      throw const AccountUsageException(
-        AccountUsageFailureKind.offline,
-        'Connect to the internet to view account usage.',
-      );
-    } on TimeoutException {
-      throw const AccountUsageException(
-        AccountUsageFailureKind.offline,
-        'Account usage timed out. Check your connection and retry.',
+        AccountUsageFailureKind.service,
+        'Account usage is temporarily unavailable.',
       );
     } catch (_) {
       throw const AccountUsageException(
@@ -140,5 +86,12 @@ class HttpAccountApi implements AccountApi {
         'Account usage could not be loaded.',
       );
     }
+  }
+
+  @override
+  Future<void> deleteAccount() async {
+    await identity.reauthenticate();
+    await _http.json('DELETE', '/v1/account');
+    await identity.deleteAccount();
   }
 }

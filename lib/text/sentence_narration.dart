@@ -1,5 +1,4 @@
-import 'package:characters/characters.dart';
-
+import 'grapheme_boundary.dart';
 import 'narration_chunk.dart';
 import 'narration_playback_unit.dart';
 import 'narration_range.dart';
@@ -28,18 +27,18 @@ List<NarrationPlaybackUnit> sentenceNarrationUnits(
     if (!started) continue;
     final resume = block.id == anchor.blockId ? anchor.offset : 0;
     if (resume >= block.text.length) continue;
-    final boundaries = <int>[0];
-    for (final grapheme in block.text.characters) {
-      if (grapheme.length > 3000 && boundaries.last >= resume) {
+    final boundaries = GraphemeBoundaries(block.text);
+    final offsets = boundaries.offsets;
+    for (var i = 0; i + 1 < offsets.length; i++) {
+      if (offsets[i + 1] - offsets[i] > maxNarrationClipUnits &&
+          offsets[i] >= resume) {
         throw const FormatException(
           'Narration grapheme exceeds 3,000 UTF-16 units.',
         );
       }
-      boundaries.add(boundaries.last + grapheme.length);
     }
-    int floor(int value) =>
-        boundaries[_boundaryIndex(boundaries, value, false)];
-    int ceil(int value) => boundaries[_boundaryIndex(boundaries, value, true)];
+    int floor(int value) => boundaries.floor(value);
+    int ceil(int value) => boundaries.ceil(value);
     final sentences = <({int start, int end})>[];
     var previousEnd = 0;
     for (final pair in sentenceRanges[block.id] ?? const []) {
@@ -119,11 +118,10 @@ List<NarrationPlaybackUnit> sentenceNarrationUnits(
           final half = offset + 150;
           var clause = 0;
           var space = 0;
-          var index = _boundaryIndex(boundaries, offset, false);
-          while (index + 1 < boundaries.length &&
-              boundaries[index + 1] <= end) {
-            final a = boundaries[index];
-            final b = boundaries[index + 1];
+          var index = boundaries.floorIndex(offset);
+          while (index + 1 < offsets.length && offsets[index + 1] <= end) {
+            final a = offsets[index];
+            final b = offsets[index + 1];
             final cluster = block.text.substring(a, b);
             if (b >= half) {
               if (_clauseDelimiter.hasMatch(cluster)) clause = b;
@@ -143,7 +141,7 @@ List<NarrationPlaybackUnit> sentenceNarrationUnits(
             end < coverageEnd) {
           end = ceil(end + 1);
         }
-        if (end - offset > 3000) {
+        if (end - offset > maxNarrationClipUnits) {
           throw const FormatException(
             'Narration whitespace attachment exceeds 3,000 UTF-16 units.',
           );
@@ -164,23 +162,4 @@ List<NarrationPlaybackUnit> sentenceNarrationUnits(
     }
   }
   return List.unmodifiable(result);
-}
-
-// Binary search keeps clipping linear in text size rather than scanning all
-// previously visited graphemes for each native range or clip.
-int _boundaryIndex(List<int> boundaries, int value, bool ceil) {
-  var low = 0;
-  var high = boundaries.length - 1;
-  while (low <= high) {
-    final middle = (low + high) >> 1;
-    if (boundaries[middle] == value) return middle;
-    if (boundaries[middle] < value) {
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return ceil
-      ? low.clamp(0, boundaries.length - 1)
-      : high.clamp(0, boundaries.length - 1);
 }

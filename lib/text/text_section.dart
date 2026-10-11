@@ -20,6 +20,16 @@ class TextSection {
   TextPosition get start =>
       TextPosition(sectionId: id, blockId: blocks.first.id);
 
+  /// Final position of the section, after the last block's text.
+  TextPosition get end {
+    final last = blocks.last;
+    return TextPosition(
+      sectionId: id,
+      blockId: last.id,
+      offset: last.text.length,
+    );
+  }
+
   /// Validates identity and snaps the offset to a safe text boundary.
   TextPosition resolve(TextPosition position) {
     final block = blocks

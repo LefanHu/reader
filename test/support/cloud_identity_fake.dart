@@ -1,5 +1,6 @@
 // Test state records boundary behavior; production APIs document lifecycle rules.
 // ignore_for_file: public_member_api_docs
+import 'package:reader/identity/cloud_failure_kind.dart';
 import 'package:reader/identity/cloud_identity.dart';
 import 'package:reader/identity/cloud_identity_exception.dart';
 
@@ -18,7 +19,10 @@ class FakeCloudIdentity implements CloudIdentity {
   Future<void> signIn() async {
     signIns++;
     if (cancel) {
-      throw const CloudIdentityException('Cancelled', cancelled: true);
+      throw const CloudIdentityException(
+        CloudFailureKind.cancelled,
+        'Cancelled',
+      );
     }
     email = 'reader@example.test';
   }

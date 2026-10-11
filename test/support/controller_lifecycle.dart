@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/app/reader_controller.dart';
 
@@ -28,4 +29,12 @@ Future<void> disposeControllerWithFrames(
   }
   await flush;
   if (failure != null) Error.throwWithStackTrace(failure!, trace!);
+}
+
+/// Registers unmount-then-dispose teardown for a test-owned [controller].
+void addControllerTeardown(WidgetTester tester, ReaderController controller) {
+  addTearDown(() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await disposeControllerWithFrames(tester, controller);
+  });
 }

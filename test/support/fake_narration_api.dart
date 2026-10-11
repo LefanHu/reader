@@ -14,7 +14,6 @@ import '../fixtures/narration_audio.dart';
 class FakeNarrationApi implements NarrationApi {
   bool offline = false;
   int registrations = 0;
-  int signOuts = 0, accountDeletions = 0;
   final List<NarrationChunk> requests = [];
   final List<String> voices = [];
   final List<String> deleted = [];
@@ -22,8 +21,6 @@ class FakeNarrationApi implements NarrationApi {
   Completer<NarrationRegistration>? registrationGate;
   @override
   bool get configured => true;
-  @override
-  Future<bool> hasSession() async => true;
   @override
   Future<Map<String, dynamic>> configuration() async => {
     'enabled': true,
@@ -54,16 +51,5 @@ class FakeNarrationApi implements NarrationApi {
   Future<void> deleteBook(String bookId) async {
     if (offline) throw StateError('Offline');
     deleted.add(bookId);
-  }
-
-  @override
-  Future<void> signOut() async {
-    signOuts++;
-  }
-
-  @override
-  Future<void> deleteAccount() async {
-    if (offline) throw StateError('Offline');
-    accountDeletions++;
   }
 }

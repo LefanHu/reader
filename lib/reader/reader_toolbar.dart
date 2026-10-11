@@ -42,11 +42,15 @@ class ReaderToolbar extends StatelessWidget {
 
   /// Hides chrome without reflowing the viewport.
   final VoidCallback onHide;
+
+  /// Reserved even while hidden so text never reflows.
+  static const double height = 60;
+
   @override
   Widget build(BuildContext context) => IconTheme(
     data: IconThemeData(color: foreground),
     child: SizedBox(
-      height: 60,
+      height: height,
       child: LayoutBuilder(
         builder: (context, constraints) => Stack(
           alignment: Alignment.center,

@@ -2,7 +2,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:reader/account/http_account_api.dart';
+import 'package:reader/identity/cloud_failure_kind.dart';
 import 'package:reader/identity/cloud_identity_exception.dart';
+import 'package:reader/identity/cloud_service_exception.dart';
 import 'package:reader/identity/firebase_cloud_identity.dart';
 import 'package:reader/identity/google_identity_provider.dart';
 import 'package:reader/narration/http_narration_api.dart';
@@ -15,7 +18,10 @@ class _Google extends Fake implements GoogleIdentityProvider {
   Future<String> idToken() async {
     events.add('google');
     if (cancelled) {
-      throw const CloudIdentityException('Cancelled', cancelled: true);
+      throw const CloudIdentityException(
+        CloudFailureKind.cancelled,
+        'Cancelled',
+      );
     }
     return 'native-token';
   }
@@ -113,9 +119,9 @@ void main() {
       identity.signIn(),
       throwsA(
         isA<CloudIdentityException>().having(
-          (e) => e.cancelled,
-          'cancelled',
-          true,
+          (e) => e.kind,
+          'kind',
+          CloudFailureKind.cancelled,
         ),
       ),
     );
@@ -148,7 +154,7 @@ void main() {
   );
   test('account deletion verifies the same user before purging data and deleting Firebase identity', () async {
     auth.currentUser = _User(events);
-    final api = HttpNarrationApi(
+    final api = HttpAccountApi(
       identity: identity,
       baseUri: Uri.parse('https://example.test'),
       client: MockClient((request) async {
@@ -170,7 +176,7 @@ void main() {
     'different-account reauthentication prevents destructive server requests',
     () async {
       auth.currentUser = _User(events)..rejectReauth = true;
-      final api = HttpNarrationApi(
+      final api = HttpAccountApi(
         identity: identity,
         baseUri: Uri.parse('https://example.test'),
         client: MockClient((request) async {
@@ -183,12 +189,15 @@ void main() {
   );
   test('failed server purge preserves the Firebase user for retry', () async {
     auth.currentUser = _User(events);
-    final api = HttpNarrationApi(
+    final api = HttpAccountApi(
       identity: identity,
       baseUri: Uri.parse('https://example.test'),
       client: MockClient((request) async => http.Response('', 503)),
     );
-    await expectLater(api.deleteAccount(), throwsStateError);
+    await expectLater(
+      api.deleteAccount(),
+      throwsA(isA<CloudServiceException>()),
+    );
     expect(events, isNot(contains('delete-user')));
     expect(auth.currentUser, isNotNull);
   });
@@ -197,29 +206,36 @@ void main() {
     () async {
       auth.currentUser = _User(events);
       final paths = <String>[];
-      final api = HttpNarrationApi(
+      final client = MockClient((request) async {
+        expect(request.method, 'DELETE');
+        paths.add(request.url.path);
+        return http.Response('', 404);
+      });
+      final baseUri = Uri.parse('https://example.test');
+      final api = HttpAccountApi(
         identity: identity,
-        baseUri: Uri.parse('https://example.test'),
-        client: MockClient((request) async {
-          expect(request.method, 'DELETE');
-          paths.add(request.url.path);
-          return http.Response('', 404);
-        }),
+        baseUri: baseUri,
+        client: client,
+      );
+      final narration = HttpNarrationApi(
+        identity: identity,
+        baseUri: baseUri,
+        client: client,
       );
       await expectLater(
         api.deleteAccount(),
         throwsA(
-          isA<StateError>().having(
-            (error) => error.message,
-            'message',
-            'Narration service error (404).',
+          isA<CloudServiceException>().having(
+            (error) => error.statusCode,
+            'statusCode',
+            404,
           ),
         ),
       );
       expect(events, isNot(contains('delete-user')));
       expect(auth.currentUser, isNotNull);
       final bookId = 'a' * 64;
-      await api.deleteBook(bookId);
+      await narration.deleteBook(bookId);
       expect(paths, ['/v1/account', '/v1/narration/books/$bookId']);
       expect(events, isNot(contains('delete-user')));
     },

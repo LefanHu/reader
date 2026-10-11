@@ -6,7 +6,8 @@ import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore"
 import type { Storage } from "@google-cloud/storage";
 import sharp from "sharp";
 import { composeImagePrompt } from "./openai.js";
-import { HttpError } from "./illustration-http.js";
+import { HttpError } from "./http.js";
+import { MemoryFirestore } from "./test-support/firestore.js";
 import { illustrationWorkerRouter } from "./illustration-worker.js";
 import { illustrationSceneRouter } from "./illustration-scenes.js";
 import { illustrationBookDeletion } from "./illustration-books.js";
@@ -17,121 +18,6 @@ import type { ChapterInput, NarrativeAnalysis } from "./types.js";
 type Data = Record<string, unknown>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const reservationPath = (operation: string) => `creditReservations/${hash(`owner:${operation}`)}`;
-
-/** Match Firestore's default rejection of undefined, including nested scene recipes. */
-function assertFirestoreData(value: unknown): void {
-  assert.notEqual(value, undefined, "Firestore cannot store undefined fields");
-  if (value && typeof value === "object" && !(value instanceof FieldValue) && !(value instanceof Timestamp)) {
-    for (const field of Object.values(value)) assertFirestoreData(field);
-  }
-}
-/** Operations supported by this worker's transactional/batch fixture boundary. */
-interface Writer {
-  set(reference: Reference, data: Data, options?: { merge: boolean }): void;
-  create(reference: Reference, data: Data): void;
-  update(reference: Reference, data: Data): void;
-  delete(reference: Reference): void;
-  commit(): Promise<void>;
-}
-interface Snapshot {
-  exists: boolean;
-  id: string;
-  data(): Data | undefined;
-  ref: Reference;
-}
-interface Transaction extends Writer {
-  get(reference: Reference): Promise<Snapshot>;
-}
-
-/** Serializes transactions and delays writes until commit; no cloud clients are used. */
-class Database {
-  values = new Map<string, Data>();
-  events: string[] = [];
-  private tail = Promise.resolve();
-  collection(path: string) { return new Collection(this, path); }
-  async runTransaction<T>(action: (transaction: Transaction) => Promise<T>): Promise<T> {
-    const result = this.tail.then(async () => {
-      const writer = this.writer();
-      const value = await action({ ...writer, get: reference => reference.get() });
-      await writer.commit();
-      return value;
-    });
-    this.tail = result.then(() => {}, () => {});
-    return result;
-  }
-  writer(): Writer {
-    const pending: Array<() => void> = [];
-    return {
-      set: (reference: Reference, data: Data, options?: { merge: boolean }) => {
-        pending.push(() => reference.write(data, options?.merge));
-      },
-      create: (reference: Reference, data: Data) => {
-        pending.push(() => {
-          assert(!this.values.has(reference.path));
-          reference.write(data);
-        });
-      },
-      update: (reference: Reference, data: Data) => {
-        pending.push(() => { assert(this.values.has(reference.path)); reference.write(data, true); });
-      },
-      delete: (reference: Reference) => { pending.push(() => { this.values.delete(reference.path); this.events.push(`delete:${reference.path}`); }); },
-      commit: async () => { for (const operation of pending) operation(); },
-    };
-  }
-  batch() { return this.writer(); }
-  bulkWriter() {
-    const writer = this.writer();
-    return { set: writer.set, delete: writer.delete, close: writer.commit };
-  }
-  async recursiveDelete(reference: Reference) {
-    for (const path of this.values.keys()) if (path === reference.path || path.startsWith(`${reference.path}/`)) this.values.delete(path);
-  }
-}
-class Reference {
-  constructor(readonly db: Database, readonly path: string) {}
-  get id() { return this.path.split("/").at(-1)!; }
-  collection(path: string) { return this.db.collection(`${this.path}/${path}`); }
-  async get() {
-    const data = this.db.values.get(this.path);
-    return { exists: data !== undefined, id: this.id, ref: this, data: () => data && { ...data } };
-  }
-  write(data: Data, merge = false) {
-    assertFirestoreData(data);
-    const value: Data = merge ? { ...this.db.values.get(this.path) } : {};
-    for (const [key, field] of Object.entries(data)) {
-      if (field instanceof FieldValue) {
-        if (field.isEqual(FieldValue.delete())) delete value[key];
-        else if (field.isEqual(FieldValue.serverTimestamp())) value[key] = Timestamp.now();
-        else if (field.isEqual(FieldValue.increment(1))) value[key] = Number(value[key] ?? 0) + 1;
-        else if (field.isEqual(FieldValue.increment(-1))) value[key] = Number(value[key] ?? 0) - 1;
-        else throw new Error("Unsupported field transform in illustration fixture");
-      } else value[key] = field;
-    }
-    this.db.values.set(this.path, value);
-    this.db.events.push(`write:${this.path}:${String(value.state ?? value.status ?? "")}`);
-  }
-  async set(data: Data, options?: { merge: boolean }) { this.write(data, options?.merge); }
-  async update(data: Data) { assert(this.db.values.has(this.path)); this.write(data, true); }
-  async delete() { this.db.values.delete(this.path); this.db.events.push(`delete:${this.path}`); }
-}
-class Collection {
-  constructor(readonly db: Database, readonly path: string, readonly filters: Array<[string, unknown]> = []) {}
-  doc(id: string) { return new Reference(this.db, `${this.path}/${id}`); }
-  where(key: string, operation: string, value: unknown) {
-    assert.equal(operation, "==");
-    return new Collection(this.db, this.path, [...this.filters, [key, value]]);
-  }
-  async get() {
-    const docs = [];
-    for (const [path, data] of this.db.values) {
-      if (path.startsWith(`${this.path}/`) && !path.slice(this.path.length + 1).includes("/") &&
-        this.filters.every(([key, value]) => data[key] === value)) {
-        docs.push(await new Reference(this.db, path).get());
-      }
-    }
-    return { docs };
-  }
-}
 
 const input: ChapterInput = {
   href: "chapter.xhtml", styleVersion: 1, analysisVersion: 1, density: 1,
@@ -150,14 +36,14 @@ const oldImageObject = "users/owner/books/book/scenes/scene.v1.webp";
 const oldThumbnailObject = "users/owner/books/book/scenes/scene.v1.thumb.webp";
 
 async function fixture(action: (harness: {
-  db: Database; objects: Map<string, Buffer>; calls: { analysis: number; images: number };
+  db: MemoryFirestore; objects: Map<string, Buffer>; calls: { analysis: number; images: number };
   request: (path: string, body?: Data, method?: string) => Promise<Response>;
   generate: (implementation: () => Promise<Buffer>) => void;
   analyze: (implementation: () => Promise<NarrativeAnalysis>) => void;
   save: (implementation: (path: string) => Promise<void>) => void;
   enqueue: (implementation: (path: string, body: Data, id: string) => Promise<void>) => void;
 }) => Promise<void>) {
-  const db = new Database();
+  const db = new MemoryFirestore();
   const objects = new Map<string, Buffer>();
   const calls = { analysis: 0, images: 0 };
   const image = await sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
@@ -180,16 +66,16 @@ async function fixture(action: (harness: {
   app.use(express.json());
   app.use("/v1", (req, _res, next) => { (req as express.Request & { uid: string }).uid = "owner"; next(); });
   app.use("/v1", illustrationSceneRouter({
-    db: db as unknown as Firestore, storage, bucket: "private",
+    db: db.firestore, storage, bucket: "private",
     requireFeature: (_req, _res, next) => next(),
     enqueue: (path, body, id) => enqueue(path, body, id),
   }));
-  app.delete("/v1/books/:bookId", illustrationBookDeletion({ db: db as unknown as Firestore, storage, bucket: "private" }));
-  const narration = new NarrationBackend({ db: db as unknown as Firestore, storage, bucket: "private",
+  app.delete("/v1/books/:bookId", illustrationBookDeletion({ db: db.firestore, storage, bucket: "private" }));
+  const narration = new NarrationBackend({ db: db.firestore, storage, bucket: "private",
     enabled: false, enqueue: async () => {}, provider: { generate: async () => { throw new Error("Narration is not exercised"); } } });
-  app.use("/v1/account", accountDeletionRouter({ db: db as unknown as Firestore, storage, bucket: "private", narration }));
+  app.use("/v1/account", accountDeletionRouter({ db: db.firestore, storage, bucket: "private", narration }));
   app.use("/internal", illustrationWorkerRouter({
-    db: db as unknown as Firestore, storage, bucket: "private",
+    db: db.firestore, storage, bucket: "private",
     assetRetentionMilliseconds: 30 * 86400000, composeImagePrompt,
     analyzeNarrative: async () => { calls.analysis++; return analyze(); },
     moderateText: async () => false, moderateImage: async () => false,
@@ -197,7 +83,7 @@ async function fixture(action: (harness: {
   }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof HttpError ? error.status : 500)
-      .json({ error: error instanceof HttpError ? error.message : "Illustration service failed." });
+      .json({ error: error instanceof HttpError ? error.message : "Request failed." });
   });
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.on("listening", resolve));
@@ -216,13 +102,13 @@ async function fixture(action: (harness: {
     });
   } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 }
-function seedJob(db: Database) {
+function seedJob(db: MemoryFirestore) {
   db.values.set("users/owner", { creditsRemaining: 2, creditsReserved: 0 });
   db.values.set("users/owner/books/book", { profile: { style: "Painted" } });
   db.values.set("illustrationJobs/job", { uid: "owner", bookId: "book", chapterOrdinal: 0, status: "queued" });
   db.values.set("illustrationJobInputs/job", { uid: "owner", bookId: "book", chapterOrdinal: 0, input });
 }
-function seedScene(db: Database) {
+function seedScene(db: MemoryFirestore) {
   db.values.set("users/owner", { creditsRemaining: 2, creditsReserved: 0 });
   db.values.set("users/owner/books/book", { profile: { style: "Painted" } });
   db.values.set("illustrationScenes/scene", { uid: "owner", bookId: "book", status: "regenerating",

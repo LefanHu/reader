@@ -24,7 +24,12 @@ export function requireString(value: unknown, label: string, maxLength = 500): s
   return value;
 }
 
-/** Validates illustration route identifiers with the existing 200-character bound. */
-export function routeParam(req: Request, name: string): string {
-  return requireString(req.params[name], `${name} route parameter`, 200);
+/**
+ * Validates route identifiers with the existing 200-character bound and, when
+ * given, a non-global `pattern` the whole value must match.
+ */
+export function routeParam(req: Request, name: string, pattern?: RegExp): string {
+  const value = requireString(req.params[name], `${name} route parameter`, 200);
+  if (pattern && !pattern.test(value)) throw new HttpError(400, `${name} route parameter is invalid.`);
+  return value;
 }

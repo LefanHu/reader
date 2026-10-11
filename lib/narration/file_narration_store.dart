@@ -4,11 +4,14 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../atomic_json_file.dart';
+import '../catalog/book_storage.dart';
 import '../catalog/catalog_book.dart';
+import '../keyed_serial_queue.dart';
 import 'narration_audio_asset.dart';
 import 'narration_manifest.dart';
 import 'narration_timing.dart';
 import 'narration_wav.dart';
+import 'source.dart';
 import 'store.dart';
 
 /// Filesystem implementation restricted to the content-addressed catalog root.
@@ -21,59 +24,24 @@ class FileNarrationStore implements NarrationStore {
 
   /// Global byte budget; active files may briefly exceed it until unpinned.
   final int maxBytes;
-  static final _keyPattern = RegExp(r'^[a-f0-9]{64}$');
+  static final _keyPattern = RegExp(sha256HexPattern);
   static final _audioPattern = RegExp(r'/[a-f0-9]{64}\.wav$');
   static final _companionPattern = RegExp(
     r'/([a-f0-9]{64})\.(?:wav\.tmp|timing\.json(?:\.tmp)?)$',
   );
   static const _maxTimingBytes = 2 * 1024 * 1024;
   Set<String> _pins = {};
-  static final _tails = <String, Future<void>>{};
+  static final _queue = KeyedSerialQueue();
 
   // Claims span native writer waits across all stores sharing the root. A
   // same-key successor waits outside _serial; clear invalidates every claimant.
   static final _writers = <String, List<_NarrationWrite>>{};
 
-  Future<T> _serial<T>(Future<T> Function() action) {
-    final key = root.absolute.path;
-    final result = (_tails[key] ?? Future<void>.value()).then((_) => action());
-    final tail = result.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    _tails[key] = tail;
-    tail.whenComplete(() {
-      if (identical(_tails[key], tail)) _tails.remove(key);
-    });
-    return result;
-  }
+  Future<T> _serial<T>(Future<T> Function() action) =>
+      _queue.run(root.absolute.path, action);
 
-  Directory _directory(CatalogBook book) {
-    final parent = File(book.path).absolute.parent;
-    final expected = '${root.absolute.path}/books/${book.hash}';
-    if (!_keyPattern.hasMatch(book.hash) ||
-        parent.path != expected ||
-        FileSystemEntity.typeSync(root.absolute.path, followLinks: false) !=
-            FileSystemEntityType.directory ||
-        FileSystemEntity.typeSync(
-              '${root.absolute.path}/books',
-              followLinks: false,
-            ) !=
-            FileSystemEntityType.directory ||
-        FileSystemEntity.typeSync(parent.path, followLinks: false) !=
-            FileSystemEntityType.directory ||
-        FileSystemEntity.typeSync(book.path, followLinks: false) !=
-            FileSystemEntityType.file) {
-      throw const FormatException('Narration path is outside owned storage.');
-    }
-    final directory = Directory('$expected/narration');
-    final kind = FileSystemEntity.typeSync(directory.path, followLinks: false);
-    if (kind != FileSystemEntityType.notFound &&
-        kind != FileSystemEntityType.directory) {
-      throw const FormatException('Narration storage cannot be a link.');
-    }
-    return directory;
-  }
+  Directory _directory(CatalogBook book) =>
+      featureDirectory(root, book, 'narration');
 
   File _ownedFile(String path, {bool absent = false}) {
     final kind = FileSystemEntity.typeSync(path, followLinks: false);
@@ -103,23 +71,13 @@ class FileNarrationStore implements NarrationStore {
 
   @override
   Future<NarrationManifest> load(CatalogBook book) => _serial(() async {
-    for (final file in AtomicJsonFile(
-      File('${_directory(book).path}/manifest.json'),
-    ).generations) {
-      if (await FileSystemEntity.type(file.path, followLinks: false) !=
-          FileSystemEntityType.file) {
-        continue;
-      }
-      try {
-        final json = (jsonDecode(await file.readAsString()) as Map)
-            .cast<String, dynamic>();
-        if (json['bookHash'] != book.hash) continue;
-        return NarrationManifest.fromJson(json);
-      } on Object {
-        continue;
-      }
-    }
-    return const NarrationManifest();
+    final stored =
+        await AtomicJsonFile(File('${_directory(book).path}/manifest.json'))
+            .read((json) {
+              if (json['bookHash'] != book.hash) return null;
+              return NarrationManifest.fromJson(json);
+            });
+    return stored?.value ?? const NarrationManifest();
   });
 
   @override
@@ -228,7 +186,7 @@ class FileNarrationStore implements NarrationStore {
     required bool Function() isCurrent,
   }) async {
     final (write, predecessor) = await _serial(() async {
-      if (!isCurrent()) throw StateError('Narration generation changed.');
+      if (!isCurrent()) throw const NarrationCancelled();
       final audio = _audio(book, key);
       final claims = _writers.putIfAbsent(audio.path, () => []);
       final predecessor = claims.isEmpty ? null : claims.last.settled.future;
@@ -242,7 +200,7 @@ class FileNarrationStore implements NarrationStore {
     final timingTemporary = write.timingTemporary;
     void checkCurrent() {
       if (write.invalidated || !isCurrent()) {
-        throw StateError('Narration generation changed.');
+        throw const NarrationCancelled();
       }
     }
 

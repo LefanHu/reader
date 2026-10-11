@@ -1,8 +1,7 @@
 import 'dart:io';
 
-import 'package:characters/characters.dart';
-
 import '../catalog/catalog_book.dart';
+import '../text/grapheme_boundary.dart';
 import '../text/narration_playback_unit.dart';
 import '../text/narration_range.dart';
 import '../text/sentence_narration.dart';
@@ -78,7 +77,7 @@ class AppleNarrationSource implements NarrationSource {
         'The saved device voice is unavailable. Choose an installed voice.',
       );
     }
-    if (!isCurrent()) throw StateError('Narration cancelled.');
+    if (!isCurrent()) throw const NarrationCancelled();
     final key = narrationCacheKey(
       book,
       profile,
@@ -86,7 +85,7 @@ class AppleNarrationSource implements NarrationSource {
       sentence: unit.sentence,
     );
     return store.create(book, key, (stagingPath) async {
-      if (!isCurrent()) throw StateError('Narration cancelled.');
+      if (!isCurrent()) throw const NarrationCancelled();
       final metadata = await service.synthesize(
         generation: generation,
         text: unit.chunk.text,
@@ -94,7 +93,7 @@ class AppleNarrationSource implements NarrationSource {
         stagingPath: stagingPath,
         isCurrent: isCurrent,
       );
-      if (!isCurrent()) throw StateError('Narration cancelled.');
+      if (!isCurrent()) throw const NarrationCancelled();
       return _timing(metadata, key: key, unit: unit);
     }, isCurrent: isCurrent);
   }
@@ -120,12 +119,7 @@ class AppleNarrationSource implements NarrationSource {
       final markers = metadata['markers'] as List;
       final text = unit.chunk.text;
       if (markers.isEmpty || markers.length > 2 * text.length + 2) return null;
-      final boundaries = <int>[0];
-      var offset = 0;
-      for (final grapheme in text.characters) {
-        offset += grapheme.length;
-        boundaries.add(offset);
-      }
+      final boundaries = GraphemeBoundaries(text);
       final duration = Duration(
         microseconds: (frames * 1000000 / rate).round(),
       );
@@ -147,8 +141,8 @@ class AppleNarrationSource implements NarrationSource {
         final start = marker['utf16Start'] as int;
         final end = marker['utf16End'] as int;
         if (start < 0 || end > text.length || start >= end) continue;
-        final first = _boundary(boundaries, start, ceiling: false);
-        final last = _boundary(boundaries, end, ceiling: true);
+        final first = boundaries.floor(start);
+        final last = boundaries.ceil(end);
         if (first >= last) continue;
         TextPosition position(int relative) => TextPosition(
           version: unit.chunk.start.version,
@@ -180,21 +174,6 @@ class AppleNarrationSource implements NarrationSource {
       // Corrupt/unsupported metadata must never discard a playable native WAV.
       return null;
     }
-  }
-
-  int _boundary(List<int> boundaries, int offset, {required bool ceiling}) {
-    var low = 0;
-    var high = boundaries.length;
-    while (low < high) {
-      final middle = (low + high) ~/ 2;
-      if (boundaries[middle] < offset) {
-        low = middle + 1;
-      } else {
-        high = middle;
-      }
-    }
-    if (!ceiling && boundaries[low] != offset) low--;
-    return boundaries[low];
   }
 
   @override

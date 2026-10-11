@@ -50,6 +50,7 @@ class CatalogSession {
 
   final VoidCallback _changed;
   Timer? _positionSave;
+  Future<void>? _positionWrite;
   bool _disposed = false;
 
   /// Restores catalog records without publishing a startup notification.
@@ -93,9 +94,22 @@ class CatalogSession {
     }
   }
 
+  /// Live catalog row with the same hash, or null when it is not cataloged.
+  CatalogBook? find(CatalogBook book) =>
+      books.where((item) => item.hash == book.hash).firstOrNull;
+
+  /// Whether [book]'s exact import is still cataloged; a deleted or reimported
+  /// book is not live.
+  bool isLive(CatalogBook book) => books.any(
+    (item) =>
+        item.hash == book.hash &&
+        item.path == book.path &&
+        item.addedAt == book.addedAt,
+  );
+
   /// Updates live recency synchronously and returns the corresponding save.
   Future<void> markOpened(CatalogBook book) {
-    final current = books.where((item) => item.hash == book.hash).firstOrNull;
+    final current = find(book);
     if (current == null) return Future.value();
     _replace(current.copyWith(lastOpenedAt: DateTime.now()));
     return store.save(books);
@@ -112,11 +126,9 @@ class CatalogSession {
     double progress, {
     required bool immediate,
   }) {
-    if (_disposed || !books.any((item) => item.hash == book.hash)) return null;
-    final current = books.firstWhere(
-      (item) => item.hash == book.hash,
-      orElse: () => book,
-    );
+    if (_disposed) return null;
+    final current = find(book);
+    if (current == null) return null;
     _replace(
       current.copyWith(
         lastPosition: position,
@@ -127,7 +139,16 @@ class CatalogSession {
     _positionSave?.cancel();
     if (immediate) return store.save(books);
     _positionSave = Timer(const Duration(milliseconds: 500), () {
-      store.save(books);
+      // A later full save in [flush] supersedes a failed debounced write;
+      // clearing on settle keeps flush from awaiting a finished write.
+      late final Future<void> write;
+      write = store
+          .save(books)
+          .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+          .whenComplete(() {
+            if (identical(_positionWrite, write)) _positionWrite = null;
+          });
+      _positionWrite = write;
     });
     return null;
   }
@@ -143,14 +164,7 @@ class CatalogSession {
       try {
         final count = await wordCounter.count(candidate.path);
         if (_disposed) return;
-        final current = books
-            .where(
-              (book) =>
-                  book.addedAt == candidate.addedAt &&
-                  book.hash == candidate.hash &&
-                  book.path == candidate.path,
-            )
-            .firstOrNull;
+        final current = isLive(candidate) ? find(candidate) : null;
         if (current == null || current.wordCount != null) continue;
         _replace(current.copyWith(wordCount: count));
         await store.save(books);
@@ -168,9 +182,12 @@ class CatalogSession {
   /// Saves the complete current catalog without cancelling the debounce timer.
   Future<void> persist() => store.save(books);
 
-  /// Cancels debounce and saves the catalog, including after disposal.
+  /// Cancels debounce, waits for any debounced write, and saves the catalog,
+  /// including after disposal.
   Future<void> flush() async {
     _positionSave?.cancel();
+    final write = _positionWrite;
+    if (write != null) await write;
     await store.save(books);
   }
 

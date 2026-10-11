@@ -3,9 +3,10 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:reader/identity/cloud_failure_kind.dart';
 import 'package:reader/identity/cloud_identity_exception.dart';
 import 'package:reader/narration/http_narration_api.dart';
-import 'package:reader/narration/narration_fingerprint.dart';
+import 'package:reader/identity/cloud_book_fingerprint.dart';
 
 import 'fixtures/catalog_book.dart';
 import 'support/cloud_identity_fake.dart';
@@ -19,7 +20,10 @@ class _ProtectedIdentity extends FakeCloudIdentity {
     bool interactive = true,
   }) async {
     if (rejectAttestation) {
-      throw const CloudIdentityException('App Check is unavailable.');
+      throw const CloudIdentityException(
+        CloudFailureKind.attestation,
+        'App Check is unavailable.',
+      );
     }
     return super.authorizationHeaders(interactive: interactive);
   }
@@ -45,7 +49,7 @@ void main() {
         expect(request.url.path, '/v1/narration/books');
         expect(request.method, 'POST');
         expect(jsonDecode(request.body), {
-          'fingerprint': narrationFingerprint(book.hash, key),
+          'fingerprint': cloudBookFingerprint(book.hash, key),
         });
         return http.Response(
           jsonEncode({

@@ -20,17 +20,13 @@ if [ "$SCOPE" != illustrations ]; then
     plan_apple_retirement
     printf '%s\n' "Review this Apple disable/protection transition first; deployment then removes only the retired provider."
   else
-    plan="$WORK_DIR/foundation.tfplan"
-    terraform -chdir="$INFRA_DIR/foundation" plan -var-file="$ENV_VARS" -out="$plan"
-    assert_safe_plan foundation "$plan"
+    plan_infrastructure foundation
   fi
 fi
 [ "$SCOPE" != core ] || exit 0
 require_core
 terraform_init illustrations "reader/$ENVIRONMENT/illustrations"
-plan="$WORK_DIR/illustrations.tfplan"
-terraform -chdir="$INFRA_DIR/illustrations" plan -var-file="$ENV_VARS" -out="$plan"
-assert_safe_plan illustrations "$plan"
+plan_infrastructure illustrations
 
 # New installations can review infrastructure before a container exists.
 if ! gcloud storage ls "gs://$STATE_BUCKET/reader/$ENVIRONMENT/runtime/default.tfstate" >/dev/null 2>&1; then
@@ -43,4 +39,4 @@ if [ -z "$image" ]; then
   image=$(terraform -chdir="$INFRA_DIR/runtime" output -raw image)
 fi
 [ -n "$image" ] || die "runtime has no deployed image; set IMAGE to an immutable Artifact Registry digest"
-terraform -chdir="$INFRA_DIR/runtime" plan -var-file="$ENV_VARS" -var="image=$image"
+plan_infrastructure runtime -var="image=$image"

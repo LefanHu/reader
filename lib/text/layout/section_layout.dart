@@ -7,6 +7,9 @@ import '../direction.dart';
 import 'measured_block.dart';
 import 'text_line.dart';
 
+/// Vertical gap after every measured block; scroll offsets and page fitting depend on it.
+const double blockGap = 16.0;
+
 /// Owns section text painters and their measured lines and pages.
 class SectionLayout {
   /// Measures a section once for the supplied typography and viewport.
@@ -59,18 +62,20 @@ class SectionLayout {
         );
         start = end;
       }
-      globalTop += painter.height + 16;
+      globalTop += painter.height + blockGap;
     }
     var page = <TextLine>[];
     var used = 0.0;
     for (final line in lines) {
-      final gap = page.isNotEmpty && page.last.block != line.block ? 16.0 : 0.0;
+      final gap = page.isNotEmpty && page.last.block != line.block
+          ? blockGap
+          : 0.0;
       if (page.isNotEmpty && used + gap + line.height > viewportHeight) {
         pages.add(page);
         page = [];
         used = 0;
       }
-      if (page.isNotEmpty && page.last.block != line.block) used += 16;
+      if (page.isNotEmpty && page.last.block != line.block) used += blockGap;
       page.add(line);
       used += line.height;
     }

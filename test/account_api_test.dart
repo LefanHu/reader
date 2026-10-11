@@ -7,6 +7,7 @@ import 'package:http/testing.dart';
 import 'package:reader/account/account_usage.dart';
 import 'package:reader/account/account_usage_exception.dart';
 import 'package:reader/account/http_account_api.dart';
+import 'package:reader/identity/cloud_failure_kind.dart';
 import 'package:reader/identity/cloud_identity_exception.dart';
 
 import 'support/cloud_identity_fake.dart';
@@ -99,8 +100,12 @@ void main() {
     'usage categorizes attestation failures without raw plugin details',
     () async {
       for (final failure in [
-        const CloudIdentityException('Could not attest this app'),
         const CloudIdentityException(
+          CloudFailureKind.attestation,
+          'Could not attest this app',
+        ),
+        const CloudIdentityException(
+          CloudFailureKind.attestation,
           'Cloud generation requires macOS 14 or later',
         ),
         FirebaseException(

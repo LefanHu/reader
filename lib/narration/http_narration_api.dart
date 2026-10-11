@@ -1,66 +1,43 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+import '../identity/cloud_book_fingerprint.dart';
+import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
 import '../catalog/catalog_book.dart';
 import '../text/narration_chunk.dart';
 import 'api.dart';
-import 'narration_fingerprint.dart';
 import 'narration_registration.dart';
+import 'source.dart';
 
 /// Authenticated REST client sharing lazy identity with illustrations.
 class HttpNarrationApi implements NarrationApi {
   /// Dependencies are injectable so tests and offline reading need no Firebase.
   HttpNarrationApi({required this.identity, http.Client? client, Uri? baseUri})
-    : client = client ?? http.Client(),
-      baseUri =
-          baseUri ??
-          Uri.parse(
-            const String.fromEnvironment(
-              'NARRATION_API_BASE_URL',
-              defaultValue: String.fromEnvironment('ILLUSTRATION_API_BASE_URL'),
-            ),
-          );
+    : _http = CloudHttpClient(
+        identity: identity,
+        client: client,
+        baseUri: baseUri,
+      );
 
   /// Shared identity permits narration on both native Apple platforms.
   final CloudIdentity identity;
 
-  /// HTTP boundary, also used to download short-lived private asset URLs.
-  final http.Client client;
+  /// Bounded transport, also used to download short-lived private asset URLs.
+  final CloudHttpClient _http;
 
-  /// Deployment URL; provider credentials are never present on the device.
-  final Uri baseUri;
   @override
-  bool get configured => identity.configured && baseUri.hasScheme;
-  @override
-  Future<bool> hasSession() => identity.hasSession();
+  bool get configured => _http.configured;
 
+  // Missing book registrations are idempotent; an absent purge endpoint is not.
   Future<Map<String, dynamic>> _json(
     String method,
     String path, {
     Map<String, dynamic>? body,
     bool missingIsSuccess = false,
-  }) async {
-    if (!configured) {
-      throw StateError('Narration is not configured in this build.');
-    }
-    final request = http.Request(method, baseUri.resolve(path))
-      ..headers.addAll(await identity.authorizationHeaders(interactive: false));
-    if (body != null) request.body = jsonEncode(body);
-    final response = await http.Response.fromStream(
-      await client.send(request).timeout(const Duration(seconds: 30)),
-    ).timeout(const Duration(seconds: 30));
-    // Missing book registrations are idempotent; an absent purge endpoint is not.
-    if (response.statusCode == 404 && missingIsSuccess) return {};
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw StateError('Narration service error (${response.statusCode}).');
-    }
-    return response.body.isEmpty
-        ? {}
-        : (jsonDecode(response.body) as Map).cast<String, dynamic>();
-  }
+  }) =>
+      _http.json(method, path, body: body, missingIsSuccess: missingIsSuccess);
 
   @override
   Future<Map<String, dynamic>> configuration() =>
@@ -70,7 +47,7 @@ class HttpNarrationApi implements NarrationApi {
     await identity.signIn();
     final key = await _json('GET', '/v1/fingerprint-key');
     // Reuse the privacy-preserving account-specific fingerprint protocol.
-    final fingerprint = narrationFingerprint(book.hash, key['key'] as String);
+    final fingerprint = cloudBookFingerprint(book.hash, key['key'] as String);
     final json = await _json(
       'POST',
       '/v1/narration/books',
@@ -92,7 +69,7 @@ class HttpNarrationApi implements NarrationApi {
     required bool Function() isCurrent,
   }) async {
     _bookId(bookId);
-    if (!isCurrent()) throw StateError('Narration session changed.');
+    if (!isCurrent()) throw const NarrationCancelled();
     final job = await _json(
       'POST',
       '/v1/narration/books/$bookId/jobs',
@@ -116,26 +93,11 @@ class HttpNarrationApi implements NarrationApi {
         if (uri.scheme != 'https') {
           throw StateError('Invalid private audio URL.');
         }
-        final response = await client
-            .send(http.Request('GET', uri))
-            .timeout(const Duration(seconds: 30));
-        const limit = 32 * 1024 * 1024;
-        if (response.statusCode != 200 ||
-            (response.contentLength ?? 0) > limit) {
-          throw StateError('Could not download narration.');
-        }
-        final bytes = BytesBuilder(copy: false);
-        await for (final part in response.stream.timeout(
-          const Duration(seconds: 30),
-        )) {
-          if (!isCurrent() || bytes.length + part.length > limit) {
-            throw StateError(
-              'Narration download was cancelled or exceeded its limit.',
-            );
-          }
-          bytes.add(part);
-        }
-        return bytes.takeBytes();
+        return _http.download(
+          uri,
+          maxBytes: 32 * 1024 * 1024,
+          isCurrent: isCurrent,
+        );
       }
       if (['failed', 'deleted', 'expired'].contains(result['status'])) {
         throw StateError(
@@ -161,15 +123,5 @@ class HttpNarrationApi implements NarrationApi {
       '/v1/narration/books/$bookId',
       missingIsSuccess: true,
     );
-  }
-
-  @override
-  Future<void> signOut() => identity.signOut();
-
-  @override
-  Future<void> deleteAccount() async {
-    await identity.reauthenticate();
-    await _json('DELETE', '/v1/account');
-    await identity.deleteAccount();
   }
 }

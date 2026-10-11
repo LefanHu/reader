@@ -14,6 +14,14 @@ class FakeAccountApi implements AccountApi {
   /// May hold or fail a response to exercise visible loading and retry states.
   Future<AccountUsage> Function() response = () async => testAccountUsage();
 
+  /// Counts completed cloud account deletions.
+  int deletions = 0;
+
+  @override
+  Future<void> deleteAccount() async {
+    deletions++;
+  }
+
   @override
   Future<AccountUsage> usage() {
     requests++;

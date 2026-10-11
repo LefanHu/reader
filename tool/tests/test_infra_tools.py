@@ -2,7 +2,6 @@
 import base64
 import contextlib
 import copy
-import importlib.util
 import io
 import json
 import os
@@ -14,14 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def load_tool(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "tool" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from support import ROOT, load_tool
 
 
 migration = load_tool("migrate_illustration_state")

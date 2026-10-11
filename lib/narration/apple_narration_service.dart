@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../text/text_section.dart';
 import 'narration_voice.dart';
+import 'source.dart';
 
 /// Narrow engine-owned Apple boundary. No account/cloud API or PCM bytes cross
 /// this channel. Staging files belong to NarrationStore, not the synthesizer.
@@ -111,7 +112,7 @@ class AppleNarrationService {
     final directory = await staging.parent.resolveSymbolicLinks();
     final canonicalPath = '$directory/${staging.uri.pathSegments.last}';
     if (isCurrent != null && !isCurrent()) {
-      throw StateError('Narration cancelled.');
+      throw const NarrationCancelled();
     }
     final result = await _channel.invokeMapMethod<String, dynamic>(
       'synthesize',

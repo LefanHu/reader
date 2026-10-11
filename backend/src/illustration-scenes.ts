@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import express, { type RequestHandler } from "express";
 import { FieldValue, type Firestore, type Timestamp, type Transaction, type DocumentReference } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
-import { asyncRoute, HttpError, routeParam } from "./illustration-http.js";
+import { asyncRoute, HttpError, routeParam } from "./http.js";
+import { readBookFence } from "./fences.js";
+import { refundReservation } from "./illustration-credits.js";
 
 /** Public illustration mutations share the worker's durable book/account fences. */
 export function illustrationSceneRouter(dependencies: {
@@ -19,11 +21,7 @@ export function illustrationSceneRouter(dependencies: {
     const scene = await transaction.get(reference);
     const data = scene.data();
     if (!data || data.uid !== uid || data.deleted) throw new HttpError(404, "Scene not found.");
-    const [book, account] = await Promise.all([
-      transaction.get(db.collection("users").doc(uid).collection("books").doc(data.bookId)),
-      transaction.get(db.collection("narrationAccountTombstones").doc(uid)),
-    ]);
-    if (!book.exists || book.data()?.deleted || account.exists) throw new HttpError(410, "Scene was deleted.");
+    if (!(await readBookFence(transaction, db, "books", uid, data.bookId)).live) throw new HttpError(410, "Scene was deleted.");
     return data;
   }
 
@@ -97,16 +95,7 @@ export function illustrationSceneRouter(dependencies: {
     });
     const reservations = await db.collection("creditReservations").where("uid", "==", req.uid)
       .where("sceneId", "==", reference.id).get();
-    for (const reservation of reservations.docs) await db.runTransaction(async (transaction) => {
-      const userRef = db.collection("users").doc(req.uid!);
-      const [current, user, account] = await Promise.all([
-        transaction.get(reservation.ref), transaction.get(userRef),
-        transaction.get(db.collection("narrationAccountTombstones").doc(req.uid!)),
-      ]);
-      if (current.data()?.state !== "reserved") return;
-      if (user.exists && !account.exists) transaction.update(userRef, { creditsReserved: FieldValue.increment(-1), updatedAt: FieldValue.serverTimestamp() });
-      transaction.update(reservation.ref, { state: "refunded", updatedAt: FieldValue.serverTimestamp() });
-    });
+    for (const reservation of reservations.docs) await refundReservation(db, req.uid!, reservation.ref);
     await Promise.all([data.imageObject, data.thumbnailObject].filter((object): object is string => typeof object === "string")
       .map((object) => storage.bucket(bucket).file(object).delete({ ignoreNotFound: true })));
     await db.runTransaction(async (transaction) => {

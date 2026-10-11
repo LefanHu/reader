@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart';
 
 import '../catalog/catalog_book.dart';
+import '../cloud_deletion_outbox.dart';
+import '../cloud_deletion_queue.dart';
+import '../identity/cloud_identity.dart';
 import '../text/text_position.dart';
 import 'api.dart';
 import 'book_text_index.dart';
@@ -11,7 +14,6 @@ import 'illustration_profile.dart';
 import 'illustration_scene.dart';
 import 'illustration_setup.dart';
 import 'indexer.dart';
-import 'outbox.dart';
 import 'store.dart';
 
 /// Owns illustration sidecars, indexing, spoiler gates, and cloud job workflows.
@@ -25,6 +27,7 @@ class IllustrationCoordinator {
     required this.store,
     required this.textIndexer,
     required this.api,
+    required this.identity,
     required this.deletionOutbox,
     required this.gate,
     required this._currentBook,
@@ -42,8 +45,17 @@ class IllustrationCoordinator {
   /// Cloud registration, generation, unlock, and privacy boundary.
   final IllustrationApi api;
 
+  /// Shared account session used for sign-in and existing-session probes.
+  final CloudIdentity identity;
+
   /// Durable book-deletion receipts outside source-book directories.
-  final IllustrationDeletionOutbox deletionOutbox;
+  final CloudDeletionOutbox deletionOutbox;
+
+  late final _deletions = CloudDeletionQueue(
+    outbox: deletionOutbox,
+    ready: () async => api.configured && await identity.hasSession(),
+    delete: (id) => api.deleteBook(id, interactive: false),
+  );
 
   /// Evaluates scene anchors before any unlock request.
   final IllustrationGate gate;
@@ -85,7 +97,7 @@ class IllustrationCoordinator {
         await api.deleteBook(cloudBookId);
       } on Object {
         // Local privacy remains usable offline; the receipt outlives the book.
-        await deletionOutbox.enqueue(cloudBookId);
+        await _deletions.enqueue(cloudBookId);
       }
     }
   }
@@ -126,12 +138,12 @@ class IllustrationCoordinator {
     _changed();
     try {
       final index = await _indexFor(book);
-      await api.signIn();
+      await identity.signIn();
       await _refreshCloudAccount();
       await drainDeletions();
       // Reimported bytes produce the same cloud identity. Finish old deletions
       // before registration so a delayed retry cannot delete the new profile.
-      if ((await deletionOutbox.load()).isNotEmpty) {
+      if (await _deletions.hasPending) {
         throw const IllustrationException(
           'Cloud cleanup is pending. Try enabling illustrations again when connected.',
         );
@@ -236,32 +248,8 @@ class IllustrationCoordinator {
     _changed();
   }
 
-  Future<void>? _deletionDrain;
-
   /// Retries durable book deletions once using only an existing cloud session.
-  Future<void> drainDeletions() => _deletionDrain ??= _performDeletionDrain()
-      .whenComplete(() => _deletionDrain = null);
-
-  Future<void> _performDeletionDrain() async {
-    try {
-      final pendingDeletions = await deletionOutbox.load();
-      if (pendingDeletions.isEmpty ||
-          !api.configured ||
-          !await api.hasSession()) {
-        return;
-      }
-      for (final pending in pendingDeletions) {
-        try {
-          await api.deleteBook(pending.cloudBookId, interactive: false);
-          await deletionOutbox.remove(pending.cloudBookId);
-        } on Object {
-          // Leave requests durable while connectivity or identity is unavailable.
-        }
-      }
-    } on Object {
-      // Startup privacy retries are auxiliary and must never block offline reading.
-    }
-  }
+  Future<void> drainDeletions() => _deletions.drain();
 
   Future<BookTextIndex> _indexFor(CatalogBook book) async {
     final memory = _textIndexes[book.hash];

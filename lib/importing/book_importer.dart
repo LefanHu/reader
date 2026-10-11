@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'package:crypto/crypto.dart';
 
 import '../catalog/catalog_book.dart';
+import '../text/normalized_book_files.dart';
 import '../text/parser.dart';
 import '../text/parser_limits.dart';
 import '../text/word_count.dart';
@@ -62,10 +63,10 @@ class BookImporter {
             .writeAsBytes(bytes, flush: true);
         await Directory('$stagedPath/text').create();
         for (final section in parsed.sections) {
-          await File('$stagedPath/text/${section.id}.json')
+          await File(NormalizedBookFiles.section(stagedPath, section.id))
               .writeAsString(jsonEncode(section.toJson()), flush: true);
         }
-        await File('$stagedPath/document.json')
+        await File(NormalizedBookFiles.document(stagedPath))
             .writeAsString(jsonEncode(parsed.document.toJson()), flush: true);
         if (parsed.cover != null) {
           await File('$stagedPath/cover.${parsed.coverExtension}')

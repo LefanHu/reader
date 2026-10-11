@@ -6,6 +6,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
 import 'cloud_identity.dart';
+import 'cloud_failure_kind.dart';
 import 'cloud_identity_exception.dart';
 import 'google_identity_provider.dart';
 import 'native_google_identity_provider.dart';
@@ -73,6 +74,7 @@ class FirebaseCloudIdentity implements CloudIdentity {
   Future<void> _initialize() async {
     if (!configured) {
       throw const CloudIdentityException(
+        CloudFailureKind.notConfigured,
         'Google sign-in is not configured in this build.',
       );
     }
@@ -114,6 +116,7 @@ class FirebaseCloudIdentity implements CloudIdentity {
                 0) <
             14) {
       throw const CloudIdentityException(
+        CloudFailureKind.attestation,
         'Cloud generation requires macOS 14 or later.',
       );
     }
@@ -156,6 +159,7 @@ class FirebaseCloudIdentity implements CloudIdentity {
     final user = _auth.currentUser;
     if (user == null) {
       throw const CloudIdentityException(
+        CloudFailureKind.signedOut,
         'Sign in before deleting your cloud account.',
       );
     }
@@ -175,11 +179,15 @@ class FirebaseCloudIdentity implements CloudIdentity {
     }
     final idToken = await _auth.currentUser?.getIdToken();
     if (idToken == null || idToken.isEmpty) {
-      throw const CloudIdentityException('Sign in to use cloud features.');
+      throw const CloudIdentityException(
+        CloudFailureKind.signedOut,
+        'Sign in to use cloud features.',
+      );
     }
     final appCheck = await _appCheckToken();
     if (appCheck == null || appCheck.isEmpty) {
       throw const CloudIdentityException(
+        CloudFailureKind.attestation,
         'Could not attest this app for cloud features.',
       );
     }

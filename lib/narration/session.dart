@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../catalog/catalog_book.dart';
+import '../serial_queue.dart';
 import '../preferences/reader_settings.dart';
 import '../text/document.dart';
 import '../text/document_store.dart';
@@ -61,13 +62,7 @@ class NarrationSession {
     _subscription = player.completed.listen((token) {
       unawaited(
         _finished(token).catchError((Object failure) {
-          if (!_disposed) {
-            error = failure.toString();
-            _wanted = false;
-            _resumeTimer?.cancel();
-            status = NarrationStatus.buffering;
-            changed();
-          }
+          if (!_disposed) _fail(failure);
         }),
       );
     });
@@ -133,9 +128,9 @@ class NarrationSession {
   int _index = 0, _epoch = 0, _loadToken = 0;
   bool _wanted = false, _disposed = false, _seeked = false;
   late final StreamSubscription<int> _subscription;
-  Future<void> _nativeTail = Future.value();
+  final _nativeQueue = SerialQueue();
   Future<void>? _cacheMaintenance;
-  Future<void> _preferenceUpdate = Future.value();
+  final _preferenceQueue = SerialQueue();
   final Map<String, Future<NarrationAudioAsset>> _downloads = {};
   late final NarrationHighlightTracker _highlight;
   Timer? _resumeTimer;
@@ -175,19 +170,10 @@ class NarrationSession {
   /// An obsolete route cannot detach a replacement reader's highlight owner.
   void detachHighlightOwner(Object owner) => _highlight.detach(owner);
 
-  Future<T> _native<T>(Future<T> Function() action) {
-    final result = _nativeTail.then((_) => action());
-    _nativeTail = result.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return result;
-  }
-
   /// Opens the selected book, pausing another publication before loading it.
   Future<void> attach(CatalogBook target) async {
     if (_cacheMaintenance != null) await _cacheMaintenance;
-    await _preferenceUpdate;
+    await _preferenceQueue.idle;
     if (_disposed || !isBookAvailable(target) || book?.hash == target.hash) {
       return;
     }
@@ -198,23 +184,13 @@ class NarrationSession {
     if (_disposed || epoch != _epoch || !isBookAvailable(target)) return;
     book = target;
     final settings = preferences();
-    final sameVoice =
-        loaded.voice == settings.narrationVoice &&
-        loaded.engine == source.engine &&
-        loaded.segmentationPolicy == source.segmentationPolicy &&
-        loaded.synthesisFingerprint == source.synthesisFingerprint;
-    manifest = NarrationManifest(
-      account: loaded.account,
-      cloudBookId: loaded.cloudBookId,
+    manifest = loaded.withProfile(
       voice: settings.narrationVoice,
       speed: settings.narrationSpeed,
       engine: source.engine,
       synthesisFingerprint: source.synthesisFingerprint,
       segmentationPolicy: source.segmentationPolicy,
       anchor: loaded.anchor,
-      chunkId: sameVoice ? loaded.chunkId : null,
-      chunkStart: loaded.chunkStart,
-      offsetMs: sameVoice ? loaded.offsetMs : 0,
     );
     document = doc;
     // Commit converted identity before any replacement clip is rendered.
@@ -252,14 +228,9 @@ class NarrationSession {
       }
       return;
     }
-    manifest = NarrationManifest(
+    manifest = manifest.withRegistration(
       account: registration.account,
       cloudBookId: registration.bookId,
-      voice: manifest.voice,
-      speed: manifest.speed,
-      engine: manifest.engine,
-      synthesisFingerprint: manifest.synthesisFingerprint,
-      segmentationPolicy: manifest.segmentationPolicy,
       anchor: currentPosition(target),
     );
     remaining = registration.remaining;
@@ -300,14 +271,7 @@ class NarrationSession {
     _units = units;
     _index = 0;
     if (!resume || _units.firstOrNull?.chunk.id != manifest.chunkId) {
-      manifest = NarrationManifest(
-        account: manifest.account,
-        cloudBookId: manifest.cloudBookId,
-        voice: manifest.voice,
-        speed: manifest.speed,
-        engine: manifest.engine,
-        synthesisFingerprint: manifest.synthesisFingerprint,
-        segmentationPolicy: manifest.segmentationPolicy,
+      manifest = manifest.withPlayback(
         anchor: position,
         chunkStart: _units.firstOrNull?.chunk.start ?? anchor,
       );
@@ -323,7 +287,7 @@ class NarrationSession {
 
   Future<void> _play({TextPosition? start}) async {
     if (_cacheMaintenance != null) await _cacheMaintenance;
-    await _preferenceUpdate;
+    await _preferenceQueue.idle;
     if (book == null || !ready || _disposed || (_wanted && start == null)) {
       return;
     }
@@ -344,14 +308,7 @@ class NarrationSession {
     error = null;
     status = NarrationStatus.buffering;
     if (start != null) {
-      manifest = NarrationManifest(
-        account: manifest.account,
-        cloudBookId: manifest.cloudBookId,
-        voice: manifest.voice,
-        speed: manifest.speed,
-        engine: manifest.engine,
-        synthesisFingerprint: manifest.synthesisFingerprint,
-        segmentationPolicy: manifest.segmentationPolicy,
+      manifest = manifest.withPlayback(
         anchor: currentPosition(book!),
         chunkStart: start,
       );
@@ -359,7 +316,7 @@ class NarrationSession {
     changed();
     try {
       if (start != null) {
-        await _native(() async {
+        await _nativeQueue.run(() async {
           if (_current(epoch)) await player.stopAudio();
         });
         if (!_current(epoch)) return;
@@ -371,16 +328,24 @@ class NarrationSession {
       if (!_current(epoch)) return;
       await _start(epoch);
     } on Object catch (failure) {
-      if (epoch == _epoch) {
-        error = failure.toString();
-        _wanted = false;
-        status = NarrationStatus.buffering;
-        changed();
-      }
+      if (epoch == _epoch) _fail(failure);
     }
   }
 
   bool _current(int epoch) => !_disposed && _wanted && epoch == _epoch;
+
+  /// Recoverable failure: stops wanting playback and shows the message.
+  void _fail(Object failure) {
+    error = switch (failure) {
+      StateError(:final message) => message,
+      FormatException(:final message) => message,
+      _ => failure.toString(),
+    };
+    _wanted = false;
+    _resumeTimer?.cancel();
+    status = NarrationStatus.buffering;
+    changed();
+  }
 
   Future<NarrationAudioAsset> _file(
     NarrationPlaybackUnit unit,
@@ -396,7 +361,7 @@ class NarrationSession {
     );
     final cached = await store.cached(target, key);
     if (cached != null) return cached;
-    if (!_current(epoch)) throw StateError('Session changed.');
+    if (!_current(epoch)) throw const NarrationCancelled();
     // Single-flight is generation-scoped: cancelled work cannot poison retry.
     final download = '$epoch:$key';
     return _downloads
@@ -465,7 +430,7 @@ class NarrationSession {
         ? Duration(milliseconds: manifest.offsetMs)
         : Duration.zero;
     final token = ++_loadToken;
-    await _native(() async {
+    await _nativeQueue.run(() async {
       if (!_current(epoch)) return;
       await player.load(asset.path, book!.title, token, offset);
       if (!_current(epoch)) return;
@@ -500,14 +465,7 @@ class NarrationSession {
         status != NarrationStatus.playing) {
       return;
     }
-    manifest = NarrationManifest(
-      account: manifest.account,
-      cloudBookId: manifest.cloudBookId,
-      voice: manifest.voice,
-      speed: manifest.speed,
-      engine: manifest.engine,
-      synthesisFingerprint: manifest.synthesisFingerprint,
-      segmentationPolicy: manifest.segmentationPolicy,
+    manifest = manifest.withPlayback(
       anchor: currentPosition(book!),
       chunkId: chunk.id,
       chunkStart: chunk.start,
@@ -551,28 +509,14 @@ class NarrationSession {
     final target = book!;
     await commit(target, chunk.end, document!.progress(_section!, chunk.end));
     if (!_current(epoch)) return;
-    manifest = NarrationManifest(
-      account: manifest.account,
-      cloudBookId: manifest.cloudBookId,
-      voice: manifest.voice,
-      speed: manifest.speed,
-      engine: manifest.engine,
-      synthesisFingerprint: manifest.synthesisFingerprint,
-      segmentationPolicy: manifest.segmentationPolicy,
-      anchor: chunk.end,
-    );
+    manifest = manifest.withoutPlayback(anchor: chunk.end);
     await store.save(target, manifest);
     if (!_current(epoch)) return;
     _index++;
     try {
       await _start(epoch);
     } on Object catch (failure) {
-      if (_current(epoch)) {
-        error = failure.toString();
-        _wanted = false;
-        status = NarrationStatus.buffering;
-        changed();
-      }
+      if (_current(epoch)) _fail(failure);
     }
   }
 
@@ -585,14 +529,7 @@ class NarrationSession {
 
   Future<void> _flush() async {
     if (!ready || _disposed) return;
-    final value = NarrationManifest(
-      account: manifest.account,
-      cloudBookId: manifest.cloudBookId,
-      voice: manifest.voice,
-      speed: manifest.speed,
-      engine: manifest.engine,
-      synthesisFingerprint: manifest.synthesisFingerprint,
-      segmentationPolicy: manifest.segmentationPolicy,
+    final value = manifest.withPlayback(
       anchor: manifest.anchor,
       chunkId: _seeked ? null : manifest.chunkId,
       chunkStart: _seeked ? null : manifest.chunkStart,
@@ -617,7 +554,7 @@ class NarrationSession {
     await source.cancel(oldEpoch);
     ++_loadToken;
     _resumeTimer?.cancel();
-    await _native(player.pauseAudio);
+    await _nativeQueue.run(player.pauseAudio);
     await _flush();
     if (epoch != _epoch) return;
     if (book != null) status = NarrationStatus.paused;
@@ -640,7 +577,7 @@ class NarrationSession {
     final epoch = _epoch;
     // Release audio/media ownership before waiting for a viewport frame. A
     // lock-screen Stop must still complete its native work while UI is suspended.
-    await _native(player.stopAudio);
+    await _nativeQueue.run(player.stopAudio);
     _highlight.clear();
     store.pin({});
     final target = book;
@@ -656,15 +593,7 @@ class NarrationSession {
     if (book?.hash != target.hash) return;
     if (manifest.chunkId == null && !_wanted) return;
     await pause(restore: false);
-    manifest = NarrationManifest(
-      account: manifest.account,
-      cloudBookId: manifest.cloudBookId,
-      voice: manifest.voice,
-      speed: manifest.speed,
-      engine: manifest.engine,
-      synthesisFingerprint: manifest.synthesisFingerprint,
-      segmentationPolicy: manifest.segmentationPolicy,
-    );
+    manifest = manifest.withoutPlayback();
     await store.save(target, manifest);
   }
 
@@ -673,7 +602,7 @@ class NarrationSession {
     if (_cacheMaintenance != null) await _cacheMaintenance;
     _seeked = true;
     final max = player.duration?.inMilliseconds ?? 0;
-    await _native(
+    await _nativeQueue.run(
       () => player.seekAudio(
         Duration(
           milliseconds: offset.inMilliseconds.clamp(0, max > 0 ? max - 1 : 0),
@@ -681,6 +610,22 @@ class NarrationSession {
       ),
     );
     await flush();
+  }
+
+  /// Seeking is meaningful only for a prepared chunk of a ready publication.
+  bool get canSeek => ready && manifest.chunkId != null;
+
+  /// Relative seek from the current native position; clamped like [seek].
+  Future<void> seekBy(Duration delta) => seek(player.position + delta);
+
+  /// Refreshes the cloud allowance shown in the sheet; local speech has none.
+  Future<void> refreshAllowance() async {
+    final target = book;
+    if (target == null || !source.requiresCloudRegistration) return;
+    final config = await api.configuration();
+    if (_disposed || book?.hash != target.hash) return;
+    remaining = config['remaining'] as int?;
+    changed();
   }
 
   /// Applies restored/global settings, retaining unavailable saved voice identity.
@@ -706,14 +651,7 @@ class NarrationSession {
     // Capture the current gate before queueing. A later cache clear waits for
     // this preference operation rather than making it wait on the newer gate.
     final maintenance = _cacheMaintenance;
-    final operation = _preferenceUpdate.then(
-      (_) => _configure(voice, speed, maintenance),
-    );
-    _preferenceUpdate = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
+    return _preferenceQueue.run(() => _configure(voice, speed, maintenance));
   }
 
   Future<void> _configure(
@@ -728,9 +666,7 @@ class NarrationSession {
     // Typography and theme edits must not touch the audio handler or sidecar.
     if (!voiceChanged && !speedChanged) return;
     if (voiceChanged && book != null) await _stop();
-    manifest = NarrationManifest(
-      account: manifest.account,
-      cloudBookId: manifest.cloudBookId,
+    manifest = manifest.withProfile(
       voice: voice ?? manifest.voice,
       speed: speed ?? manifest.speed,
       engine: manifest.engine,
@@ -739,11 +675,8 @@ class NarrationSession {
       anchor: voiceChanged && book != null
           ? currentPosition(book!) ?? manifest.anchor
           : manifest.anchor,
-      chunkId: voiceChanged ? null : manifest.chunkId,
-      chunkStart: manifest.chunkStart,
-      offsetMs: voiceChanged ? 0 : manifest.offsetMs,
     );
-    await _native(() => player.speed(manifest.speed));
+    await _nativeQueue.run(() => player.speed(manifest.speed));
     if (book != null) await store.save(book!, manifest);
     changed();
   }
@@ -790,9 +723,20 @@ class NarrationSession {
 
   /// Stops playback and drains fenced downloads before clearing all owned audio.
   /// Registration, cache identity metadata and complete text anchors are retained.
-  Future<void> clearAllCache(List<CatalogBook> books) async {
+  Future<void> clearAllCache(List<CatalogBook> books) =>
+      _clearAudio(books, forgetRegistration: false);
+
+  /// Clears audio after successful server deletion; keeps complete text anchors
+  /// and synthesis identity.
+  Future<void> forgetCloudAccount(List<CatalogBook> books) =>
+      _clearAudio(books, forgetRegistration: true);
+
+  Future<void> _clearAudio(
+    List<CatalogBook> books, {
+    required bool forgetRegistration,
+  }) async {
     final previous = _cacheMaintenance;
-    final preferences = _preferenceUpdate;
+    final preferences = _preferenceQueue.idle;
     final finished = Completer<void>();
     _cacheMaintenance = finished.future;
     try {
@@ -815,16 +759,10 @@ class NarrationSession {
               ? manifest
               : await store.load(target);
           if (_disposed || !isBookAvailable(target)) continue;
-          final cleared = NarrationManifest(
-            account: old.account,
-            cloudBookId: old.cloudBookId,
-            voice: old.voice,
-            speed: old.speed,
-            engine: old.engine,
-            synthesisFingerprint: old.synthesisFingerprint,
-            segmentationPolicy: old.segmentationPolicy,
-            anchor: currentPosition(target) ?? old.anchor,
-          );
+          final anchor = currentPosition(target) ?? old.anchor;
+          final cleared = forgetRegistration
+              ? old.withoutRegistration(anchor: anchor)
+              : old.withoutPlayback(anchor: anchor);
           await store.save(target, cleared);
           if (!isBookAvailable(target)) continue;
           await store.clear(target);
@@ -835,6 +773,7 @@ class NarrationSession {
           if (isBookAvailable(target)) rethrow;
         }
       }
+      if (forgetRegistration) remaining = null;
       if (!_disposed) changed();
     } finally {
       finished.complete();

@@ -1,15 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:characters/characters.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
-import 'package:reader/catalog/file_catalog_store.dart';
-import 'package:reader/importing/book_importer.dart';
-import 'package:reader/importing/import_candidate.dart';
-import 'package:reader/narration/file_narration_store.dart';
 import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/session.dart';
@@ -28,6 +22,7 @@ import 'fixtures/narration_audio.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
 import 'support/memory_narration_store.dart';
+import 'support/test_controller.dart';
 
 Future<void> settle() => pumpEventQueue(times: 30);
 
@@ -140,6 +135,25 @@ void main() {
     });
     tearDown(() => session.dispose());
 
+    test('refreshAllowance updates the attached book only', () async {
+      session.remaining = 1;
+      await session.refreshAllowance();
+      expect(session.remaining, 500000);
+
+      session.remaining = 1;
+      final refreshing = session.refreshAllowance();
+      session.book = CatalogBook(
+        hash: 'b' * 64,
+        fileName: 'other.txt',
+        path: '/tmp/other.txt',
+        title: 'Other',
+        authors: const [],
+        addedAt: DateTime.utc(2026),
+      );
+      await refreshing;
+      session.book = book;
+      expect(session.remaining, 1);
+    });
     test(
       'opening registered narration never registers it a second time',
       () async {
@@ -674,88 +688,36 @@ void main() {
     });
   });
 
-  group('Private audio storage', () {
-    late Directory root;
-    late CatalogBook book;
-    late FileNarrationStore store;
-    setUp(() async {
-      root = await Directory.systemTemp.createTemp('reader_narration');
-      final bytes = Uint8List.fromList(
-        utf8.encode('First paragraph.\n\nLast paragraph.'),
-      );
-      book = (await BookImporter(root: root).import(
-        ImportCandidate(
-          name: 'Book.txt',
-          size: bytes.length,
-          readBytes: () async => bytes,
+  test(
+    'narrateChapter commits the chapter start and requests a restore',
+    () async {
+      final book = testBook();
+      final sections = [
+        const TextSection(
+          id: 's0',
+          blocks: [TextBlock(id: 'p0', text: 'First paragraph.')],
         ),
-        {},
-      )).book!;
-      store = FileNarrationStore(root, maxBytes: testWav().length * 2);
-    });
-    tearDown(() => root.delete(recursive: true));
-    test(
-      'LRU evicts oldest unpinned audio and clearing preserves registration',
-      () async {
-        const manifest = NarrationManifest(
-          account: 'account',
-          cloudBookId: 'cloud-book',
-        );
-        await store.save(book, manifest);
-        store.pin({'a' * 64});
-        await store.put(book, 'a' * 64, testWav());
-        await store.put(book, 'b' * 64, testWav());
-        await store.put(book, 'c' * 64, testWav());
-        expect(await store.cached(book, 'a' * 64), isNotNull);
-        expect(await store.cached(book, 'b' * 64), isNull);
-        expect(await store.cachedBytes(book), testWav().length * 2);
-        await store.clear(book);
-        expect(await store.cachedBytes(book), 0);
-        expect(await store.cached(book, 'a' * 64), isNull);
-        expect((await store.load(book)).cloudBookId, 'cloud-book');
-      },
-    );
-    test(
-      'store refuses symlink audio and writes after owned book deletion',
-      () async {
-        final directory = Directory('${File(book.path).parent.path}/narration');
-        await directory.create();
-        await Link('${directory.path}/${'a' * 64}.wav')
-            .create('${root.path}/outside.wav');
-        expect(await store.cachedBytes(book), 0);
-        await expectLater(
-          store.put(book, 'a' * 64, testWav()),
-          throwsFormatException,
-        );
-        await FileCatalogStore(root).deleteFiles(book);
-        await expectLater(
-          store.save(book, const NarrationManifest()),
-          throwsFormatException,
-        );
-      },
-    );
-    test('resume sidecars recover temporary generation and preserve complete anchors', () async {
-      const anchor = TextPosition(sectionId: 's0', blockId: 'p0', offset: 5);
-      const value = NarrationManifest(
-        account: 'account',
-        cloudBookId: 'cloud-book',
-        anchor: anchor,
-        chunkId: 'chunk',
-        chunkStart: TextPosition(sectionId: 's0', blockId: 'p1'),
-        offsetMs: 1234,
+        const TextSection(
+          id: 's1',
+          blocks: [TextBlock(id: 'p1', text: 'Last paragraph.')],
+        ),
+      ];
+      final controller = await testController(
+        books: [book],
+        narrationApi: FakeNarrationApi(),
+        narrationDocuments: MemoryDocumentStore(sections: sections),
       );
-      await store.save(book, value);
-      final file = File(
-        '${File(book.path).parent.path}/narration/manifest.json',
-      );
-      await file.rename('${file.path}.tmp');
-      await file.writeAsString('{bad');
-      expect((await store.load(book)).anchor, anchor);
+      addTearDown(controller.dispose);
+      final session = controller.narration!;
+      await session.register(book);
+      final revision = controller.narrationNavigationRevision;
+      await controller.narrateChapter(book, 's1');
       expect(
-        (await store.load(book)).chunkStart,
-        const TextPosition(sectionId: 's0', blockId: 'p1'),
+        controller.catalog.find(book)?.lastPosition?.toJson(),
+        sections[1].start.toJson(),
       );
-      expect((await store.load(book)).offsetMs, 1234);
-    });
-  });
+      expect(controller.narrationNavigationRevision, revision + 1);
+      expect(session.manifest.chunkId, isNull);
+    },
+  );
 }

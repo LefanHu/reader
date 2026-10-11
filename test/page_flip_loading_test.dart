@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/text/page_curl.dart';
 
 import 'support/delayed_document_store.dart';
@@ -118,5 +119,21 @@ void main() {
     expect(h.navigation.leadingPosition!.sectionId, 's1');
     expect(h.reports, hasLength(1));
     expect(h.navigation.retainedLayoutCount, lessThanOrEqualTo(2));
+  });
+
+  testWidgets('failed previous-section load in scroll mode shows the error', (
+    tester,
+  ) async {
+    final store = DelayedDocumentStore();
+    final h = TextViewportHarness(store: store);
+    h.settings.value = h.settings.value.copyWith(mode: ReadingMode.scroll);
+    await h.mount(tester);
+    h.navigation.goTo(store.sections[2].start);
+    await tester.pumpAndSettle();
+    store.fail = true;
+    h.navigation.previous();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('unavailable section'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

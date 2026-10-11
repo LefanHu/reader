@@ -3,7 +3,10 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+
+import 'layout/section_layout_cache.dart';
+import 'reader_key_navigation.dart';
+import 'reader_text_style.dart';
 
 import '../preferences/reader_settings.dart';
 import '../preferences/reading_mode.dart';
@@ -122,11 +125,11 @@ class _TextViewportState extends State<TextViewport>
   bool _reduceMotion = false;
   ScrollController _scroll = ScrollController(keepScrollOffset: false);
   int _restoreGeneration = 0;
-  final _cache = <String, SectionLayout>{};
+  final _layouts = SectionLayoutCache();
   text.TextSection? _section;
   text.TextPosition? _position;
   SectionLayout? _layout;
-  String? _layoutKey;
+  Object? _layoutKey;
   Object? _error;
   int _ordinal = 0;
   int _request = 0;
@@ -166,17 +169,18 @@ class _TextViewportState extends State<TextViewport>
     widget.onManualNavigation?.call();
   }
 
+  bool get _rightToLeft {
+    final block = _section?.blocks.first;
+    return block != null &&
+        paragraphDirection(block.text, block.direction) == TextDirection.rtl;
+  }
+
   void _attachNavigation() {
     widget.navigation.attach(
       this,
       leadingPosition: () => _position,
-      rightToLeft: () {
-        final block = _section?.blocks.first;
-        return block != null &&
-            paragraphDirection(block.text, block.direction) ==
-                TextDirection.rtl;
-      },
-      retainedLayoutCount: () => _cache.length,
+      rightToLeft: () => _rightToLeft,
+      retainedLayoutCount: () => _layouts.length,
       retainedTextureCount: () => _turn?.current == null ? 0 : 2,
       next: () => _step(1),
       previous: () => _step(-1),
@@ -407,8 +411,16 @@ class _TextViewportState extends State<TextViewport>
       _section = target.section;
       _layout = target.layout;
       _page = target.page;
-      _layoutKey =
-          '${_key(target.section, _width, _height, _scaler)}:${widget.settings.mode.name}';
+      _layoutKey = (
+        _layouts.keyFor(
+          section: target.section,
+          width: _width,
+          height: _height,
+          style: _style,
+          scaler: _scaler,
+        ),
+        widget.settings.mode,
+      );
     });
     _report(target.layout.pages[target.page].first.position(target.section.id));
   }
@@ -548,10 +560,10 @@ class _TextViewportState extends State<TextViewport>
     _dragPointer = details.localPosition;
     final movement = _dragPointer!.dx - _dragOrigin!.dx;
     if (!_turnBusy && movement != 0) {
-      _turnDelta = (movement < 0) != widget.navigation.rightToLeft ? 1 : -1;
+      _turnDelta = (movement < 0) != _rightToLeft ? 1 : -1;
       _startTurn(_turnDelta, automatic: false);
     }
-    final negative = (_turnDelta > 0) != widget.navigation.rightToLeft;
+    final negative = (_turnDelta > 0) != _rightToLeft;
     _dragDistance = negative ? math.min(0, movement) : math.max(0, movement);
     if (_turn != null) setState(() => _animation.value = _dragProgress);
   }
@@ -561,7 +573,7 @@ class _TextViewportState extends State<TextViewport>
     _dragging = false;
     _dragAccepted = false;
     final velocity = details.primaryVelocity ?? 0;
-    final negative = (_turnDelta > 0) != widget.navigation.rightToLeft;
+    final negative = (_turnDelta > 0) != _rightToLeft;
     _releaseComplete =
         _dragProgress >= .35 ||
         (_dragDistance.abs() >= 8 &&
@@ -585,33 +597,22 @@ class _TextViewportState extends State<TextViewport>
     }
     // Advancing beyond the final viewport explicitly acknowledges the ending,
     // allowing completion without treating merely visible text as read.
-    final last = _section!.blocks.last;
-    _report(
-      text.TextPosition(
-        sectionId: _section!.id,
-        blockId: last.id,
-        offset: last.text.length,
-      ),
-    );
+    _report(_section!.end);
   }
 
   Future<void> _previousEnd() async {
     if (_ordinal == 0) return;
     final generation = _request;
     final summary = widget.document.sections[_ordinal - 1];
-    final section = await widget.store.loadSection(
-      widget.sourcePath,
-      summary.id,
-    );
+    final text.TextSection section;
+    try {
+      section = await widget.store.loadSection(widget.sourcePath, summary.id);
+    } on Object catch (error) {
+      if (mounted && generation == _request) setState(() => _error = error);
+      return;
+    }
     if (!mounted || generation != _request) return;
-    final last = section.blocks.last;
-    await _goTo(
-      text.TextPosition(
-        sectionId: section.id,
-        blockId: last.id,
-        offset: last.text.length,
-      ),
-    );
+    await _goTo(section.end);
   }
 
   void _report(text.TextPosition position) {
@@ -639,12 +640,7 @@ class _TextViewportState extends State<TextViewport>
     final y = _scroll.offset;
     final lines = _layout!.lines;
     if (y >= lines.last.globalTop + lines.last.height) {
-      final block = _section!.blocks.last;
-      final end = text.TextPosition(
-        sectionId: _section!.id,
-        blockId: block.id,
-        offset: block.text.length,
-      );
+      final end = _section!.end;
       if (end != _position) _report(end);
       return;
     }
@@ -663,59 +659,51 @@ class _TextViewportState extends State<TextViewport>
     if (position != _position) _report(position);
   }
 
-  String _key(
-    text.TextSection section,
-    double width,
-    double height,
-    TextScaler scaler,
-  ) =>
-      '${section.id}:$width:$height:${widget.settings.fontSize}:${widget.settings.serif}:${widget.foreground.toARGB32()}:${scaler.scale(20)}';
+  TextStyle get _style => readerTextStyle(widget.settings, widget.foreground);
 
   SectionLayout _obtainLayout(
     text.TextSection section,
     double width,
     double height,
     TextScaler scaler,
-  ) {
-    final key = _key(section, width, height, scaler);
-    final layout =
-        _cache.remove(key) ??
-        SectionLayout(
-          section,
-          width,
-          height,
-          TextStyle(
-            fontFamily: widget.settings.serif ? 'Lora' : 'DM Sans',
-            fontSize: 20 * widget.settings.fontSize / 100,
-            height: 1.6,
-            color: widget.foreground,
-          ),
-          scaler,
-        );
-    _cache[key] = layout;
-    // The committed layout remains alive while an adjacent section is previewed.
-    while (_cache.length > 2) {
-      final victim = _cache.keys.firstWhere(
-        (key) => _cache[key] != _layout && _cache[key] != layout,
-        orElse: () => _cache.keys.first,
-      );
-      _cache.remove(victim)!.dispose();
-    }
-    return layout;
-  }
+  ) => _layouts.obtain(
+    section: section,
+    width: width,
+    height: height,
+    style: _style,
+    scaler: scaler,
+    committed: _layout,
+  );
 
   void _prepare(double width, double height, TextScaler scaler) {
     final section = _section!;
-    final key = _key(section, width, height, scaler);
-    if (_layoutKey == '$key:${widget.settings.mode.name}') return;
+    final style = _style;
+    final key = (
+      _layouts.keyFor(
+        section: section,
+        width: width,
+        height: height,
+        style: style,
+        scaler: scaler,
+      ),
+      widget.settings.mode,
+    );
+    if (_layoutKey == key) return;
     _clearSelection();
     _cancelTurn();
     _width = width;
     _height = height;
     _scaler = scaler;
-    final layout = _obtainLayout(section, width, height, scaler);
+    final layout = _layouts.obtain(
+      section: section,
+      width: width,
+      height: height,
+      style: style,
+      scaler: scaler,
+      committed: _layout,
+    );
     _layout = layout;
-    _layoutKey = '$key:${widget.settings.mode.name}';
+    _layoutKey = key;
     final position = section.resolve(_position ?? section.start);
     final line = layout.lineFor(position);
     _page = layout.pages.indexWhere((page) => page.contains(line));
@@ -756,9 +744,7 @@ class _TextViewportState extends State<TextViewport>
     _cancelTurn();
     _animation.dispose();
     _scroll.dispose();
-    for (final layout in _cache.values) {
-      layout.dispose();
-    }
+    _layouts.dispose();
     super.dispose();
   }
 
@@ -811,7 +797,7 @@ class _TextViewportState extends State<TextViewport>
                               height: block.painter.height,
                               start: 0,
                               end: block.block.text.length,
-                              bottomPadding: 16,
+                              bottomPadding: blockGap,
                               narrationRange: narrationBlockRange(
                                 range: widget.activeNarrationRange,
                                 documentVersion: widget.document.version,
@@ -830,7 +816,7 @@ class _TextViewportState extends State<TextViewport>
                 mode: widget.settings.mode,
                 selecting: _selectionActive,
                 width: width,
-                rightToLeft: widget.navigation.rightToLeft,
+                rightToLeft: _rightToLeft,
                 onStep: _step,
                 onTap: widget.onTap,
                 onDragStart: _dragStart,
@@ -866,7 +852,7 @@ class _TextViewportState extends State<TextViewport>
                                 grabY: _dragOrigin?.dy ?? _height / 2,
                                 fingerY: _dragPointer?.dy ?? _height / 2,
                                 forward: _turn!.delta > 0,
-                                fromRight: !widget.navigation.rightToLeft,
+                                fromRight: !_rightToLeft,
                                 paper: widget.background,
                               ),
                             ),
@@ -887,37 +873,10 @@ class _TextViewportState extends State<TextViewport>
                   ),
                 ),
               );
-        return Focus(
-          autofocus: true,
-          onKeyEvent: (_, event) {
-            if (_selectionActive) return KeyEventResult.ignored;
-            if (event is! KeyDownEvent) return KeyEventResult.ignored;
-            final key = event.logicalKey;
-            final rtl =
-                paragraphDirection(
-                  _section!.blocks.first.text,
-                  _section!.blocks.first.direction,
-                ) ==
-                TextDirection.rtl;
-            if (key == LogicalKeyboardKey.pageDown ||
-                key == LogicalKeyboardKey.space ||
-                key ==
-                    (rtl
-                        ? LogicalKeyboardKey.arrowLeft
-                        : LogicalKeyboardKey.arrowRight)) {
-              _step(1);
-              return KeyEventResult.handled;
-            }
-            if (key == LogicalKeyboardKey.pageUp ||
-                key ==
-                    (rtl
-                        ? LogicalKeyboardKey.arrowRight
-                        : LogicalKeyboardKey.arrowLeft)) {
-              _step(-1);
-              return KeyEventResult.handled;
-            }
-            return KeyEventResult.ignored;
-          },
+        return ReaderKeyNavigation(
+          enabled: !_selectionActive,
+          rightToLeft: _rightToLeft,
+          onStep: _step,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
             // Flutter's drag recognizer reports an accepted pointer cancellation

@@ -6,18 +6,18 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
-import 'package:reader/importing/book_importer.dart';
-import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/narration/file_narration_store.dart';
 import 'package:reader/narration/narration_cue.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/narration_timing.dart';
 import 'package:reader/narration/narration_wav.dart';
+import 'package:reader/narration/source.dart';
 import 'package:reader/text/narration_range.dart';
 import 'package:reader/text/text_position.dart';
 
 import 'fixtures/narration_audio.dart';
 import 'support/memory_narration_store.dart';
+import 'fixtures/catalog_book.dart';
 
 NarrationTiming _timing(
   String key, {
@@ -77,17 +77,7 @@ void main() {
     addTearDown(() async {
       if (await root.exists()) await root.delete(recursive: true);
     });
-    final bytes = Uint8List.fromList(
-      utf8.encode('Hello, world. Another sentence.'),
-    );
-    book = (await BookImporter(root: root).import(
-      ImportCandidate(
-        name: 'Book.txt',
-        size: bytes.length,
-        readBytes: () async => bytes,
-      ),
-      {},
-    )).book!;
+    book = await importTextBook(root, 'Hello, world. Another sentence.');
     store = FileNarrationStore(root);
   });
 
@@ -249,7 +239,10 @@ void main() {
       addTearDown(() {
         if (!release.isCompleted) release.complete();
       });
-      final rejected = expectLater(operation, throwsStateError);
+      final rejected = expectLater(
+        operation,
+        throwsA(isA<NarrationCancelled>()),
+      );
       await started.future;
       current = false;
       release.complete();
@@ -283,7 +276,7 @@ void main() {
       testWav(),
       isCurrent: () => current,
     );
-    final rejected = expectLater(queued, throwsStateError);
+    final rejected = expectLater(queued, throwsA(isA<NarrationCancelled>()));
     current = false;
     release.complete();
     await first;
@@ -626,7 +619,10 @@ void main() {
         await File(path).writeAsBytes(testWav(), flush: true);
         return _timing(key);
       }, isCurrent: () => true);
-      final rejected = expectLater(operation, throwsStateError);
+      final rejected = expectLater(
+        operation,
+        throwsA(isA<NarrationCancelled>()),
+      );
       addTearDown(() async {
         if (!release.isCompleted) release.complete();
         await operation.then<void>(
@@ -638,7 +634,10 @@ void main() {
       final queued = FileNarrationStore(root).create(book, key, (path) async {
         fail('A pre-clear queued writer must not acquire staging afterwards.');
       }, isCurrent: () => true);
-      final queuedRejected = expectLater(queued, throwsStateError);
+      final queuedRejected = expectLater(
+        queued,
+        throwsA(isA<NarrationCancelled>()),
+      );
       addTearDown(() async {
         if (!release.isCompleted) release.complete();
         await queued.then<void>((_) {}, onError: (Object _, StackTrace _) {});
@@ -726,7 +725,10 @@ void main() {
       addTearDown(() {
         if (!release.isCompleted) release.complete();
       });
-      final rejected = expectLater(operation, throwsStateError);
+      final rejected = expectLater(
+        operation,
+        throwsA(isA<NarrationCancelled>()),
+      );
       final path = await started.future;
       await memory.clear(book);
       release.complete();
@@ -736,4 +738,73 @@ void main() {
       expect(memory.files, isEmpty);
     },
   );
+
+  group('Private audio storage', () {
+    setUp(() {
+      store = FileNarrationStore(root, maxBytes: testWav().length * 2);
+    });
+    test(
+      'LRU evicts oldest unpinned audio and clearing preserves registration',
+      () async {
+        const manifest = NarrationManifest(
+          account: 'account',
+          cloudBookId: 'cloud-book',
+        );
+        await store.save(book, manifest);
+        store.pin({'a' * 64});
+        await store.put(book, 'a' * 64, testWav());
+        await store.put(book, 'b' * 64, testWav());
+        await store.put(book, 'c' * 64, testWav());
+        expect(await store.cached(book, 'a' * 64), isNotNull);
+        expect(await store.cached(book, 'b' * 64), isNull);
+        expect(await store.cachedBytes(book), testWav().length * 2);
+        await store.clear(book);
+        expect(await store.cachedBytes(book), 0);
+        expect(await store.cached(book, 'a' * 64), isNull);
+        expect((await store.load(book)).cloudBookId, 'cloud-book');
+      },
+    );
+    test(
+      'store refuses symlink audio and writes after owned book deletion',
+      () async {
+        final directory = Directory('${File(book.path).parent.path}/narration');
+        await directory.create();
+        await Link('${directory.path}/${'a' * 64}.wav')
+            .create('${root.path}/outside.wav');
+        expect(await store.cachedBytes(book), 0);
+        await expectLater(
+          store.put(book, 'a' * 64, testWav()),
+          throwsFormatException,
+        );
+        await FileCatalogStore(root).deleteFiles(book);
+        await expectLater(
+          store.save(book, const NarrationManifest()),
+          throwsFormatException,
+        );
+      },
+    );
+    test('resume sidecars recover temporary generation and preserve complete anchors', () async {
+      const anchor = TextPosition(sectionId: 's0', blockId: 'p0', offset: 5);
+      const value = NarrationManifest(
+        account: 'account',
+        cloudBookId: 'cloud-book',
+        anchor: anchor,
+        chunkId: 'chunk',
+        chunkStart: TextPosition(sectionId: 's0', blockId: 'p1'),
+        offsetMs: 1234,
+      );
+      await store.save(book, value);
+      final file = File(
+        '${File(book.path).parent.path}/narration/manifest.json',
+      );
+      await file.rename('${file.path}.tmp');
+      await file.writeAsString('{bad');
+      expect((await store.load(book)).anchor, anchor);
+      expect(
+        (await store.load(book)).chunkStart,
+        const TextPosition(sectionId: 's0', blockId: 'p1'),
+      );
+      expect((await store.load(book)).offsetMs, 1234);
+    });
+  });
 }

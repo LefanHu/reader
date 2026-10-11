@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' show Tristate;
 
 import 'package:flutter/material.dart';
@@ -7,7 +6,6 @@ import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/catalog/catalog_book.dart';
-import 'package:reader/importing/book_importer.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/reader/reader_screen.dart';
@@ -16,13 +14,7 @@ import 'package:reader/text/text_section.dart' as text;
 import 'package:reader/text/viewport.dart';
 
 import 'fixtures/catalog_book.dart';
-import 'support/fake_illustration_api.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_text_indexer.dart';
-import 'support/fake_word_counter.dart';
 import 'support/memory_catalog_store.dart';
-import 'support/memory_illustration_store.dart';
-import 'support/memory_settings_store.dart';
 import 'support/memory_document_store.dart';
 import 'support/test_controller.dart';
 
@@ -115,21 +107,10 @@ class _RoutedReader {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final book = testBook();
     final store = _GatedCatalogStore([book]);
-    final controller = gated
-        ? ReaderController(
-            catalogStore: store,
-            settingsStore: MemorySettingsStore(),
-            importer: BookImporter(
-              root: Directory('${Directory.systemTemp.path}/reader_test'),
-            ),
-            picker: FakePicker(const []),
-            illustrationStore: MemoryIllustrationStore(),
-            textIndexer: FakeTextIndexer(),
-            wordCounter: FakeWordCounter(),
-            illustrationApi: FakeIllustrationApi(),
-          )
-        : await testController(books: [book]);
-    if (gated) await controller.initialize();
+    final controller = await testController(
+      books: gated ? const [] : [book],
+      catalogStore: gated ? store : null,
+    );
     final navigator = GlobalKey<NavigatorState>();
     addTearDown(() async {
       store.release();

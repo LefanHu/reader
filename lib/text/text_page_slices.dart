@@ -69,7 +69,7 @@ List<Widget> textPageSlices(
         height: last.top + last.height - first.top,
         start: first.start,
         end: last.end,
-        bottomPadding: end < page.length ? 16 : 0,
+        bottomPadding: end < page.length ? blockGap : 0,
         narrationRange: range != null && from < to
             ? TextSelection(baseOffset: from, extentOffset: to)
             : null,
@@ -110,7 +110,7 @@ ui.Image textPageTexture({
     canvas.clipRect(Rect.fromLTWH(0, y, width, extent));
     first.block.painter.paint(canvas, Offset(0, y - first.top));
     canvas.restore();
-    y += extent + 16;
+    y += extent + blockGap;
     start = end;
   }
   final picture = recorder.endRecording();

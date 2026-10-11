@@ -139,8 +139,18 @@ python3 tool/build_ios_ota.py \
 ```
 
 The command installs the supplied profile for Xcode, temporarily applies manual signing
-to Runner only, builds a release IPA, and publishes an immutable installer under
-`build/ota/site/`. It rejects expired, development, and App Store profiles, and never
+to Runner only, builds a release IPA, and publishes it under `build/ota/site/`. Each
+build increments the number after `+` in `pubspec.yaml`'s `version:` and passes it as
+`--build-number`, so the iOS build number rises on every build (commit the bumped
+`pubspec.yaml`). The number is consumed once an IPA is exported, even if publishing then
+fails. Republishing with `--ipa` never changes it.
+
+The installation page, `manifest.plist` and QR code are always served from the base URL
+itself (`<base-url>/`), so the printed QR code stays valid across builds; each build only
+adds an immutable `<build-id>/reader.ipa` and then atomically repoints the page and
+manifest to it. Responses are sent with `Cache-Control: no-store`. Restart `--serve`
+once after updating the tool so the header applies. Older build directories are kept.
+It rejects expired, development, and App Store profiles, and never
 publishes a stale IPA after failed export. `--ipa /path/to/export.ipa` republishes an
 existing Ad Hoc export instead of rebuilding. Optional `--defines .dart-defines/dev.json`
 enables the configured cloud features; local reading does not require it.

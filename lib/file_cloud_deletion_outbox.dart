@@ -1,43 +1,33 @@
 // The small persistence contract is documented on its public types.
 // ignore_for_file: public_member_api_docs
 
-import 'dart:convert';
 import 'dart:io';
 
-import '../atomic_json_file.dart';
-import 'outbox.dart';
+import 'atomic_json_file.dart';
+import 'cloud_deletion_outbox.dart';
 import 'pending_book_deletion.dart';
 
 /// Atomic JSON outbox stored outside per-book directories.
-class FileIllustrationDeletionOutbox implements IllustrationDeletionOutbox {
-  FileIllustrationDeletionOutbox(
-    Directory catalogRoot, {
-    String fileName = 'illustration-deletions.json',
-  }) : _file = AtomicJsonFile(File('${catalogRoot.path}/$fileName'));
+class FileCloudDeletionOutbox implements CloudDeletionOutbox {
+  /// [fileName] names one feature's persisted outbox under [catalogRoot].
+  FileCloudDeletionOutbox(Directory catalogRoot, {required String fileName})
+    : _file = AtomicJsonFile(File('${catalogRoot.path}/$fileName'));
 
   final AtomicJsonFile _file;
 
   @override
   Future<List<PendingBookDeletion>> load() async {
-    for (final candidate in _file.generations) {
-      if (!await candidate.exists()) continue;
-      try {
-        final json = jsonDecode(await candidate.readAsString());
-        if (json is! Map || json['version'] != 1 || json['items'] is! List) {
-          continue;
-        }
-        return (json['items'] as List<dynamic>)
-            .whereType<Map>()
-            .map(
-              (item) =>
-                  PendingBookDeletion.fromJson(item.cast<String, dynamic>()),
-            )
-            .toList();
-      } on Object {
-        continue;
-      }
-    }
-    return [];
+    final stored = await _file.read((json) {
+      if (json['version'] != 1 || json['items'] is! List) return null;
+      return (json['items'] as List<dynamic>)
+          .whereType<Map>()
+          .map(
+            (item) =>
+                PendingBookDeletion.fromJson(item.cast<String, dynamic>()),
+          )
+          .toList();
+    });
+    return stored?.value ?? [];
   }
 
   @override

@@ -1,10 +1,6 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/importing/book_importer.dart';
-import 'package:reader/app/reader_controller.dart';
 import 'package:reader/library/library_screen.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/preferences/reader_settings.dart';
@@ -20,14 +16,11 @@ import 'package:reader/text/viewport.dart';
 import 'package:reader/theme.dart';
 
 import 'fixtures/catalog_book.dart';
+import 'support/cloud_identity_fake.dart';
 import 'support/fake_illustration_api.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_text_indexer.dart';
-import 'support/memory_catalog_store.dart';
 import 'support/memory_document_store.dart';
-import 'support/memory_illustration_store.dart';
-import 'support/memory_settings_store.dart';
 import 'support/test_controller.dart';
+import 'support/controller_lifecycle.dart';
 
 void main() {
   testWidgets('empty library offers EPUB and TXT import', (tester) async {
@@ -325,17 +318,12 @@ void main() {
   ) async {
     final book = testBook();
     final api = FakeIllustrationApi(configured: true);
-    final controller = ReaderController(
-      catalogStore: MemoryCatalogStore([book]),
-      settingsStore: MemorySettingsStore(),
-      importer: BookImporter(root: Directory.systemTemp),
-      picker: FakePicker(),
-      illustrationStore: MemoryIllustrationStore(),
-      textIndexer: FakeTextIndexer(),
+    final controller = await testController(
+      books: [book],
       illustrationApi: api,
+      cloudIdentity: FakeCloudIdentity(),
     );
-    await controller.initialize();
-    addTearDown(controller.dispose);
+    addControllerTeardown(tester, controller);
     await tester.pumpWidget(
       MaterialApp(
         theme: readerTheme,

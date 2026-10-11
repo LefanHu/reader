@@ -1,5 +1,4 @@
 """Native OAuth callbacks and Dart identity must use matching registrations."""
-import importlib.util
 import json
 from pathlib import Path
 import plistlib
@@ -7,11 +6,9 @@ import stat
 import tempfile
 import unittest
 
-spec = importlib.util.spec_from_file_location(
-    "google_defines", Path(__file__).resolve().parents[1] / "write_firebase_defines.py"
-)
-defines = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(defines)
+from support import load_tool
+
+defines = load_tool("write_firebase_defines")
 
 
 class GoogleFirebaseDefinesTests(unittest.TestCase):

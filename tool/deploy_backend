@@ -121,11 +121,7 @@ digest=$(gcloud artifacts docker images describe "$tagged_image" \
 immutable_image="$repository@$digest"
 
 terraform_init runtime "reader/$ENVIRONMENT/runtime"
-runtime_plan="$WORK_DIR/runtime.tfplan"
-terraform -chdir="$INFRA_DIR/runtime" plan -var-file="$ENV_VARS" \
-  -var="image=$immutable_image" -out="$runtime_plan"
-terraform -chdir="$INFRA_DIR/runtime" apply "$runtime_plan"
-rm -f "$runtime_plan"
+plan_apply_infrastructure runtime -var="image=$immutable_image"
 
 api_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw api_url)
 worker_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw worker_url)

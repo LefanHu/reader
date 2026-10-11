@@ -1,13 +1,13 @@
 // DTO fields mirror the documented REST contract in this file.
 // ignore_for_file: public_member_api_docs
 
-import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 
 import '../catalog/catalog_book.dart';
+import '../identity/cloud_book_fingerprint.dart';
+import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
 import 'api.dart';
 import 'chapter_text_index.dart';
@@ -22,27 +22,22 @@ import 'unlocked_illustration.dart';
 /// Cloud Run REST client with injected HTTP and identity dependencies.
 class HttpIllustrationApi implements IllustrationApi {
   HttpIllustrationApi({
-    required this.identity,
+    required CloudIdentity identity,
     http.Client? client,
     Uri? baseUri,
-  }) : client = client ?? http.Client(),
-       baseUri =
-           baseUri ??
-           Uri.parse(const String.fromEnvironment('ILLUSTRATION_API_BASE_URL'));
+  }) : _http = CloudHttpClient(
+         identity: identity,
+         client: client,
+         baseUri: baseUri,
+       );
 
-  /// Shared native account session; protected calls still require attestation.
-  final CloudIdentity identity;
-  final http.Client client;
-  final Uri baseUri;
+  final CloudHttpClient _http;
 
-  @override
-  bool get configured => identity.configured && baseUri.hasScheme;
+  /// Server-issued book, job and scene identities are 40 lowercase hex digits.
+  static final _cloudId = RegExp(r'^[a-f0-9]{40}$');
 
   @override
-  Future<bool> hasSession() => identity.hasSession();
-
-  @override
-  Future<void> signIn() => identity.signIn();
+  bool get configured => _http.configured;
 
   @override
   Future<IllustrationSetup> registerBook(
@@ -54,10 +49,7 @@ class HttpIllustrationApi implements IllustrationApi {
     if (encodedKey == null) {
       throw const IllustrationException('The server returned no book key.');
     }
-    final fingerprint = Hmac(
-      sha256,
-      base64Decode(encodedKey),
-    ).convert(utf8.encode(book.hash)).toString();
+    final fingerprint = cloudBookFingerprint(book.hash, encodedKey);
     final json = await _json(
       'POST',
       '/v1/books',
@@ -70,7 +62,7 @@ class HttpIllustrationApi implements IllustrationApi {
       },
     );
     return IllustrationSetup(
-      cloudBookId: json['id'] as String,
+      cloudBookId: _id(json['id']),
       suggestedStyle: json['suggestedStyle'] as String,
       alternativeStyles:
           (json['alternativeStyles'] as List<dynamic>? ?? const [])
@@ -84,7 +76,7 @@ class HttpIllustrationApi implements IllustrationApi {
   Future<void> confirmProfile(IllustrationProfile profile) async {
     await _json(
       'PUT',
-      '/v1/books/${profile.cloudBookId}/profile',
+      '/v1/books/${_id(profile.cloudBookId)}/profile',
       body: {
         'style': profile.style,
         'density': profile.density,
@@ -101,7 +93,7 @@ class HttpIllustrationApi implements IllustrationApi {
   }) async {
     final response = await _json(
       'POST',
-      '/v1/books/${profile.cloudBookId}/chapters/'
+      '/v1/books/${_id(profile.cloudBookId)}/chapters/'
           '${chapter.spineOrdinal}/jobs',
       body: {
         'href': chapter.href,
@@ -123,18 +115,18 @@ class HttpIllustrationApi implements IllustrationApi {
             .toList(),
       },
     );
-    return response['id'] as String;
+    return _id(response['id']);
   }
 
   @override
   Future<IllustrationJobResult> getJob(String jobId) async {
-    final json = await _json('GET', '/v1/jobs/$jobId');
+    final json = await _json('GET', '/v1/jobs/${_id(jobId)}');
     final scenes = (json['scenes'] as List<dynamic>? ?? const [])
         .whereType<Map>()
         .map((item) {
           final value = item.cast<String, dynamic>();
           return IllustrationScene(
-            id: value['id'] as String,
+            id: _id(value['id']),
             jobId: jobId,
             anchor: SceneAnchor.fromJson(
               (value['anchor'] as Map).cast<String, dynamic>(),
@@ -161,7 +153,7 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<UnlockedIllustration> unlockScene(String sceneId) async {
-    final json = await _json('POST', '/v1/scenes/$sceneId/unlock');
+    final json = await _json('POST', '/v1/scenes/${_id(sceneId)}/unlock');
     final image = await _bytes(Uri.parse(json['imageUrl'] as String));
     final thumbnail = await _bytes(Uri.parse(json['thumbnailUrl'] as String));
     return UnlockedIllustration(
@@ -175,30 +167,28 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<void> regenerateScene(String sceneId) =>
-      _empty('POST', '/v1/scenes/$sceneId/regenerate');
+      _json('POST', '/v1/scenes/${_id(sceneId)}/regenerate');
 
   @override
   Future<void> deleteScene(String sceneId) =>
-      _empty('DELETE', '/v1/scenes/$sceneId');
+      _json('DELETE', '/v1/scenes/${_id(sceneId)}');
 
   @override
   Future<void> deleteBook(String cloudBookId, {bool interactive = true}) async {
-    try {
-      await _json('DELETE', '/v1/books/$cloudBookId', interactive: interactive);
-    } on IllustrationException catch (error) {
-      // A completed previous delete is success, including crash/retry recovery.
-      if (error.statusCode != 404) rethrow;
-    }
+    // The server can never hold an invalid ID; dropping it ends outbox retries.
+    if (!_cloudId.hasMatch(cloudBookId)) return;
+    // A completed previous delete is success, including crash/retry recovery.
+    await _http.json(
+      'DELETE',
+      '/v1/books/$cloudBookId',
+      interactive: interactive,
+      missingIsSuccess: true,
+    );
   }
 
-  @override
-  Future<void> signOut() => identity.signOut();
-
-  @override
-  Future<void> deleteAccount() async {
-    await identity.reauthenticate();
-    await _empty('DELETE', '/v1/account');
-    await identity.deleteAccount();
+  String _id(Object? value) {
+    if (value is String && _cloudId.hasMatch(value)) return value;
+    throw const FormatException('Invalid illustration identity.');
   }
 
   Future<Map<String, dynamic>> _json(
@@ -206,43 +196,14 @@ class HttpIllustrationApi implements IllustrationApi {
     String path, {
     Map<String, dynamic>? body,
     bool interactive = true,
-  }) async {
-    if (!configured) {
-      throw const IllustrationException(
-        'Illustrations are not configured in this build.',
-      );
-    }
-    final headers = await identity.authorizationHeaders(
-      interactive: interactive,
-    );
-    final request = http.Request(method, baseUri.resolve(path))
-      ..headers.addAll(headers);
-    if (body != null) request.body = jsonEncode(body);
-    final streamed = await client.send(request);
-    final response = await http.Response.fromStream(streamed);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      String message = 'Illustration service error (${response.statusCode}).';
-      try {
-        message =
-            (jsonDecode(response.body) as Map)['error'] as String? ?? message;
-      } on Object {
-        // Keep the non-sensitive generic response for malformed server errors.
-      }
-      throw IllustrationException(message, statusCode: response.statusCode);
-    }
-    if (response.body.isEmpty) return {};
-    return (jsonDecode(response.body) as Map).cast<String, dynamic>();
-  }
+  }) => _http.json(
+    method,
+    path,
+    body: body,
+    interactive: interactive,
+    maxBytes: 1024 * 1024,
+  );
 
-  Future<void> _empty(String method, String path) async {
-    await _json(method, path);
-  }
-
-  Future<Uint8List> _bytes(Uri uri) async {
-    final response = await client.get(uri);
-    if (response.statusCode != 200) {
-      throw const IllustrationException('Could not download the illustration.');
-    }
-    return response.bodyBytes;
-  }
+  Future<Uint8List> _bytes(Uri uri) =>
+      _http.download(uri, maxBytes: 16 * 1024 * 1024);
 }

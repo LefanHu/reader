@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../app/edge_back_gesture.dart';
+import '../app/layout.dart';
 import '../app/reader_controller.dart';
+import '../identity/cloud_failure_kind.dart';
 import '../identity/cloud_identity_exception.dart';
 import '../preferences/library_filter.dart';
 import '../preferences/library_sort.dart';
@@ -85,7 +87,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await action();
     } on Object catch (error) {
-      if (error is CloudIdentityException && error.cancelled) return;
+      if (error is CloudIdentityException &&
+          error.kind == CloudFailureKind.cancelled) {
+        return;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(error.toString())));
@@ -121,7 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // Large type falls back to one pane rather than squeezing essential labels.
         final wide =
             Theme.of(context).platform == TargetPlatform.macOS &&
-            constraints.maxWidth >= 700 &&
+            constraints.maxWidth >= wideLayoutMinWidth &&
             MediaQuery.textScalerOf(context).scale(16) <= 24;
         final selected = _selected ?? (wide ? _Section.account : null);
         void back() => _back(wide: wide);

@@ -50,14 +50,12 @@ class AccountSettingsSection extends StatelessWidget {
           onPressed:
               busy ||
                   controller.cloudAccountBusy ||
-                  !(controller.narration?.api.configured == true ||
-                      controller.illustrations.configured)
+                  controller.accountApi?.configured != true
               ? null
               : onDeleteAccount,
           child: const Text('Delete cloud account'),
         ),
-        if (!(controller.narration?.api.configured == true ||
-            controller.illustrations.configured))
+        if (controller.accountApi?.configured != true)
           const Text(
             'Cloud account deletion requires a configured service connection.',
           ),

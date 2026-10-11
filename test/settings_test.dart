@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' show Tristate;
 
 import 'package:flutter/material.dart';
@@ -10,14 +9,14 @@ import 'package:http/testing.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:reader/account/account_usage.dart';
 import 'package:reader/account/account_usage_exception.dart';
+import 'package:reader/account/api.dart';
+import 'package:reader/account/http_account_api.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/illustrations/illustration_manifest.dart';
 import 'package:reader/illustrations/illustration_profile.dart';
-import 'package:reader/importing/book_importer.dart';
 import 'package:reader/app/reader_app.dart';
 import 'package:reader/narration/api.dart';
-import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/preferences/library_filter.dart';
@@ -30,21 +29,15 @@ import 'package:reader/theme.dart';
 
 import 'fixtures/catalog_book.dart';
 import 'support/controller_lifecycle.dart';
-import 'support/fake_illustration_api.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_word_counter.dart';
-import 'support/memory_catalog_store.dart';
-import 'support/memory_document_store.dart';
 import 'support/memory_illustration_store.dart';
-import 'support/memory_settings_store.dart';
 import 'support/test_controller.dart';
 import 'fixtures/account_usage.dart';
 import 'support/fake_account_api.dart';
 import 'support/cloud_identity_fake.dart';
 import 'fixtures/narration_audio.dart';
 import 'support/fake_narration_api.dart';
-import 'support/fake_narration_player.dart';
 import 'support/memory_narration_store.dart';
+import 'support/fonts.dart';
 
 Future<ReaderController> _mount(
   WidgetTester tester, {
@@ -162,44 +155,26 @@ Future<void> _edgeBack(WidgetTester tester, {bool cancel = false}) async {
 
 Future<ReaderController> _accountController({
   required FakeCloudIdentity identity,
-  FakeAccountApi? accountApi,
+  AccountApi? accountApi,
   NarrationApi? narrationApi,
   MemoryNarrationStore? narrationStore,
   MemoryIllustrationStore? illustrationStore,
   CatalogBook? book,
 }) async {
-  final audioApi = narrationApi ?? FakeNarrationApi();
-  final controller = ReaderController(
+  final controller = await testController(
+    books: [book ?? testBook()],
     cloudIdentity: identity,
     accountApi: accountApi,
-    catalogStore: MemoryCatalogStore([book ?? testBook()]),
-    settingsStore: MemorySettingsStore(),
-    importer: BookImporter(root: Directory.systemTemp),
-    picker: FakePicker(),
-    wordCounter: FakeWordCounter(),
-    illustrationApi: FakeIllustrationApi(),
-    illustrationStore: illustrationStore ?? MemoryIllustrationStore(),
-    narrationApi: audioApi,
-    narrationSource: CloudNarrationSource(audioApi),
-    narrationPlayer: FakeNarrationPlayer(),
-    narrationStore: narrationStore ?? MemoryNarrationStore(),
-    narrationDocuments: MemoryDocumentStore(),
+    illustrationStore: illustrationStore,
+    narrationApi: narrationApi ?? FakeNarrationApi(),
+    narrationStore: narrationStore,
   );
-  await controller.initialize();
   await controller.refreshCloudAccount();
   return controller;
 }
 
 void main() {
-  setUpAll(() async {
-    for (final (family, path) in [
-      ('Lora', 'assets/fonts/Lora.ttf'),
-      ('DM Sans', 'assets/fonts/DMSans.ttf'),
-      ('MaterialIcons', 'fonts/MaterialIcons-Regular.otf'),
-    ]) {
-      await (FontLoader(family)..addFont(rootBundle.load(path))).load();
-    }
-  });
+  setUpAll(loadReaderFonts);
 
   testWidgets(
     'signed-in usage loads once and refresh replaces real nullable balances',
@@ -413,6 +388,11 @@ void main() {
           book: book,
           narrationStore: store,
           illustrationStore: illustrations,
+          accountApi: HttpAccountApi(
+            identity: identity,
+            client: client,
+            baseUri: Uri.parse('https://example.test'),
+          ),
           narrationApi: HttpNarrationApi(
             identity: identity,
             client: client,
@@ -457,7 +437,7 @@ void main() {
         deletion.complete(http.Response('', failureStatus));
         await tester.pumpAndSettle();
         expect(
-          find.text('Bad state: Narration service error ($failureStatus).'),
+          find.text('Cloud service error ($failureStatus).'),
           findsOneWidget,
         );
         expect(find.text('reader@example.test'), findsWidgets);
@@ -485,7 +465,12 @@ void main() {
         expect(identity.deletions, 1);
         expect(identity.email, isNull);
         expect(controller.cloudEmail, isNull);
-        expect((await store.load(book)).cloudBookId, isNull);
+        final forgotten = await store.load(book);
+        expect(forgotten.cloudBookId, isNull);
+        expect(forgotten.account, isNull);
+        expect(forgotten.anchor?.toJson(), anchor.toJson());
+        expect(forgotten.chunkId, isNull);
+        expect(forgotten.offsetMs, 0);
         expect(await store.cached(book, 'cached-audio'), isNull);
         expect((await illustrations.loadManifest(book)).profile, isNull);
         expect(controller.catalog.books.single.toJson(), book.toJson());

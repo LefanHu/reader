@@ -201,10 +201,16 @@ require_core() {
     die "core is not initialized; run tool/deploy_backend $ENVIRONMENT --scope core"
 }
 
-plan_apply_infrastructure() {
+# Plans one stack into $WORK_DIR/<stack>.tfplan and rejects unsafe changes.
+plan_infrastructure() {
   stack=$1
+  shift
   plan="$WORK_DIR/$stack.tfplan"
-  terraform -chdir="$INFRA_DIR/$stack" plan -var-file="$ENV_VARS" -out="$plan"
+  terraform -chdir="$INFRA_DIR/$stack" plan -var-file="$ENV_VARS" "$@" -out="$plan"
   assert_safe_plan "$stack" "$plan"
+}
+
+plan_apply_infrastructure() {
+  plan_infrastructure "$@"
   terraform -chdir="$INFRA_DIR/$stack" apply "$plan"
 }

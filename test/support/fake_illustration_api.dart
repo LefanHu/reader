@@ -14,12 +14,7 @@ class FakeIllustrationApi implements IllustrationApi {
 
   @override
   final bool configured;
-  bool session = true;
-  @override
-  Future<void> signIn() async => session = true;
   final deletedBooks = <String>[];
-  @override
-  Future<bool> hasSession() async => session;
   final List<int> createdChapterOrdinals = [];
   final List<String> unlockedSceneIds = [];
   final Map<String, IllustrationJobResult> jobResults = {};
@@ -42,9 +37,6 @@ class FakeIllustrationApi implements IllustrationApi {
   }
 
   @override
-  Future<void> deleteAccount() async {}
-
-  @override
   Future<void> deleteScene(String sceneId) async {}
 
   @override
@@ -65,9 +57,6 @@ class FakeIllustrationApi implements IllustrationApi {
 
   @override
   Future<void> regenerateScene(String sceneId) async {}
-
-  @override
-  Future<void> signOut() async {}
 
   @override
   Future<UnlockedIllustration> unlockScene(String sceneId) async {

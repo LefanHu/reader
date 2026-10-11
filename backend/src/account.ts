@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import type { Firestore } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
+import { asyncRoute } from "./http.js";
 import { narrationLimits, narrationMonthCounterId, type NarrationBackend } from "./narration.js";
 
 /** Shared authenticated identity is supplied only by verified Firebase tokens. */
@@ -35,8 +36,7 @@ export function accountUsageRouter(dependencies: {
   env?: NodeJS.ProcessEnv;
 }) {
   const router = express.Router();
-  router.get("/usage", (req: AccountRequest, res, next) => {
-    const read = async () => {
+  router.get("/usage", asyncRoute(async (req: AccountRequest, res) => {
       if (!req.uid) {
         res.status(401).json({ error: "Authentication and App Check are required." });
         return;
@@ -66,9 +66,7 @@ export function accountUsageRouter(dependencies: {
         illustrationCreditsRemaining: activated ? counter(credits) : null,
         illustrationCreditsReserved: activated ? counter(user.data()?.creditsReserved ?? 0) : null,
       });
-    };
-    read().catch(next);
-  });
+  }));
   return router;
 }
 
@@ -83,8 +81,7 @@ export function accountDeletionRouter(dependencies: {
   narration: Pick<NarrationBackend, "deleteAccount">;
 }): express.Router {
   const router = express.Router();
-  router.delete("/", (req: AccountRequest, res, next) => {
-    const purge = async () => {
+  router.delete("/", asyncRoute(async (req: AccountRequest, res) => {
       if (!req.uid) {
         res.status(401).json({ error: "Authentication and App Check are required." });
         return;
@@ -112,8 +109,6 @@ export function accountDeletionRouter(dependencies: {
       await writer.close();
       await db.recursiveDelete(db.collection("users").doc(uid));
       res.status(204).end();
-    };
-    purge().catch(next);
-  });
+  }));
   return router;
 }

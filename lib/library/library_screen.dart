@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../app/layout.dart';
 import '../app/reader_controller.dart';
 import '../settings/settings_navigation.dart';
 import '../catalog/catalog_book.dart';
@@ -184,7 +185,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     builder: (context, _) => LayoutBuilder(
       builder: (context, constraints) {
         // Use actual window width so iPad split view gets the compact layout.
-        final wide = constraints.maxWidth >= 700;
+        final wide = constraints.maxWidth >= wideLayoutMinWidth;
         return Scaffold(
           bottomNavigationBar: widget.controller.narration?.book == null
               ? null

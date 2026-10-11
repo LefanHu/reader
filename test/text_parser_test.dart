@@ -7,9 +7,6 @@ import 'package:characters/characters.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/illustrations/document_text_indexer.dart';
-import 'package:reader/importing/book_importer.dart';
-import 'package:reader/importing/import_candidate.dart';
-import 'package:reader/importing/import_result.dart';
 import 'package:reader/text/direction.dart';
 import 'package:reader/text/document_store.dart' as text;
 import 'package:reader/text/grapheme_boundary.dart' as text;
@@ -18,6 +15,7 @@ import 'package:reader/text/parser.dart';
 import 'package:reader/text/parser_limits.dart';
 
 import 'fixtures/epub.dart';
+import 'fixtures/catalog_book.dart';
 
 void main() {
   ParsedTextBook parseTxt(String value) =>
@@ -182,19 +180,7 @@ void main() {
     () async {
       final root = await Directory.systemTemp.createTemp('document_prose');
       addTearDown(() => root.delete(recursive: true));
-      final bytes = Uint8List.fromList(
-        utf8.encode('Arabic العربية\n\n中文\fहिन्दी'),
-      );
-      final outcome = await BookImporter(root: root).import(
-        ImportCandidate(
-          name: 'Book.txt',
-          size: bytes.length,
-          readBytes: () async => bytes,
-        ),
-        {},
-      );
-      expect(outcome.result.status, ImportStatus.imported);
-      final book = outcome.book!;
+      final book = await importTextBook(root, 'Arabic العربية\n\n中文\fहिन्दी');
       final index = await DocumentTextIndexer().index(
         sourcePath: book.path,
         bookHash: book.hash,

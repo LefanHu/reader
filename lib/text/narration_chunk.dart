@@ -7,6 +7,9 @@ import 'text_position.dart';
 /// Increment when chunking rules change; cached speech must match exact prose.
 const narrationChunkVersion = 1;
 
+/// Hard UTF-16 bound for one narration clip; one larger grapheme is rejected.
+const maxNarrationClipUnits = 3000;
+
 /// Exact normalized passage, bounded in UTF-16 and never across a grapheme.
 class NarrationChunk {
   /// Anchors include the exclusive ending offset, even within a paragraph.

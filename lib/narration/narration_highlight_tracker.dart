@@ -1,7 +1,6 @@
 import 'dart:async';
 
-import 'package:characters/characters.dart';
-
+import '../text/grapheme_boundary.dart';
 import '../text/narration_playback_unit.dart';
 import '../text/narration_range.dart';
 import 'narration_cue.dart';
@@ -81,12 +80,7 @@ class NarrationHighlightTracker {
     if (timing.cues.isEmpty) return const [];
     final chunk = unit.chunk;
     final clip = NarrationRange(chunk.start, chunk.end);
-    final boundaries = <int>{0};
-    var offset = 0;
-    for (final grapheme in chunk.text.characters) {
-      offset += grapheme.length;
-      boundaries.add(offset);
-    }
+    final boundaries = GraphemeBoundaries(chunk.text);
     final usable = <NarrationCue>[];
     var hasWords = false;
     for (final cue in timing.cues) {

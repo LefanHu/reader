@@ -1,39 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
-import { type Firestore } from "firebase-admin/firestore";
+import { MemoryFirestore, type MemoryData } from "./test-support/firestore.js";
 import { illustrationBookRegistration } from "./illustration-books.js";
-import { HttpError } from "./illustration-http.js";
-
-type Data = Record<string, unknown>;
-interface Reference {
-  path: string;
-  collection(name: string): { doc(id: string): Reference };
-}
+import { HttpError } from "./http.js";
 
 /** Serial transactions preserve the same initial-credit decision under concurrent retries. */
-async function fixture(action: (values: Map<string, Data>, register: (fingerprint: string) => Promise<Response>) => Promise<void>) {
-  const values = new Map<string, Data>();
-  const reference = (path: string): Reference => ({
-    path,
-    collection: name => ({ doc: id => reference(`${path}/${name}/${id}`) }),
-  });
-  let pending = Promise.resolve();
-  const db = {
-    collection: (name: string) => ({ doc: (id: string) => reference(`${name}/${id}`) }),
-    runTransaction: (action: (transaction: unknown) => Promise<void>) => {
-      const result = pending.then(async () => {
-        const writes: Array<() => void> = [];
-        await action({
-          get: async (ref: { path: string }) => ({ exists: values.has(ref.path), data: () => values.get(ref.path) }),
-          set: (ref: { path: string }, data: Data) => writes.push(() => values.set(ref.path, { ...values.get(ref.path), ...data })),
-        });
-        for (const write of writes) write();
-      });
-      pending = result.catch(() => undefined);
-      return result;
-    },
-  } as unknown as Firestore;
+async function fixture(action: (values: Map<string, MemoryData>, register: (fingerprint: string) => Promise<Response>) => Promise<void>) {
+  const memory = new MemoryFirestore();
+  const values = memory.values;
+  const db = memory.firestore;
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = "owner"; next(); });

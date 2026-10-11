@@ -3,13 +3,11 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { EventEmitter } from "node:events";
 import express from "express";
-import type { Firestore } from "firebase-admin/firestore";
 import { Timestamp } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
 import type WebSocket from "ws";
 import {
   NarrationBackend,
-  NarrationError,
   narrationLimits,
   validateNarrationInput,
   narrationMonthCounterId,
@@ -22,6 +20,8 @@ import {
   accountDeletionRouter,
   authenticateAccount,
 } from "./account.js";
+import { HttpError } from "./http.js";
+import { MemoryFirestore } from "./test-support/firestore.js";
 
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -34,139 +34,8 @@ const input = (text = "Hello 👩🏽‍🚀.") => ({
   chunkVersion: 1,
 });
 
-/** Transactional in-memory Firestore double exercises worker claims without cloud writes. */
-class Database {
-  values = new Map<string, Record<string, any>>();
-  private tail = Promise.resolve();
-  collection(path: string) {
-    return new Collection(this, path);
-  }
-  async runTransaction<T>(action: (tx: any) => Promise<T>): Promise<T> {
-    const pending: Array<() => void> = [];
-    const result = this.tail.then(async () => {
-      const value = await action({
-        get: (ref: Reference) => ref.get(),
-        set: (ref: Reference, data: any, options?: any) =>
-          pending.push(() => ref.write(data, options?.merge)),
-        create: (ref: Reference, data: any) =>
-          pending.push(() => {
-            assert(!this.values.has(ref.path));
-            ref.write(data);
-          }),
-        update: (ref: Reference, data: any) =>
-          pending.push(() => ref.write(data, true)),
-        delete: (ref: Reference) =>
-          pending.push(() => this.values.delete(ref.path)),
-      });
-      pending.forEach((operation) => operation());
-      return value;
-    });
-    this.tail = result.then(
-      () => {},
-      () => {},
-    );
-    return result;
-  }
-  /** Queue deletes until close so purge tests require awaited durable completion. */
-  bulkWriter() {
-    const pending: Reference[] = [];
-    return {
-      delete: (ref: Reference) => {
-        pending.push(ref);
-        return Promise.resolve();
-      },
-      close: async () => {
-        for (const ref of pending) await ref.delete();
-      },
-    };
-  }
-  /** Account deletion removes the user document and all nested book tombstones. */
-  async recursiveDelete(ref: Reference) {
-    for (const path of this.values.keys())
-      if (path === ref.path || path.startsWith(`${ref.path}/`))
-        this.values.delete(path);
-  }
-}
-class Reference {
-  constructor(
-    readonly db: Database,
-    readonly path: string,
-  ) {}
-  get id() {
-    return this.path.split("/").at(-1)!;
-  }
-  collection(path: string) {
-    return this.db.collection(`${this.path}/${path}`);
-  }
-  async get() {
-    const data = this.db.values.get(this.path);
-    return {
-      exists: Boolean(data),
-      id: this.id,
-      ref: this,
-      data: () => data && { ...data },
-    };
-  }
-  write(data: Record<string, any>, merge = false) {
-    const value = merge ? { ...this.db.values.get(this.path) } : {};
-    for (const [key, field] of Object.entries(data)) {
-      if (field?.constructor?.name === "DeleteTransform") delete value[key];
-      else if (field?.constructor?.name === "NumericIncrementTransform")
-        value[key] = Number(value[key] ?? 0) + field.operand;
-      else if (field?.constructor?.name === "ServerTimestampTransform")
-        value[key] = Timestamp.now();
-      else value[key] = field;
-    }
-    this.db.values.set(this.path, value);
-  }
-  async set(data: any, options?: any) {
-    this.write(data, options?.merge);
-  }
-  async delete() {
-    this.db.values.delete(this.path);
-  }
-}
-class Collection {
-  constructor(
-    readonly db: Database,
-    readonly path: string,
-    readonly filters: Array<[string, string, unknown]> = [],
-    readonly max = Infinity,
-  ) {}
-  doc(id: string) {
-    return new Reference(this.db, `${this.path}/${id}`);
-  }
-  where(key: string, op: string, value: unknown) {
-    return new Collection(
-      this.db,
-      this.path,
-      [...this.filters, [key, op, value]],
-      this.max,
-    );
-  }
-  limit(value: number) {
-    return new Collection(this.db, this.path, this.filters, value);
-  }
-  async get() {
-    const docs = [];
-    for (const [path, data] of this.db.values) {
-      if (
-        path.startsWith(`${this.path}/`) &&
-        !path.slice(this.path.length + 1).includes("/") &&
-        this.filters.every(([key, op, value]) =>
-          op === "<"
-            ? data[key].toMillis() < (value as Timestamp).toMillis()
-            : data[key] === value,
-        )
-      )
-        docs.push(await new Reference(this.db, path).get());
-    }
-    return { docs: docs.slice(0, this.max) };
-  }
-}
-
 async function harness(enabled = true) {
-  const db = new Database(),
+  const db = new MemoryFirestore(),
     objects = new Set<string>(),
     tasks: string[] = [];
   let providerCalls = 0;
@@ -179,7 +48,7 @@ async function harness(enabled = true) {
     return narrationWav(Buffer.alloc(100));
   };
   const backend = new NarrationBackend({
-    db: db as unknown as Firestore,
+    db: db.firestore,
     bucket: "private",
     enabled,
     enqueue: async (_path, _payload, id) => {
@@ -228,7 +97,7 @@ async function harness(enabled = true) {
   app.use(
     "/v1/account",
     accountDeletionRouter({
-      db: db as unknown as Firestore,
+      db: db.firestore,
       storage: backend.dependencies.storage,
       bucket: "private",
       narration: backend,
@@ -236,7 +105,7 @@ async function harness(enabled = true) {
   );
   app.use((error: any, _req: any, res: any, _next: any) =>
     res
-      .status(error instanceof NarrationError ? error.status : 500)
+      .status(error instanceof HttpError ? error.status : 500)
       .json({ error: error.message }),
   );
   const server = app.listen(0, "127.0.0.1");
@@ -330,7 +199,7 @@ interface AccountPurgeFixture {
 }
 
 /** Owner reservations share daily accounting with a user whose data must survive. */
-function accountPurgeFixture(db: Database, objects: Set<string>): AccountPurgeFixture {
+function accountPurgeFixture(db: MemoryFirestore, objects: Set<string>): AccountPurgeFixture {
   const book = hash("purged book"),
     queued = hash("orphan queued job"),
     submitted = hash("submitted job"),
@@ -378,7 +247,7 @@ function accountPurgeFixture(db: Database, objects: Set<string>): AccountPurgeFi
 }
 
 function assertAccountNarrationPurged(
-  db: Database,
+  db: MemoryFirestore,
   objects: Set<string>,
   fixture: AccountPurgeFixture,
 ) {

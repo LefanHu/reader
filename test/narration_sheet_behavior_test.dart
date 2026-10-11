@@ -1,14 +1,11 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/catalog/catalog_book.dart';
-import 'package:reader/importing/book_importer.dart';
 import 'package:reader/narration/narration_manifest.dart';
-import 'package:reader/narration/cloud_narration_source.dart';
 import 'package:reader/narration/narration_registration.dart';
 import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/preferences/reading_theme.dart';
@@ -16,17 +13,11 @@ import 'package:reader/text/text_position.dart';
 import 'package:reader/theme.dart';
 
 import 'fixtures/catalog_book.dart';
-import 'support/controller_lifecycle.dart';
-import 'support/fake_illustration_api.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
-import 'support/fake_picker.dart';
-import 'support/fake_word_counter.dart';
-import 'support/memory_catalog_store.dart';
-import 'support/memory_document_store.dart';
-import 'support/memory_illustration_store.dart';
 import 'support/memory_narration_store.dart';
 import 'support/memory_settings_store.dart';
+import 'support/narration_harness.dart';
 
 const _committed = TextPosition(sectionId: 's0', blockId: 'p0', offset: 4);
 const _selected = TextPosition(sectionId: 's0', blockId: 'p1');
@@ -219,48 +210,17 @@ Future<ReaderController> _mount(
   TextPosition? start,
   ReadingTheme theme = ReadingTheme.paper,
   double textScale = 1,
-}) async {
-  final book = testBook(position: _committed, progress: .2);
-  final controller = ReaderController(
-    catalogStore: MemoryCatalogStore([book]),
-    settingsStore: settings ?? MemorySettingsStore(),
-    importer: BookImporter(root: Directory.systemTemp),
-    picker: FakePicker([]),
-    illustrationApi: FakeIllustrationApi(),
-    illustrationStore: MemoryIllustrationStore(),
-    wordCounter: FakeWordCounter(),
-    narrationApi: api,
-    narrationSource: CloudNarrationSource(api),
-    narrationPlayer: player ?? FakeNarrationPlayer(),
-    narrationStore: store ?? MemoryNarrationStore(),
-    narrationDocuments: MemoryDocumentStore(),
-  );
-  addTearDown(() async {
-    await tester.pumpWidget(const SizedBox());
-    await disposeControllerWithFrames(tester, controller);
-  });
-  await controller.initialize();
-  await tester.pumpWidget(
-    MaterialApp(
-      theme: buildReaderTheme(theme),
-      builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context)
-            .copyWith(textScaler: TextScaler.linear(textScale)),
-        child: child!,
-      ),
-      home: Scaffold(
-        body: Builder(
-          builder: (context) => TextButton(
-            onPressed: () =>
-                showNarrationSheet(context, controller, book, start: start),
-            child: const Text('Open listening'),
-          ),
-        ),
-      ),
-    ),
-  );
-  return controller;
-}
+}) => pumpNarrationHarness(
+  tester,
+  api: api,
+  book: testBook(position: _committed, progress: .2),
+  player: player,
+  store: store,
+  settings: settings,
+  start: start,
+  theme: theme,
+  textScale: textScale,
+);
 
 /// Delays local attachment independently of cloud authentication/registration.
 class _GatedNarrationStore extends MemoryNarrationStore {

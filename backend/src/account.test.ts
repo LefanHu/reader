@@ -1,30 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
-import type { Firestore } from "firebase-admin/firestore";
+import { MemoryFirestore } from "./test-support/firestore.js";
 import { accountUsageRouter, authenticateAccount } from "./account.js";
 import { narrationMonthCounterId } from "./narration.js";
 
-/** Read-only double deliberately has no mutation or generation methods. */
-class Database {
-  values = new Map<string, Record<string, unknown>>();
-  reads: string[] = [];
-  collection(collection: string) {
-    return { doc: (id: string) => ({ get: async () => {
-      const path = `${collection}/${id}`;
-      this.reads.push(path);
-      return { data: () => this.values.get(path) };
-    } }) };
-  }
-}
-async function fixture(action: (url: string, db: Database) => Promise<void>, enabled = false) {
-  const db = new Database();
+async function fixture(action: (url: string, db: MemoryFirestore) => Promise<void>, enabled = false) {
+  const db = new MemoryFirestore();
   const app = express();
   app.use("/v1", authenticateAccount(async token => {
     if (token !== "valid") throw new Error("invalid identity");
     return { uid: "owner" };
   }, async token => { if (token !== "valid") throw new Error("invalid attestation"); }));
-  app.use("/v1/account", accountUsageRouter({ db: db as unknown as Firestore,
+  app.use("/v1/account", accountUsageRouter({ db: db.firestore,
     now: () => new Date("2026-12-31T23:59:59.999Z"), narrationEnabled: enabled,
     illustrationsEnabled: enabled, env: { NARRATION_MONTHLY_CHARACTERS: "500" } }));
   app.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).end());

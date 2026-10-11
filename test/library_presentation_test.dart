@@ -12,6 +12,7 @@ import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/theme.dart';
 
 import 'support/memory_settings_store.dart';
+import 'support/controller_lifecycle.dart';
 import 'support/test_controller.dart';
 
 CatalogBook _book({
@@ -50,11 +51,7 @@ Future<ReaderController> _mount(
     books: books ?? [_book(long: large)],
     settingsStore: settingsStore,
   );
-  addTearDown(() async {
-    await tester.pumpWidget(const SizedBox.shrink());
-    controller.dispose();
-    await controller.flush();
-  });
+  addControllerTeardown(tester, controller);
   await tester.pumpWidget(
     MaterialApp(
       theme: buildReaderTheme(ReadingTheme.paper).copyWith(platform: platform),

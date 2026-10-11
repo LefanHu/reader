@@ -3,11 +3,8 @@
 
 /// Recoverable configuration, authentication, or server failure.
 class IllustrationException implements Exception {
-  const IllustrationException(this.message, {this.statusCode});
+  const IllustrationException(this.message);
   final String message;
-
-  /// Optional HTTP status for idempotent privacy retries.
-  final int? statusCode;
   @override
   String toString() => message;
 }

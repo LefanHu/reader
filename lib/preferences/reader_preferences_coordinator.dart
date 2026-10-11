@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import '../serial_queue.dart';
+
 import 'library_filter.dart';
 import 'library_sort.dart';
 import 'reader_settings.dart';
@@ -37,8 +39,7 @@ class ReaderPreferencesCoordinator {
 
   final Future<void> Function(ReaderSettings) _applyNarrationPreferences;
   final VoidCallback _changed;
-  Future<void> _preferenceTail = Future.value();
-  int _pendingPreferences = 0;
+  final _queue = SerialQueue();
   bool _disposed = false;
 
   /// Restores preferences without publishing a startup notification.
@@ -47,10 +48,10 @@ class ReaderPreferencesCoordinator {
   }
 
   /// Number of scheduled preference operations not yet completed.
-  int get pendingOperations => _pendingPreferences;
+  int get pendingOperations => _queue.pending;
 
   /// Awaits the serialization barrier without replaying operation errors.
-  Future<void> flush() => _preferenceTail;
+  Future<void> flush() => _queue.idle;
 
   /// Applies and persists supplied values, retaining validation after disposal.
   Future<void> configure({
@@ -101,28 +102,18 @@ class ReaderPreferencesCoordinator {
     ReaderSettings Function(ReaderSettings) update,
   ) {
     if (_disposed) return Future.value();
-    _pendingPreferences++;
     // Serialize complete snapshots and native playback updates so rapid
     // controls cannot persist older values after a later selection.
-    final operation = _preferenceTail.then((_) async {
+    return _queue.run(() async {
+      final next = update(settings);
+      settings = next;
+      if (!_disposed) _changed();
       try {
-        final next = update(settings);
-        settings = next;
-        if (!_disposed) _changed();
-        try {
-          await _applyNarrationPreferences(next);
-        } finally {
-          await store.save(next);
-        }
+        await _applyNarrationPreferences(next);
       } finally {
-        _pendingPreferences--;
+        await store.save(next);
       }
     });
-    _preferenceTail = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
   }
 
   /// Stops scheduling and notifications without cancelling pending operations.

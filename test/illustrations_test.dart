@@ -1,11 +1,11 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
-import 'package:reader/app/reader_controller.dart';
 import 'package:reader/illustrations/book_text_index.dart';
 import 'package:reader/illustrations/chapter_text_index.dart';
-import 'package:reader/illustrations/file_illustration_deletion_outbox.dart';
+import 'package:reader/file_cloud_deletion_outbox.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
 import 'package:reader/illustrations/gate.dart';
 import 'package:reader/illustrations/illustration_job_result.dart';
@@ -13,18 +13,17 @@ import 'package:reader/illustrations/illustration_manifest.dart';
 import 'package:reader/illustrations/illustration_scene.dart';
 import 'package:reader/illustrations/illustration_setup.dart';
 import 'package:reader/illustrations/indexed_paragraph.dart';
-import 'package:reader/illustrations/memory_illustration_deletion_outbox.dart';
+
+import 'support/memory_cloud_deletion_outbox.dart';
+
 import 'package:reader/illustrations/scene_anchor.dart';
-import 'package:reader/importing/book_importer.dart';
 import 'package:reader/text/text_position.dart';
 
 import 'fixtures/catalog_book.dart';
+import 'support/cloud_identity_fake.dart';
 import 'support/fake_illustration_api.dart';
-import 'support/fake_picker.dart';
 import 'support/fake_text_indexer.dart';
-import 'support/memory_catalog_store.dart';
-import 'support/memory_illustration_store.dart';
-import 'support/memory_settings_store.dart';
+import 'support/test_controller.dart';
 
 void main() {
   test(
@@ -101,22 +100,20 @@ void main() {
   test(
     'startup deletion retries never initiate illustration sign-in',
     () async {
-      final outbox = MemoryIllustrationDeletionOutbox();
+      final outbox = MemoryCloudDeletionOutbox();
       await outbox.enqueue('old-book');
-      final api = FakeIllustrationApi(configured: true)..session = false;
-      final controller = ReaderController(
-        catalogStore: MemoryCatalogStore(),
-        settingsStore: MemorySettingsStore(),
-        importer: BookImporter(root: Directory.systemTemp),
-        picker: FakePicker(),
+      final api = FakeIllustrationApi(configured: true);
+      final controller = await testController(
         illustrationApi: api,
         illustrationDeletionOutbox: outbox,
+        cloudIdentity: FakeCloudIdentity(),
+        initialize: false,
       );
+      addTearDown(controller.dispose);
       await controller.initialize();
       await Future<void>.delayed(Duration.zero);
       expect(api.deletedBooks, isEmpty);
       expect(await outbox.load(), hasLength(1));
-      controller.dispose();
     },
   );
   test(
@@ -124,8 +121,14 @@ void main() {
     () async {
       final root = await Directory.systemTemp.createTemp('outbox_concurrent');
       addTearDown(() => root.delete(recursive: true));
-      final first = FileIllustrationDeletionOutbox(root);
-      final second = FileIllustrationDeletionOutbox(root);
+      final first = FileCloudDeletionOutbox(
+        root,
+        fileName: 'illustration-deletions.json',
+      );
+      final second = FileCloudDeletionOutbox(
+        root,
+        fileName: 'illustration-deletions.json',
+      );
       await Future.wait([
         first.enqueue('a'),
         second.enqueue('b'),
@@ -146,45 +149,44 @@ void main() {
   );
 
   test('re-enabling a reimported book drains old cloud deletion before registration', () async {
-    final outbox = MemoryIllustrationDeletionOutbox();
+    final outbox = MemoryCloudDeletionOutbox();
     await outbox.enqueue('old-book');
-    final api = FakeIllustrationApi(configured: true)..session = false;
+    final api = FakeIllustrationApi(configured: true);
     final book = testBook();
-    final controller = ReaderController(
-      catalogStore: MemoryCatalogStore([book]),
-      settingsStore: MemorySettingsStore(),
-      importer: BookImporter(root: Directory.systemTemp),
-      picker: FakePicker(),
+    final controller = await testController(
+      books: [book],
       illustrationApi: api,
       illustrationDeletionOutbox: outbox,
-      illustrationStore: MemoryIllustrationStore(),
-      textIndexer: FakeTextIndexer(),
+      cloudIdentity: FakeCloudIdentity(),
+      initialize: false,
     );
+    addTearDown(controller.dispose);
     await controller.initialize();
     final setup = await controller.illustrations.beginSetup(book);
     expect(setup.cloudBookId, 'cloud-book');
     expect(api.deletedBooks, ['old-book']);
     expect(await outbox.load(), isEmpty);
-    controller.dispose();
   });
 
   test('sidecars and cloud deletion outbox recover atomically', () async {
     final directory = await Directory.systemTemp.createTemp('reader-store-');
     addTearDown(() => directory.delete(recursive: true));
-    final bookDirectory = Directory('${directory.path}/hash')..createSync();
+    final hash = 'a' * 64;
+    final bookDirectory = Directory('${directory.path}/books/$hash')
+      ..createSync(recursive: true);
     final epub = File('${bookDirectory.path}/book.epub')
       ..writeAsStringSync('x');
     final book = CatalogBook(
-      hash: 'abc123',
+      hash: hash,
       fileName: 'book.epub',
       path: epub.path,
       title: 'Test Book',
       authors: const ['Test Author'],
       addedAt: DateTime.utc(2026),
     );
-    final store = FileIllustrationStore();
-    const manifest = IllustrationManifest(
-      bookHash: 'abc123',
+    final store = FileIllustrationStore(directory);
+    final manifest = IllustrationManifest(
+      bookHash: hash,
       chapterJobs: {0: 'job-0'},
     );
 
@@ -197,12 +199,49 @@ void main() {
     await File('${manifestFile.path}.bak').delete();
     expect((await store.loadManifest(book)).chapterJobs, isEmpty);
 
-    final outbox = FileIllustrationDeletionOutbox(directory);
+    final outbox = FileCloudDeletionOutbox(
+      directory,
+      fileName: 'illustration-deletions.json',
+    );
     await outbox.enqueue('cloud-book');
     await outbox.enqueue('cloud-book');
     expect(await outbox.load(), hasLength(1));
     await outbox.remove('cloud-book');
     expect(await outbox.load(), isEmpty);
+  });
+
+  test('scene identities cannot escape the book image directory', () async {
+    final directory = await Directory.systemTemp.createTemp('reader-store-');
+    addTearDown(() => directory.delete(recursive: true));
+    final hash = 'a' * 64;
+    final bookDirectory = Directory('${directory.path}/books/$hash')
+      ..createSync(recursive: true);
+    final book = CatalogBook(
+      hash: hash,
+      fileName: 'book.epub',
+      path: (File(
+        '${bookDirectory.path}/book.epub',
+      )..writeAsStringSync('x')).path,
+      title: 'Test Book',
+      authors: const ['Test Author'],
+      addedAt: DateTime.utc(2026),
+    );
+    final store = FileIllustrationStore(directory);
+    final victim = File('${bookDirectory.path}/visuals/escape.webp')
+      ..createSync(recursive: true);
+
+    await expectLater(
+      store.saveImage(book, '../escape', Uint8List.fromList([1])),
+      throwsFormatException,
+    );
+    expect(
+      Directory('${bookDirectory.path}/visuals')
+          .listSync(recursive: true)
+          .map((entry) => entry.path),
+      [victim.path],
+    );
+    await store.deleteSceneFiles(book, '../escape');
+    expect(victim.existsSync(), isTrue);
   });
 
   test(
@@ -254,14 +293,11 @@ void main() {
           ),
         ],
       );
-      final controller = ReaderController(
-        catalogStore: MemoryCatalogStore([book]),
-        settingsStore: MemorySettingsStore(),
-        importer: BookImporter(root: Directory.systemTemp),
-        picker: FakePicker(),
-        illustrationStore: MemoryIllustrationStore(),
+      final controller = await testController(
+        books: [book],
         textIndexer: FakeTextIndexer(chapters: chapters),
         illustrationApi: api,
+        initialize: false,
       );
       addTearDown(controller.dispose);
       await controller.initialize();
