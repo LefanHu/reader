@@ -133,8 +133,15 @@ curl --fail --silent --show-error "$api_url/health" >/dev/null
 worker_status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$worker_url/health")
 [ "$worker_status" = "403" ] || die "expected anonymous worker request to return 403, got $worker_status"
 
+# Report the configured rollout state rather than assuming it; unset defaults to disabled.
+rollout=$(sed -n 's/^illustrations_enabled[[:space:]]*=[[:space:]]*\(true\|false\).*/\1/p' "$ENV_VARS" | head -n 1)
+if [ "$rollout" = true ]; then
+  rollout_note="Illustrations are enabled ($ENV_VARS), so protected illustration and book-analysis routes are open."
+else
+  rollout_note="Illustrations remain disabled. Set illustrations_enabled=true in $ENV_VARS and redeploy after an authenticated smoke test."
+fi
 printf '%s\n' \
   "Deployment complete." \
   "Flutter config: .dart-defines/$ENVIRONMENT.json" \
   "Run with: flutter run --dart-define-from-file=.dart-defines/$ENVIRONMENT.json" \
-  "Illustrations remain disabled. Set illustrations_enabled=true in $ENV_VARS and redeploy after an authenticated smoke test."
+  "$rollout_note"
