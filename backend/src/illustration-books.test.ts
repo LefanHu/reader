@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
 import { MemoryFirestore, type MemoryData } from "./test-support/firestore.js";
+import { Timestamp } from "firebase-admin/firestore";
 import { illustrationBookRegistration, illustrationBookDeletion } from "./illustration-books.js";
 import { registerOwnedBook } from "./book-registration.js";
 import type { Storage } from "@google-cloud/storage";
@@ -67,14 +68,22 @@ test("deleted account registration cannot recreate books or pilot credits", asyn
   });
 });
 
-test("deleted illustration book registration retains its durable fence without granting credit", async () => {
+test("purged illustration book registers again as a fresh book without regranting credit", async () => {
   await fixture(async (values, register) => {
     const first = await register("first");
     const { id } = await first.json() as { id: string };
-    values.set(`users/owner/books/${id}`, { uid: "owner", deleted: true });
+    const path = `users/owner/books/${id}`;
+    const tombstone = { uid: "owner", deleted: true, deletedAt: Timestamp.now(), profile: { old: true } };
+    values.set(path, tombstone);
     values.set("users/owner", { creditsRemaining: 1, creditsReserved: 0 });
-    assert.equal((await register("first")).status, 410);
-    assert.deepEqual(values.get(`users/owner/books/${id}`), { uid: "owner", deleted: true });
+    const pending = await register("first");
+    assert.equal(pending.status, 409);
+    assert.deepEqual(await pending.json(), { error: "Book deletion is still in progress." });
+    assert.deepEqual(values.get(path), tombstone);
+    values.set(path, { ...tombstone, purgedAt: Timestamp.now() });
+    assert.equal((await register("first")).status, 200);
+    const revived = values.get(path)!;
+    for (const field of ["deleted", "deletedAt", "purgedAt", "profile"]) assert.equal(field in revived, false, field);
     assert.deepEqual(values.get("users/owner"), { creditsRemaining: 1, creditsReserved: 0 });
   });
 });
@@ -123,6 +132,7 @@ test("book deletion purges every analysis generation and staging page while isol
     assert(address && typeof address === "object");
     const url = `http://127.0.0.1:${address.port}/books/book`;
     assert.equal((await fetch(url, { method: "DELETE" })).status, 204);
+    assert(memory.values.get("users/owner/books/book")?.purgedAt instanceof Timestamp);
     assert.equal((await fetch(url, { method: "DELETE" })).status, 204);
     for (const collection of collections) {
       assert(!memory.values.has(`${collection}/old`));
@@ -135,15 +145,22 @@ test("book deletion purges every analysis generation and staging page while isol
   }
 });
 
-test("preprocessing-only registration honors book and account tombstones", async () => {
+test("preprocessing-only registration follows book tombstone lifecycle and honors account tombstones", async () => {
   const memory = new MemoryFirestore();
   const args = { db: memory.firestore, uid: "owner",
     metadata: { schemaVersion: 2, fingerprint: "fenced", title: "Book" } };
   const { bookId } = await registerOwnedBook(args);
   const path = `users/owner/books/${bookId}`;
+  const fresh = { uid: "owner", deleted: true, deletedAt: Timestamp.now() };
+  memory.values.set(path, fresh);
+  await assert.rejects(registerOwnedBook(args), error => error instanceof HttpError && error.status === 409);
+  assert.deepEqual(memory.values.get(path), fresh);
+  memory.values.set(path, { ...fresh, deletedAt: Timestamp.fromMillis(Date.now() - 16 * 60_000) });
+  await registerOwnedBook(args);
+  assert.equal(memory.values.get(path)?.deleted, undefined);
   memory.values.set(path, { uid: "owner", deleted: true });
-  await assert.rejects(registerOwnedBook(args), error => error instanceof HttpError && error.status === 410);
-  assert.deepEqual(memory.values.get(path), { uid: "owner", deleted: true });
+  await registerOwnedBook(args);
+  assert.equal(memory.values.get(path)?.deleted, undefined);
   memory.values.set("narrationAccountTombstones/owner", { deletedAt: new Date() });
   memory.values.delete(path);
   await assert.rejects(registerOwnedBook(args), error => error instanceof HttpError && error.status === 410);

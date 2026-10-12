@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/illustrations/api.dart';
 import 'package:reader/illustrations/chapter_text_index.dart';
@@ -17,6 +19,9 @@ class FakeIllustrationApi implements IllustrationApi {
   @override
   final bool configured;
   final deletedBooks = <String>[];
+
+  /// When set, `deleteBook` waits for it before recording, modelling a slow purge.
+  Completer<void>? deleteGate;
   final List<int> createdChapterOrdinals = [];
   final List<String> unlockedSceneIds = [];
   final Map<String, IllustrationJobResult> jobResults = {};
@@ -131,6 +136,7 @@ class FakeIllustrationApi implements IllustrationApi {
 
   @override
   Future<void> deleteBook(String cloudBookId, {bool interactive = true}) async {
+    await deleteGate?.future;
     deletedBooks.add(cloudBookId);
   }
 

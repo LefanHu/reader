@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../catalog/catalog_book.dart';
@@ -116,7 +118,10 @@ class IllustrationCoordinator {
   }
 
   /// Uses the shared deletion owner/outbox for both illustration and analysis IDs.
-  /// Receipts outlive source directories; local deletion never prompts for sign-in.
+  /// Receipts are durable before this returns; the server purge is dispatched in
+  /// the background so local deletion never waits for the network and never
+  /// prompts for sign-in. Receipts outlive source directories, and a reimport's
+  /// setup drains the outbox before registering, so it cannot overtake a purge.
   Future<void> requestBookDeletion(
     CatalogBook book, {
     String? analysisCloudBookId,
@@ -126,13 +131,10 @@ class IllustrationCoordinator {
       if (analysisCloudBookId != null) analysisCloudBookId,
     };
     for (final id in ids.where((id) => id.isNotEmpty)) {
-      try {
-        await api.deleteBook(id, interactive: false);
-      } on Object {
-        // One durable owner avoids competing analysis/image deletion retries.
-        await _deletions.enqueue(id);
-      }
+      await _deletions.enqueue(id);
     }
+    // drain() is single-flight and swallows errors; failures stay in the outbox.
+    unawaited(_deletions.drain());
   }
 
   /// Keeps a delayed preprocessing registration's deletion receipt outside books.

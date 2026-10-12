@@ -86,6 +86,9 @@ export function illustrationBookDeletion(dependencies: { db: Firestore; storage:
     const writer = db.bulkWriter();
     for (const snapshot of records) for (const document of snapshot.docs) writer.delete(document.ref);
     await writer.close();
+    // Marks the purge complete so a reimport may register this deterministic ID
+    // again; the tombstone written earlier keeps delayed workers fenced until then.
+    await bookRef.set({ purgedAt: FieldValue.serverTimestamp() }, { merge: true });
     res.status(204).end();
   });
 }

@@ -4,6 +4,9 @@ import { bookReference, readBookFence } from "./fences.js";
 import { HttpError, requireString } from "./http.js";
 import { requireIllustrationSchema } from "./illustration-configuration.js";
 
+/** A tombstone without `purgedAt` blocks re-registration only this long (covers a crashed purge). */
+const PURGE_GRACE_MILLIS = 15 * 60_000;
+
 /** Schema-2 metadata registration; no profile, provider or credit coupling. */
 export async function registerOwnedBook<T = undefined>(args: {
   db: Firestore;
@@ -20,17 +23,29 @@ export async function registerOwnedBook<T = undefined>(args: {
   const extension = await db.runTransaction(async transaction => {
     const fence = await readBookFence(transaction, db, "books", uid, bookId);
     if (fence.accountDeleted) throw new HttpError(410, "Account was deleted.");
-    if (fence.book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
+    const existing = fence.book.data();
+    const tombstone = existing?.deleted ? existing : undefined;
+    if (tombstone && !tombstone.purgedAt) {
+      const deletedMillis = tombstone.deletedAt?.toMillis?.() ?? 0;
+      if (Date.now() - deletedMillis < PURGE_GRACE_MILLIS) throw new HttpError(409, "Book deletion is still in progress.");
+    }
+    // A revived book starts fresh: profile and analysis pointers belonged to the purged incarnation.
+    const result = await args.extendTransaction?.(transaction, tombstone ? undefined : existing);
     // Extension must finish all reads before its writes; metadata writes follow it.
-    const result = await args.extendTransaction?.(transaction, fence.book.data());
-    transaction.set(bookReference(db, "books", uid, bookId), {
+    const fields = {
       schemaVersion: 2, uid, fingerprint, title,
       authors: Array.isArray(metadata.authors) ? metadata.authors.slice(0, 20) : [],
       language: typeof metadata.language === "string" ? metadata.language : null,
       chapterCount,
-      ...(!fence.book.exists ? { createdAt: FieldValue.serverTimestamp() } : {}),
       updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
+    };
+    const ref = bookReference(db, "books", uid, bookId);
+    if (tombstone) {
+      // No merge: deleted/deletedAt/purgedAt and every old pointer are dropped.
+      transaction.set(ref, { ...fields, createdAt: FieldValue.serverTimestamp() });
+    } else {
+      transaction.set(ref, { ...fields, ...(!fence.book.exists ? { createdAt: FieldValue.serverTimestamp() } : {}) }, { merge: true });
+    }
     return result;
   });
   return { bookId, chapterCount, extension };

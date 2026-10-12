@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -77,6 +78,43 @@ void main() {
     },
   );
 
+  test('deleting a book returns before the server confirms and retries from the outbox', () async {
+    final outbox = MemoryCloudDeletionOutbox();
+    final api = FakeIllustrationApi(configured: true)
+      ..deleteGate = Completer<void>();
+    final book = testBook();
+    final controller = await testController(
+      books: [book],
+      illustrationApi: api,
+      illustrationDeletionOutbox: outbox,
+      cloudIdentity: FakeCloudIdentity()..email = 'reader@example.test',
+    );
+    addTearDown(controller.dispose);
+    await controller.illustrations.confirm(
+      book,
+      setup: const IllustrationSetup(
+        cloudBookId: 'old-book',
+        suggestedStyle: 'Cinematic ink',
+        alternativeStyles: [],
+        estimatedCredits: 6,
+        configuration: FakeIllustrationApi.configuration,
+      ),
+      selection: const IllustrationSelection(
+        style: 'Cinematic ink',
+        providerId: 'openai',
+      ),
+    );
+
+    // The gate is still closed, so completing proves delete never awaits the server.
+    await controller.delete(book);
+    expect(api.deletedBooks, isEmpty);
+    expect((await outbox.load()).map((item) => item.cloudBookId), ['old-book']);
+
+    api.deleteGate!.complete();
+    await controller.illustrations.drainDeletions();
+    expect(api.deletedBooks, ['old-book']);
+    expect(await outbox.load(), isEmpty);
+  });
   test('re-enabling a reimported book drains old cloud deletion before registration', () async {
     final outbox = MemoryCloudDeletionOutbox();
     await outbox.enqueue('old-book');

@@ -201,7 +201,10 @@ test("tombstone-first real deletion purges prose and derived shards and fences a
     release(); assert.equal((await delayed).status, 204);
     assert(![...h.memory.values.values()].some(v => v.bookId === bookId && v.generationId === generationId));
     assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}`)).status, 404);
-    assert.equal((await h.request("/v1/book-analysis/books", "POST", { schemaVersion: 2, fingerprint: "temporal-fixture", title: "Reimport", chapterCount: 2 })).status, 410);
+    // The purge finished, so the same source may register again as a fresh book...
+    assert.equal((await h.request("/v1/book-analysis/books", "POST", { schemaVersion: 2, fingerprint: "temporal-fixture", title: "Reimport", chapterCount: 2 })).status, 200);
+    // ...without resurrecting the purged generation.
+    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}`)).status, 404);
   }, provider);
 });
 
