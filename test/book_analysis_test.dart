@@ -4,24 +4,14 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:reader/atomic_json_file.dart';
 import 'package:reader/book_analysis/analysis_protocol.dart';
 import 'package:reader/book_analysis/analysis_result.dart';
-import 'package:reader/book_analysis/analysis_source.dart';
-import 'package:reader/book_analysis/analysis_source_models.dart';
 import 'package:reader/book_analysis/analysis_versions.dart';
 import 'package:reader/book_analysis/book_analysis_state.dart';
 import 'package:reader/book_analysis/file_analysis_store.dart';
-import 'package:reader/book_analysis/http_book_analysis_api.dart';
 import 'package:reader/catalog/catalog_book.dart';
-import 'package:reader/identity/cloud_failure_kind.dart';
-import 'package:reader/identity/cloud_identity_exception.dart';
-import 'package:reader/identity/cloud_service_exception.dart';
 import 'package:reader/text/text_position.dart';
-
-import 'support/cloud_identity_fake.dart';
 
 final _generation = 'a' * 64;
 final _owner = 'b' * 64;
@@ -30,190 +20,6 @@ final _digest = 'd' * 64;
 final _revision = 'e' * 64;
 
 void main() {
-  group('noninteractive analysis HTTP', () {
-    test('every method including fingerprint uses existing headers without sign-in', () async {
-      final identity = _RecordingIdentity()..email = 'existing@example.test';
-      final requests = <http.Request>[];
-      final key = base64Encode(List<int>.generate(32, (index) => index));
-      final book = _book('/private/book.txt');
-      final page = _page();
-      final api = HttpBookAnalysisApi(
-        identity: identity,
-        baseUri: Uri.parse('https://reader.test'),
-        client: MockClient((request) async {
-          requests.add(request);
-          final path = request.url.path;
-          if (path == '/v1/fingerprint-key') return _response({'key': key});
-          if (path.endsWith('/config'))
-            return _response(
-              AnalysisConfiguration(enabled: true, accountKey: _owner).toJson(),
-            );
-          if (path == '/v1/book-analysis/books')
-            return _response({'bookId': _cloudBook, 'accountKey': _owner});
-          if (path.contains('/manifest-pages/')) return http.Response('', 204);
-          if (path.contains('/pages/')) {
-            return http.Response.bytes(
-              utf8.encode(page.serializedJson),
-              200,
-              headers: {'content-type': 'application/json; charset=utf-8'},
-            );
-          }
-          if (request.method == 'GET')
-            return _response(_progress(page).toJson());
-          return _response(_receipt().toJson());
-        }),
-      );
-
-      expect(api.configured, isTrue);
-      expect((await api.getConfiguration()).accountKey, _owner);
-      expect(
-        (await api.registerBook(book, sectionCount: 2)).bookId,
-        _cloudBook,
-      );
-      final manifest = _manifest();
-      expect(
-        (await api.admitGeneration(manifest, _cloudBook)).generationId,
-        _generation,
-      );
-      await api.putManifestPage(
-        _generation,
-        0,
-        AnalysisDescriptorPage(chunks: manifest.chunks),
-      );
-      await api.submitChunk(_generation, _chunk());
-      expect((await api.getProgress(_generation)).requiredChunks, 1);
-      await api.finalize(_generation);
-      final loaded = await api.getPage(_generation, page.pageId);
-      expect(loaded.mentions!.single.surface, 'e\u0301😀');
-      expect(loaded.serializedJson, page.serializedJson);
-      expect(identity.interactive, List<bool>.filled(9, false));
-      expect(identity.signIns, 0);
-      expect(identity.reauthentications, 0);
-      expect(requests.every((request) => !request.followRedirects), isTrue);
-      expect(
-        requests.every(
-          (request) => request.headers['authorization'] == 'Bearer test',
-        ),
-        isTrue,
-      );
-      final registration = jsonDecode(requests[2].body) as Map;
-      final expectedFingerprint = Hmac(
-        sha256,
-        base64Decode(key),
-      ).convert(utf8.encode(book.hash)).toString();
-      expect(registration['fingerprint'], expectedFingerprint);
-      expect(registration['schemaVersion'], 2);
-      expect(registration['chapterCount'], 2);
-      expect(registration, isNot(contains('profile')));
-      expect(registration, isNot(contains('enabled')));
-      expect(jsonDecode(requests[3].body), manifest.toAdmissionJson());
-      expect(jsonDecode(requests[3].body), isNot(contains('chunks')));
-      final upload = jsonDecode(requests[5].body) as Map;
-      expect((upload['primary'] as List).single['text'], '  e\u0301😀\n\t');
-    });
-
-    test('missing existing session fails without interactive authorization or upload', () async {
-      final identity = _RecordingIdentity()..requireSession = true;
-      var requests = 0;
-      final api = HttpBookAnalysisApi(
-        identity: identity,
-        baseUri: Uri.parse('https://reader.test'),
-        client: MockClient((_) async {
-          requests++;
-          return _response({});
-        }),
-      );
-      await expectLater(
-        api.getConfiguration(),
-        throwsA(isA<CloudIdentityException>()),
-      );
-      await expectLater(
-        api.registerBook(_book('/private/book.txt'), sectionCount: 1),
-        throwsA(isA<CloudIdentityException>()),
-      );
-      expect(requests, 0);
-      expect(identity.interactive, [false, false]);
-      expect(identity.signIns, 0);
-      expect(identity.reauthentications, 0);
-    });
-
-    test(
-      'invalid IDs versions and oversized chunks fail before authorization',
-      () async {
-        final identity = _RecordingIdentity();
-        final api = HttpBookAnalysisApi(
-          identity: identity,
-          baseUri: Uri.parse('https://reader.test'),
-          client: MockClient((_) async => _response({})),
-        );
-        await expectLater(api.getProgress('../foreign'), throwsFormatException);
-        await expectLater(
-          api.getPage(_generation, '../escape'),
-          throwsFormatException,
-        );
-        await expectLater(api.finalize('a' * 40), throwsFormatException);
-        final manifest = _manifest();
-        await expectLater(
-          api.admitGeneration(
-            AnalysisSourceManifest(
-              schemaVersion: 2,
-              documentVersion: 1,
-              documentDigest: _digest,
-              sectionCount: 1,
-              blockCount: 1,
-              chunkCount: 1,
-              pageCount: 1,
-              sections: manifest.sections,
-              chunks: manifest.chunks,
-            ),
-            _cloudBook,
-          ),
-          throwsFormatException,
-        );
-        await expectLater(
-          api.submitChunk(_generation, _chunk(text: 'x' * 8001)),
-          throwsFormatException,
-        );
-        expect(identity.interactive, isEmpty);
-      },
-    );
-
-    test(
-      'mismatched owned responses and oversized result streams are rejected',
-      () async {
-        final identity = _RecordingIdentity();
-        var oversized = false;
-        final api = HttpBookAnalysisApi(
-          identity: identity,
-          baseUri: Uri.parse('https://reader.test'),
-          client: MockClient((request) async {
-            if (oversized)
-              return http.Response('x' * (analysisPageMaxBytes + 1), 200);
-            if (request.url.path.contains('/pages/')) {
-              return _response({..._page().toJson(), 'generationId': 'f' * 64});
-            }
-            return _response({
-              ..._receipt().toJson(),
-              'generationId': 'f' * 64,
-            });
-          }),
-        );
-        await expectLater(api.finalize(_generation), throwsFormatException);
-        await expectLater(
-          api.getPage(_generation, 'mentions-0'),
-          throwsFormatException,
-        );
-        oversized = true;
-        await expectLater(
-          api.getPage(_generation, 'mentions-0'),
-          throwsA(isA<CloudServiceException>()),
-        );
-        expect(identity.signIns, 0);
-        expect(identity.interactive, [false, false, false]);
-      },
-    );
-  });
-
   group('atomic analysis sidecars', () {
     late Directory root;
     late CatalogBook book;
@@ -593,30 +399,6 @@ void main() {
   });
 }
 
-http.Response _response(Map<String, dynamic> json) => http.Response(
-  jsonEncode(json),
-  200,
-  headers: {'content-type': 'application/json'},
-);
-
-class _RecordingIdentity extends FakeCloudIdentity {
-  final interactive = <bool>[];
-  bool requireSession = false;
-  @override
-  Future<Map<String, String>> authorizationHeaders({
-    bool interactive = true,
-  }) async {
-    this.interactive.add(interactive);
-    if (requireSession && email == null) {
-      throw const CloudIdentityException(
-        CloudFailureKind.signedOut,
-        'No existing session.',
-      );
-    }
-    return super.authorizationHeaders(interactive: interactive);
-  }
-}
-
 CatalogBook _book(String path, {String? hash, DateTime? addedAt}) =>
     CatalogBook(
       hash: hash ?? '1' * 64,
@@ -749,62 +531,3 @@ Map<String, dynamic> _envelope(CatalogBook book, AnalysisResultPage page) => {
   'byteLength': _descriptor(page).byteLength,
   'pageJson': page.serializedJson,
 };
-
-AnalysisChunkInput _chunk({String text = '  e\u0301😀\n\t'}) {
-  final hash = analysisSpanHash(
-    version: 1,
-    sectionOrdinal: 0,
-    sectionId: 's0',
-    blockOrdinal: 0,
-    blockId: 'p0',
-    startOffset: 0,
-    endOffset: text.length,
-    text: text,
-  );
-  return AnalysisChunkInput(
-    ordinal: 0,
-    hash: analysisPrimitiveHash([hash]),
-    primary: [
-      AnalysisSourceSpan(
-        version: 1,
-        sectionOrdinal: 0,
-        sectionId: 's0',
-        blockOrdinal: 0,
-        blockId: 'p0',
-        startOffset: 0,
-        endOffset: text.length,
-        blockLength: text.length,
-        hash: hash,
-        text: text,
-      ),
-    ],
-    overlap: const [],
-    overlapHash: analysisPrimitiveHash([]),
-  );
-}
-
-AnalysisSourceManifest _manifest() {
-  final chunk = _chunk();
-  return AnalysisSourceManifest(
-    documentVersion: 1,
-    documentDigest: analysisPrimitiveHash([
-      [0, chunk.hash],
-    ]),
-    sectionCount: 1,
-    blockCount: 1,
-    chunkCount: 1,
-    pageCount: 1,
-    sections: const [
-      AnalysisSectionDescriptor(ordinal: 0, id: 's0', blockCount: 1),
-    ],
-    chunks: [
-      AnalysisChunkDescriptor(
-        ordinal: 0,
-        hash: chunk.hash,
-        primary: chunk.primary.map((span) => span.descriptor).toList(),
-        overlap: const [],
-        overlapHash: chunk.overlapHash,
-      ),
-    ],
-  );
-}

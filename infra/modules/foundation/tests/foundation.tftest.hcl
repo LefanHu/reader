@@ -62,3 +62,22 @@ run "budget_matches_non_usd_billing_account" {
     error_message = "Budget must use the linked billing account currency rather than hardcoded USD."
   }
 }
+
+run "api_test_signers_are_opt_in" {
+  command = plan
+  assert {
+    condition     = length(google_service_account_iam_member.api_test_token_creator) == 0
+    error_message = "Environments must not grant test-token signing by default."
+  }
+}
+
+run "api_test_signers_get_admin_sdk_token_creator" {
+  command = plan
+  variables {
+    api_test_principals = ["user:a@example.com"]
+  }
+  assert {
+    condition     = length(google_service_account_iam_member.api_test_token_creator) == 1 && google_service_account_iam_member.api_test_token_creator["user:a@example.com"].role == "roles/iam.serviceAccountTokenCreator" && google_service_account_iam_member.api_test_token_creator["user:a@example.com"].service_account_id == "projects/reader-test-12345/serviceAccounts/firebase-adminsdk-fbsvc@reader-test-12345.iam.gserviceaccount.com"
+    error_message = "Each listed principal must be able to sign only as the Firebase Admin SDK service account."
+  }
+}

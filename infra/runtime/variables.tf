@@ -164,3 +164,9 @@ variable "apple_macos_bundle_id" {
   type        = string
   default     = "com.leafmealone.reader.macos"
 }
+
+variable "api_test_principals" {
+  description = "Dev-API test signers consumed by the foundation stack; accepted for the shared environment tfvars file."
+  type        = list(string)
+  default     = []
+}

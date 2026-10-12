@@ -1,13 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:characters/characters.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/narration/cloud_narration_source.dart';
+import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/narration/session.dart';
-import 'package:reader/narration/narration_registration.dart';
 import 'package:reader/preferences/reader_settings.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/grapheme_boundary.dart';
@@ -19,6 +20,10 @@ import 'package:reader/text/narration.dart';
 import 'fixtures/catalog_book.dart';
 import 'support/memory_document_store.dart';
 import 'fixtures/narration_audio.dart';
+import 'support/dev_api_books.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
 import 'support/memory_narration_store.dart';
@@ -134,53 +139,6 @@ void main() {
       await session.register(book);
     });
     tearDown(() => session.dispose());
-
-    test('refreshAllowance updates the attached book only', () async {
-      session.remaining = 1;
-      await session.refreshAllowance();
-      expect(session.remaining, 500000);
-
-      session.remaining = 1;
-      final refreshing = session.refreshAllowance();
-      session.book = CatalogBook(
-        hash: 'b' * 64,
-        fileName: 'other.txt',
-        path: '/tmp/other.txt',
-        title: 'Other',
-        authors: const [],
-        addedAt: DateTime.utc(2026),
-      );
-      await refreshing;
-      session.book = book;
-      expect(session.remaining, 1);
-    });
-    test(
-      'opening registered narration never registers it a second time',
-      () async {
-        await session.register(book);
-        expect(api.registrations, 1);
-        expect(api.requests, isEmpty);
-        expect(commits, isEmpty);
-      },
-    );
-
-    test('registration returning after detach is deleted without restoring local cloud state', () async {
-      await session.detach(book);
-      cache.manifests[book.hash] = const NarrationManifest();
-      final registration = Completer<NarrationRegistration>();
-      api.registrationGate = registration;
-      final registering = session.register(book);
-      await settle();
-      await session.detach(book);
-      registration.complete(
-        const NarrationRegistration('account', 'abandoned-book', 500000),
-      );
-      await registering;
-      expect(api.deleted, ['abandoned-book']);
-      expect(session.book, isNull);
-      expect(cache.manifests[book.hash]!.cloudBookId, isNull);
-      expect(commits, isEmpty);
-    });
 
     test('explicit start overrides saved resume and commits only naturally completed selected chunks', () async {
       await session.detach(book);
@@ -688,10 +646,119 @@ void main() {
     });
   });
 
+  group('registration on dev', () {
+    late DevApiIdentity identity;
+    late DevApiClient client;
+    late HttpNarrationApi api;
+    late MemoryNarrationStore cache;
+    late NarrationSession session;
+    late List<TextPosition> commits;
+    late CatalogBook book;
+    const sections = [
+      TextSection(
+        id: 's0',
+        blocks: [TextBlock(id: 'p0', text: 'First paragraph.')],
+      ),
+    ];
+    bool isRegistration(DevApiExchange exchange) =>
+        exchange.method == 'POST' && exchange.path == '/v1/narration/books';
+
+    setUpAll(() async => identity = await DevApiIdentity.shared());
+    setUp(() async {
+      client = DevApiClient.create();
+      api = HttpNarrationApi(
+        identity: identity,
+        client: client,
+        baseUri: DevApiEnvironment.instance.baseUri,
+      );
+      cache = MemoryNarrationStore();
+      book = devBook();
+      commits = [];
+      session = NarrationSession(
+        api: api,
+        source: CloudNarrationSource(api),
+        preferences: () => const ReaderSettings(),
+        player: FakeNarrationPlayer(),
+        store: cache,
+        documents: MemoryDocumentStore(sections: sections),
+        changed: () {},
+        currentPosition: (_) => sections.first.start,
+        commit: (_, position, _) async => commits.add(position),
+      );
+      addTearDown(session.dispose);
+      await session.register(book);
+      final id = session.manifest.cloudBookId!;
+      addTearDown(() => api.deleteBook(id));
+    });
+
+    test('refreshAllowance updates the attached book only', () async {
+      final remaining = (await api.configuration())['remaining'] as int;
+      session.remaining = 1;
+      await session.refreshAllowance();
+      expect(session.remaining, remaining);
+
+      session.remaining = 1;
+      final refreshing = session.refreshAllowance();
+      session.book = CatalogBook(
+        hash: 'b' * 64,
+        fileName: 'other.txt',
+        path: '/tmp/other.txt',
+        title: 'Other',
+        authors: const [],
+        addedAt: DateTime.utc(2026),
+      );
+      await refreshing;
+      session.book = book;
+      expect(session.remaining, 1);
+    }, timeout: devApiTimeout);
+
+    test(
+      'opening registered narration never registers it a second time',
+      () async {
+        await session.register(book);
+        expect(client.exchanges.where(isRegistration), hasLength(1));
+        expect(commits, isEmpty);
+      },
+      timeout: devApiTimeout,
+    );
+
+    test('registration returning after detach is deleted without restoring local cloud state', () async {
+      await session.detach(book);
+      cache.manifests[book.hash] = const NarrationManifest();
+      final hold = client.hold(
+        (request) =>
+            request.method == 'POST' &&
+            request.url.path == '/v1/narration/books',
+      );
+      final registering = session.register(book);
+      await hold.started;
+      await session.detach(book);
+      hold.release();
+      await registering;
+
+      final abandoned =
+          (jsonDecode(client.exchanges.where(isRegistration).last.body)
+                  as Map<String, dynamic>)['id']
+              as String;
+      final deletion = client.exchanges.last;
+      expect(deletion.method, 'DELETE');
+      expect(deletion.path, '/v1/narration/books/$abandoned');
+      expect(deletion.status, 204);
+      expect(session.book, isNull);
+      expect(cache.manifests[book.hash]!.cloudBookId, isNull);
+      expect(commits, isEmpty);
+    }, timeout: devApiTimeout);
+  });
+
   test(
     'narrateChapter commits the chapter start and requests a restore',
     () async {
-      final book = testBook();
+      final book = devBook();
+      final api = HttpNarrationApi(
+        identity: await DevApiIdentity.shared(),
+        client: DevApiClient.create(),
+        baseUri: DevApiEnvironment.instance.baseUri,
+      );
       final sections = [
         const TextSection(
           id: 's0',
@@ -704,12 +771,14 @@ void main() {
       ];
       final controller = await testController(
         books: [book],
-        narrationApi: FakeNarrationApi(),
+        narrationApi: api,
         narrationDocuments: MemoryDocumentStore(sections: sections),
       );
       addTearDown(controller.dispose);
       final session = controller.narration!;
       await session.register(book);
+      final cloudBookId = session.manifest.cloudBookId!;
+      addTearDown(() => api.deleteBook(cloudBookId));
       final revision = controller.narrationNavigationRevision;
       await controller.narrateChapter(book, 's1');
       expect(
@@ -719,5 +788,6 @@ void main() {
       expect(controller.narrationNavigationRevision, revision + 1);
       expect(session.manifest.chunkId, isNull);
     },
+    timeout: devApiTimeout,
   );
 }

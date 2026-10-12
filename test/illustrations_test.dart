@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -7,9 +6,11 @@ import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/illustrations/chapter_text_index.dart';
 import 'package:reader/file_cloud_deletion_outbox.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
+import 'package:reader/illustrations/http_illustration_api.dart';
 import 'package:reader/illustrations/illustration_figure.dart';
 import 'package:reader/illustrations/illustration_job_result.dart';
 import 'package:reader/illustrations/illustration_manifest.dart';
+import 'package:reader/illustrations/illustration_profile.dart';
 import 'package:reader/illustrations/illustration_scene.dart';
 import 'package:reader/illustrations/illustration_selection.dart';
 import 'package:reader/illustrations/illustration_setup.dart';
@@ -20,7 +21,10 @@ import 'support/memory_cloud_deletion_outbox.dart';
 import 'package:reader/illustrations/scene_anchor.dart';
 import 'package:reader/text/text_position.dart';
 
-import 'fixtures/catalog_book.dart';
+import 'support/dev_api_books.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
 import 'support/cloud_identity_fake.dart';
 import 'support/fake_illustration_api.dart';
 import 'support/fake_text_indexer.dart';
@@ -79,61 +83,96 @@ void main() {
   );
 
   test('deleting a book returns before the server confirms and retries from the outbox', () async {
+    final identity = await DevApiIdentity.shared();
+    final client = DevApiClient.create();
+    final api = HttpIllustrationApi(
+      identity: identity,
+      client: client,
+      baseUri: DevApiEnvironment.instance.baseUri,
+    );
     final outbox = MemoryCloudDeletionOutbox();
-    final api = FakeIllustrationApi(configured: true)
-      ..deleteGate = Completer<void>();
-    final book = testBook();
+    final book = devBook();
     final controller = await testController(
       books: [book],
       illustrationApi: api,
       illustrationDeletionOutbox: outbox,
-      cloudIdentity: FakeCloudIdentity()..email = 'reader@example.test',
+      cloudIdentity: identity,
+      analysisReady: (_) => false,
     );
     addTearDown(controller.dispose);
+    final setup = await controller.illustrations.beginSetup(book);
+    final id = setup.cloudBookId!;
+    deleteDevBookAfterTest(api, id);
     await controller.illustrations.confirm(
       book,
-      setup: const IllustrationSetup(
-        cloudBookId: 'old-book',
-        suggestedStyle: 'Cinematic ink',
-        alternativeStyles: [],
-        estimatedCredits: 6,
-        configuration: FakeIllustrationApi.configuration,
-      ),
-      selection: const IllustrationSelection(
-        style: 'Cinematic ink',
-        providerId: 'openai',
+      setup: setup,
+      selection: IllustrationSelection(
+        style: setup.suggestedStyle,
+        providerId: 'diagnostic',
       ),
     );
+    final hold = client.hold(
+      (r) => r.method == 'DELETE' && r.url.path.startsWith('/v1/books/'),
+    );
 
-    // The gate is still closed, so completing proves delete never awaits the server.
+    // The purge is held, so completing proves delete never awaits the server.
     await controller.delete(book);
-    expect(api.deletedBooks, isEmpty);
-    expect((await outbox.load()).map((item) => item.cloudBookId), ['old-book']);
+    expect((await outbox.load()).map((item) => item.cloudBookId), [id]);
+    expect(client.exchanges.where((e) => e.method == 'DELETE'), isEmpty);
 
-    api.deleteGate!.complete();
+    hold.release();
     await controller.illustrations.drainDeletions();
-    expect(api.deletedBooks, ['old-book']);
+    final deletes = client.exchanges.where((e) => e.method == 'DELETE');
+    expect(deletes.map((e) => (e.path, e.status)), [('/v1/books/$id', 204)]);
     expect(await outbox.load(), isEmpty);
-  });
+    final revived = await api.registerBook(book, chapterCount: 1);
+    expect(revived.currentProfile, isNull);
+  }, timeout: devApiTimeout);
   test('re-enabling a reimported book drains old cloud deletion before registration', () async {
+    final identity = await DevApiIdentity.shared();
+    final client = DevApiClient.create();
+    final api = HttpIllustrationApi(
+      identity: identity,
+      client: client,
+      baseUri: DevApiEnvironment.instance.baseUri,
+    );
+    final book = devBook();
+    final registered = await api.registerBook(book, chapterCount: 1);
+    final id = registered.cloudBookId!;
+    deleteDevBookAfterTest(api, id);
+    await api.confirmProfile(
+      IllustrationProfile(
+        enabled: true,
+        style: 'Ink',
+        density: 3,
+        providerId: 'diagnostic',
+        revision: 0,
+        cloudBookId: id,
+      ),
+    );
     final outbox = MemoryCloudDeletionOutbox();
-    await outbox.enqueue('old-book');
-    final api = FakeIllustrationApi(configured: true);
-    final book = testBook();
+    await outbox.enqueue(id);
+    client.exchanges.clear();
     final controller = await testController(
       books: [book],
       illustrationApi: api,
       illustrationDeletionOutbox: outbox,
-      cloudIdentity: FakeCloudIdentity(),
-      initialize: false,
+      cloudIdentity: identity,
+      analysisReady: (_) => false,
     );
     addTearDown(controller.dispose);
-    await controller.initialize();
     final setup = await controller.illustrations.beginSetup(book);
-    expect(setup.cloudBookId, 'cloud-book');
-    expect(api.deletedBooks, ['old-book']);
     expect(await outbox.load(), isEmpty);
-  });
+    final order = client.exchanges
+        .where((e) => e.path == '/v1/books/$id' || e.path == '/v1/books')
+        .map((e) => (e.method, e.path, e.status));
+    expect(order, [
+      ('DELETE', '/v1/books/$id', 204),
+      ('POST', '/v1/books', 200),
+    ]);
+    expect(setup.cloudBookId, id);
+    expect(setup.currentProfile, isNull);
+  }, timeout: devApiTimeout);
 
   test('sidecars and cloud deletion outbox recover atomically', () async {
     final directory = await Directory.systemTemp.createTemp('reader-store-');

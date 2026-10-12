@@ -95,3 +95,9 @@ variable "apple_macos_bundle_id" {
   type        = string
   default     = "com.leafmealone.reader.macos"
 }
+
+variable "api_test_principals" {
+  description = "IAM members (user:/group:) allowed to mint dev-API test identities by signing as the Firebase Admin SDK service account. Dev only."
+  type        = list(string)
+  default     = []
+}

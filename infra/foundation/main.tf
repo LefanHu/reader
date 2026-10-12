@@ -51,4 +51,5 @@ module "foundation" {
   budget_amount_usd            = var.budget_amount_usd
   alert_email                  = var.alert_email
   firestore_rules              = file("${path.root}/../../backend/firestore.rules")
+  api_test_principals          = var.api_test_principals
 }

@@ -44,7 +44,7 @@
 - One environment project, Firebase Auth service, and Firestore database. `foundation` owns core/auth/shared data/monitoring; `illustrations` owns feature infrastructure; `runtime` owns API/worker deployments; bootstrap is separate.
 - Use `tool/deploy_backend <environment> --scope core|illustrations|all` and matching `tool/plan_infra` scopes (default all). Core works without OpenAI credentials or Node. Scope never destroys an omitted stack and is independent of illustration rollout.
 - Each API enablement and resource has one Terraform owner. Migrate existing foundation feature ownership with `tool/migrate_backend_state` before split plans/applies: maintenance window, preserve instance records and generated secrets, commit destination first, never force-push.
-- After infra/tooling changes run `python3 -m unittest discover -s tool/tests -v`, Terraform validation/mocked tests, formatting checks, and ShellCheck. Validation never applies cloud changes.
+- After infra/tooling changes run `python3 -m unittest discover -s tool/tests -v`, Terraform validation/mocked tests, formatting checks, and ShellCheck. Validation never applies cloud infrastructure changes; dev-API tests write only test-uid data in dev.
 
 ## Integration tests
 
@@ -59,6 +59,7 @@
 ## Validation
 
 - After Dart changes run `dart format lib test integration_test`, `flutter analyze`, and `flutter test`.
+- `flutter test` includes dev-API tests against the deployed dev backend. Prerequisites: `.dart-defines/dev.json`, `gcloud auth application-default login`, membership in `api_test_principals`, and Node deps in `backend/`. Deploy backend changes to dev before expecting them to pass. Dart tests never use `MockClient` or fake APIs for free backend routes; fakes exist only for paid generation flows. `DevApiClient` blocks paid routes.
 - For shared reader/library changes run affected native scenarios on an iOS simulator when available; for platform integration changes build or run the platform. macOS native scenarios are not required while the build host cannot build the macOS target.
 - Behavioral changes (selection, dictionary lookup) are checked by automated native interaction, clipboard, platform-call and committed-position assertions, not screenshots or screen recording.
 - After intentional visual changes regenerate and inspect affected goldens (Paper, Sepia, Dark; iOS lists and desktop grids, including revealed overlays); never accept baselines just because tests pass.

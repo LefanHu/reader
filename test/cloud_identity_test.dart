@@ -1,7 +1,7 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:reader/account/http_account_api.dart';
 import 'package:reader/identity/cloud_failure_kind.dart';
 import 'package:reader/identity/cloud_identity_exception.dart';
@@ -9,6 +9,10 @@ import 'package:reader/identity/cloud_service_exception.dart';
 import 'package:reader/identity/firebase_cloud_identity.dart';
 import 'package:reader/identity/google_identity_provider.dart';
 import 'package:reader/narration/http_narration_api.dart';
+
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
 
 class _Google extends Fake implements GoogleIdentityProvider {
   final List<String> events;
@@ -37,13 +41,13 @@ class _Credential extends Fake implements UserCredential {}
 
 class _User extends Fake implements User {
   final List<String> events;
-  _User(this.events);
+  final String idToken;
+  _User(this.events, {this.idToken = 'firebase-token'});
   bool rejectReauth = false;
   @override
   String get email => 'reader@example.test';
   @override
-  Future<String?> getIdToken([bool forceRefresh = false]) async =>
-      'firebase-token';
+  Future<String?> getIdToken([bool forceRefresh = false]) async => idToken;
   @override
   Future<UserCredential> reauthenticateWithCredential(
     AuthCredential credential,
@@ -103,6 +107,25 @@ void main() {
       },
     );
   });
+
+  /// Builds a Firebase identity whose requests carry dev-minted [tokens],
+  /// sending [appCheckToken] in place of the minted one when given.
+  FirebaseCloudIdentity devIdentity(
+    DevApiTokens tokens, {
+    String? appCheckToken,
+  }) {
+    auth.currentUser = _User(events, idToken: tokens.idToken);
+    return FirebaseCloudIdentity(
+      auth: auth,
+      google: google,
+      configured: true,
+      initialize: () async {
+        events.add('initialize');
+      },
+      appCheckToken: () async => appCheckToken ?? tokens.appCheckToken,
+    );
+  }
+
   test('core-only Google sign-in exchanges identity without attestation or feature requests', () async {
     await identity.signIn();
     expect(events, ['initialize', 'google', 'firebase']);
@@ -153,14 +176,20 @@ void main() {
     },
   );
   test('account deletion verifies the same user before purging data and deleting Firebase identity', () async {
-    auth.currentUser = _User(events);
+    final tokens = await (await DevApiIdentity.disposable()).tokens();
+    final client = DevApiClient.create();
     final api = HttpAccountApi(
-      identity: identity,
-      baseUri: Uri.parse('https://example.test'),
-      client: MockClient((request) async {
-        expect(request.url.path, '/v1/account');
+      identity: devIdentity(tokens),
+      baseUri: DevApiEnvironment.instance.baseUri,
+      client: client,
+    );
+    final hold = client.hold(
+      (r) => r.method == 'DELETE' && r.url.path == '/v1/account',
+    );
+    unawaited(
+      hold.started.then((_) {
         events.add('purge');
-        return http.Response('', 204);
+        hold.release();
       }),
     );
     await api.deleteAccount();
@@ -171,47 +200,52 @@ void main() {
       ),
       ['reauth', 'purge', 'delete-user', 'google-out'],
     );
-  });
+    expect(client.exchanges.map((e) => (e.method, e.path, e.status)), [
+      ('DELETE', '/v1/account', 204),
+    ]);
+  }, timeout: devApiTimeout);
   test(
     'different-account reauthentication prevents destructive server requests',
     () async {
       auth.currentUser = _User(events)..rejectReauth = true;
+      final client = DevApiClient.create();
       final api = HttpAccountApi(
         identity: identity,
-        baseUri: Uri.parse('https://example.test'),
-        client: MockClient((request) async {
-          fail('Reauthentication must finish before purging data.');
-        }),
+        baseUri: DevApiEnvironment.instance.baseUri,
+        client: client,
       );
       await expectLater(api.deleteAccount(), throwsStateError);
       expect(events, ['initialize', 'google', 'reauth']);
+      expect(client.exchanges, isEmpty);
     },
   );
   test('failed server purge preserves the Firebase user for retry', () async {
-    auth.currentUser = _User(events);
+    final tokens = await (await DevApiIdentity.shared()).tokens();
     final api = HttpAccountApi(
-      identity: identity,
-      baseUri: Uri.parse('https://example.test'),
-      client: MockClient((request) async => http.Response('', 503)),
+      identity: devIdentity(tokens, appCheckToken: 'dev-api-test-rejected'),
+      baseUri: DevApiEnvironment.instance.baseUri,
+      client: DevApiClient.create(),
     );
     await expectLater(
       api.deleteAccount(),
-      throwsA(isA<CloudServiceException>()),
+      throwsA(
+        isA<CloudServiceException>().having(
+          (error) => error.statusCode,
+          'statusCode',
+          401,
+        ),
+      ),
     );
     expect(events, isNot(contains('delete-user')));
     expect(auth.currentUser, isNotNull);
-  });
+  }, timeout: devApiTimeout);
   test(
     'missing account deletion endpoint preserves the Firebase user',
     () async {
-      auth.currentUser = _User(events);
-      final paths = <String>[];
-      final client = MockClient((request) async {
-        expect(request.method, 'DELETE');
-        paths.add(request.url.path);
-        return http.Response('', 404);
-      });
-      final baseUri = Uri.parse('https://example.test');
+      final tokens = await (await DevApiIdentity.shared()).tokens();
+      final identity = devIdentity(tokens);
+      final client = DevApiClient.create();
+      final baseUri = DevApiEnvironment.instance.baseUri;
       final api = HttpAccountApi(
         identity: identity,
         baseUri: baseUri,
@@ -221,6 +255,9 @@ void main() {
         identity: identity,
         baseUri: baseUri,
         client: client,
+      );
+      client.missingRoute(
+        (r) => r.method == 'DELETE' && r.url.path == '/v1/account',
       );
       await expectLater(
         api.deleteAccount(),
@@ -234,11 +271,16 @@ void main() {
       );
       expect(events, isNot(contains('delete-user')));
       expect(auth.currentUser, isNotNull);
-      final bookId = 'a' * 64;
+      final bookId = 'f' * 64;
       await narration.deleteBook(bookId);
-      expect(paths, ['/v1/account', '/v1/narration/books/$bookId']);
+      expect(client.exchanges.map((e) => e.path), [
+        '/v1/account',
+        '/v1/narration/books/$bookId',
+      ]);
+      expect(client.exchanges.map((e) => e.status), [404, 204]);
       expect(events, isNot(contains('delete-user')));
     },
+    timeout: devApiTimeout,
   );
   test('native selector failure cannot reverse completed Firebase account deletion', () async {
     auth.currentUser = _User(events);

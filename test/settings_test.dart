@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:reader/account/account_usage.dart';
 import 'package:reader/account/account_usage_exception.dart';
@@ -13,6 +12,8 @@ import 'package:reader/account/api.dart';
 import 'package:reader/account/http_account_api.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/app/reader_controller.dart';
+import 'package:reader/identity/cloud_identity.dart';
+import 'package:reader/illustrations/http_illustration_api.dart';
 import 'package:reader/illustrations/illustration_manifest.dart';
 import 'package:reader/illustrations/illustration_profile.dart';
 import 'package:reader/app/reader_app.dart';
@@ -29,11 +30,13 @@ import 'package:reader/theme.dart';
 
 import 'fixtures/catalog_book.dart';
 import 'support/controller_lifecycle.dart';
+import 'support/dev_api_books.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
+import 'support/dev_api_pump.dart';
 import 'support/memory_illustration_store.dart';
 import 'support/test_controller.dart';
-import 'fixtures/account_usage.dart';
-import 'support/fake_account_api.dart';
-import 'support/cloud_identity_fake.dart';
 import 'fixtures/narration_audio.dart';
 import 'support/fake_narration_api.dart';
 import 'support/memory_narration_store.dart';
@@ -154,7 +157,7 @@ Future<void> _edgeBack(WidgetTester tester, {bool cancel = false}) async {
 }
 
 Future<ReaderController> _accountController({
-  required FakeCloudIdentity identity,
+  required CloudIdentity identity,
   AccountApi? accountApi,
   NarrationApi? narrationApi,
   MemoryNarrationStore? narrationStore,
@@ -173,16 +176,55 @@ Future<ReaderController> _accountController({
   return controller;
 }
 
+/// Matches the read-only usage request that Settings refreshes.
+bool _isUsage(http.BaseRequest request) =>
+    request.method == 'GET' && request.url.path == '/v1/account/usage';
+
+/// Matches the server purge sent by cloud account deletion.
+bool _isAccountDeletion(http.BaseRequest request) =>
+    request.method == 'DELETE' && request.url.path == '/v1/account';
+
+/// Logged usage statuses; null marks an injected network loss.
+List<int?> _usageStatuses(DevApiClient client) => [
+  for (final exchange in client.exchanges)
+    if (exchange.path == '/v1/account/usage') exchange.status,
+];
+
+/// Real-network shared identity, created outside the widget test's fake clock.
+Future<DevApiIdentity> _sharedIdentity(WidgetTester tester) async =>
+    (await tester.runAsync(DevApiIdentity.shared))!;
+
+/// Narration balance line exactly as Settings renders [usage].
+String _narrationBalance(AccountUsage usage) =>
+    '${usage.narrationRemaining} of ${usage.narrationMonthlyLimit}\n'
+    'Resets ${usage.narrationResetAt.toUtc().toIso8601String().split('T').first} UTC';
+
+/// Becomes true once [hold] has intercepted its request.
+bool Function() _heldOnce(DevApiHold hold) {
+  var started = false;
+  unawaited(hold.started.then((_) => started = true));
+  return () => started;
+}
+
 void main() {
   setUpAll(loadReaderFonts);
 
   testWidgets(
     'signed-in usage loads once and refresh replaces real nullable balances',
     (tester) async {
-      final identity = FakeCloudIdentity()..email = 'reader@example.test';
-      final pending = Completer<AccountUsage>();
-      final api = FakeAccountApi()..response = () => pending.future;
-      final narrationApi = FakeNarrationApi();
+      final client = DevApiClient.create();
+      final identity = (await tester.runAsync(DevApiIdentity.disposable))!;
+      final baseUri = DevApiEnvironment.instance.baseUri;
+      final api = HttpAccountApi(
+        identity: identity,
+        client: client,
+        baseUri: baseUri,
+      );
+      final narrationApi = HttpNarrationApi(
+        identity: identity,
+        client: client,
+        baseUri: baseUri,
+      );
       final store = MemoryNarrationStore();
       final controller = await _accountController(
         identity: identity,
@@ -190,11 +232,13 @@ void main() {
         narrationApi: narrationApi,
         narrationStore: store,
       );
+      final firstHold = client.hold(_isUsage);
+      final firstLoad = _heldOnce(firstHold);
       await _mount(tester, suppliedController: controller);
       await _section(tester, 'Usage & allowance', settle: false);
-      expect(api.requests, 1);
+      await pumpUntilDev(tester, firstLoad);
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
-      expect(find.textContaining('123456 of 500000'), findsNothing);
+      expect(find.text('Narration characters remaining'), findsNothing);
       expect(
         tester
             .widget<OutlinedButton>(
@@ -203,71 +247,108 @@ void main() {
             .onPressed,
         isNull,
       );
-      pending.complete(testAccountUsage());
+      firstHold.release();
+      await pumpUntilDev(tester, () => controller.accountUsage != null);
       await tester.pumpAndSettle();
-      expect(
-        find.text('123456 of 500000\nResets 2026-11-01 UTC'),
-        findsOneWidget,
-      );
+      final usage = (await tester.runAsync(api.usage))!;
+      expect(find.text(_narrationBalance(usage)), findsOneWidget);
       expect(find.text('Not activated'), findsOneWidget);
 
-      final refresh = Completer<AccountUsage>();
-      api.response = () => refresh.future;
+      await tester.runAsync(
+        () => HttpIllustrationApi(
+          identity: identity,
+          client: client,
+          baseUri: baseUri,
+        ).registerBook(devBook(), chapterCount: 1),
+      );
+      final refresh = client.hold(_isUsage);
+      final refreshHeld = _heldOnce(refresh);
       await tester.tap(find.text('Refresh allowance'));
       await tester.pump();
-      expect(api.requests, 2);
+      await pumpUntilDev(tester, refreshHeld);
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
-      expect(find.textContaining('123456 of 500000'), findsNothing);
+      expect(find.text(_narrationBalance(usage)), findsNothing);
       expect(find.text('Not activated'), findsNothing);
-      refresh.complete(
-        testAccountUsage(
-          illustrationCreditsRemaining: 20,
-          illustrationCreditsReserved: 3,
-        ),
-      );
+      refresh.release();
+      await pumpUntilDev(tester, () => controller.accountUsage != null);
       await tester.pumpAndSettle();
-      expect(find.text('20 remaining · 3 reserved'), findsOneWidget);
-      expect(find.textContaining('123456 of 500000'), findsOneWidget);
+      expect(find.text('100 remaining · 0 reserved'), findsOneWidget);
+      expect(find.text(_narrationBalance(usage)), findsOneWidget);
+      expect(_usageStatuses(client), [200, 200, 200]);
       expect(identity.signIns, 0);
-      expect(narrationApi.registrations, 0);
-      expect(narrationApi.requests, isEmpty);
+      expect(
+        client.exchanges.where(
+          (exchange) => exchange.path == '/v1/narration/books',
+        ),
+        isEmpty,
+      );
       expect(
         (await store.load(controller.catalog.books.single)).cloudBookId,
         isNull,
       );
     },
+    timeout: devApiTimeout,
   );
 
-  for (final (kind, heading) in [
-    (AccountUsageFailureKind.offline, 'You are offline'),
-    (AccountUsageFailureKind.attestation, 'App verification required'),
-    (AccountUsageFailureKind.service, 'Usage service unavailable'),
+  for (final (kind, heading, message) in [
+    (
+      AccountUsageFailureKind.offline,
+      'You are offline',
+      'Connect to the internet to view account usage.',
+    ),
+    (
+      AccountUsageFailureKind.attestation,
+      'App verification required',
+      'Account authentication or App Check could not be verified.',
+    ),
+    (
+      AccountUsageFailureKind.service,
+      'Usage service unavailable',
+      'Account usage is temporarily unavailable.',
+    ),
   ]) {
     testWidgets('usage ${kind.name} failure is visible and retryable', (
       tester,
     ) async {
-      final identity = FakeCloudIdentity()..email = 'reader@example.test';
-      final api = FakeAccountApi();
-      final narrationApi = FakeNarrationApi();
+      final client = DevApiClient.create();
+      final identity = await _sharedIdentity(tester);
+      final baseUri = DevApiEnvironment.instance.baseUri;
+      final narrationApi = HttpNarrationApi(
+        identity: identity,
+        client: client,
+        baseUri: baseUri,
+      );
       final store = MemoryNarrationStore();
       final controller = await _accountController(
         identity: identity,
-        accountApi: api,
+        accountApi: HttpAccountApi(
+          identity: identity,
+          client: client,
+          baseUri: baseUri,
+        ),
         narrationApi: narrationApi,
         narrationStore: store,
       );
       await _mount(tester, suppliedController: controller);
-      await _section(tester, 'Usage & allowance');
-      expect(find.textContaining('123456 of 500000'), findsOneWidget);
-      final pending = Completer<AccountUsage>();
-      api.response = () => pending.future;
+      await _section(tester, 'Usage & allowance', settle: false);
+      await pumpUntilDev(tester, () => controller.accountUsage != null);
+      await tester.pumpAndSettle();
+      expect(find.text('Narration characters remaining'), findsOneWidget);
+      switch (kind) {
+        case AccountUsageFailureKind.offline:
+          client.failNext(_isUsage);
+        case AccountUsageFailureKind.attestation:
+          identity.rejectAppCheck = true;
+        case AccountUsageFailureKind.service:
+          client.missingRoute(_isUsage);
+      }
       await tester.tap(find.text('Refresh allowance'));
       await tester.pump();
-      expect(find.textContaining('123456 of 500000'), findsNothing);
-      pending.completeError(AccountUsageException(kind, 'Please try again.'));
+      expect(find.text('Narration characters remaining'), findsNothing);
+      await pumpUntilDev(tester, () => controller.usageError != null);
       await tester.pumpAndSettle();
       expect(find.text(heading), findsOneWidget);
-      expect(find.text('Please try again.'), findsOneWidget);
+      expect(find.text(message), findsOneWidget);
       expect(
         tester
             .widget<OutlinedButton>(
@@ -276,72 +357,98 @@ void main() {
             .onPressed,
         isNotNull,
       );
-      api.response = () async => testAccountUsage();
+      identity.rejectAppCheck = false;
       await tester.tap(find.text('Refresh allowance'));
+      await tester.pump();
+      await pumpUntilDev(tester, () => controller.accountUsage != null);
       await tester.pumpAndSettle();
       expect(find.text(heading), findsNothing);
-      expect(find.textContaining('123456 of 500000'), findsOneWidget);
-      expect(api.requests, 3);
-      expect(identity.email, 'reader@example.test');
+      expect(
+        find.text(_narrationBalance(controller.accountUsage!)),
+        findsOneWidget,
+      );
+      expect(_usageStatuses(client), [
+        200,
+        switch (kind) {
+          AccountUsageFailureKind.offline => null,
+          AccountUsageFailureKind.attestation => 401,
+          AccountUsageFailureKind.service => 404,
+        },
+        200,
+      ]);
+      expect(identity.email, 'dev-api-test-shared@dev-api.test');
       expect(identity.signIns, 0);
-      expect(narrationApi.registrations, 0);
-      expect(narrationApi.requests, isEmpty);
+      expect(
+        client.exchanges.where(
+          (exchange) => exchange.path == '/v1/narration/books',
+        ),
+        isEmpty,
+      );
       expect(
         (await store.load(controller.catalog.books.single)).cloudBookId,
         isNull,
       );
-    });
+    }, timeout: devApiTimeout);
   }
 
   for (final switchAccount in [false, true]) {
     testWidgets(
       'late usage after ${switchAccount ? 'account switch' : 'sign-out'} cannot restore balances',
       (tester) async {
-        final identity = FakeCloudIdentity()..email = 'reader@example.test';
-        final pending = Completer<AccountUsage>();
-        final api = FakeAccountApi()..response = () => pending.future;
+        final client = DevApiClient.create();
+        final identity = await _sharedIdentity(tester);
+        final hold = client.hold(_isUsage);
+        final held = _heldOnce(hold);
         final controller = await _accountController(
           identity: identity,
-          accountApi: api,
+          accountApi: HttpAccountApi(
+            identity: identity,
+            client: client,
+            baseUri: DevApiEnvironment.instance.baseUri,
+          ),
         );
         await _mount(tester, suppliedController: controller);
         await _section(tester, 'Usage & allowance', settle: false);
+        await pumpUntilDev(tester, held);
         if (switchAccount) {
-          identity.email = 'other@example.test';
+          await tester.runAsync(
+            () => identity.switchAccount('dev-api-test-shared-b'),
+          );
           await controller.refreshCloudAccount();
         } else {
           await controller.signOutOfCloud();
         }
         await tester.pumpAndSettle();
-        pending.complete(
-          testAccountUsage(
-            illustrationCreditsRemaining: 20,
-            illustrationCreditsReserved: 3,
-          ),
-        );
+        hold.release();
+        await pumpUntilDev(tester, () => _usageStatuses(client).isNotEmpty);
         await tester.pumpAndSettle();
         expect(find.byType(CircularProgressIndicator), findsNothing);
-        expect(find.textContaining('123456 of 500000'), findsNothing);
-        expect(find.text('20 remaining · 3 reserved'), findsNothing);
+        expect(find.text('Narration characters remaining'), findsNothing);
+        expect(find.text('Illustration credits'), findsNothing);
         expect(controller.accountUsage, isNull);
-        expect(api.requests, 1);
+        expect(_usageStatuses(client), [200]);
         if (switchAccount) {
-          expect(controller.cloudEmail, 'other@example.test');
-          api.response = () async => testAccountUsage();
+          expect(controller.cloudEmail, 'dev-api-test-shared-b@dev-api.test');
           await tester.tap(find.text('Refresh allowance'));
+          await tester.pump();
+          await pumpUntilDev(tester, () => controller.accountUsage != null);
           await tester.pumpAndSettle();
-          expect(api.requests, 2);
-          expect(find.text('Not activated'), findsOneWidget);
+          expect(_usageStatuses(client), [200, 200]);
+          expect(find.text('Narration characters remaining'), findsOneWidget);
         } else {
           expect(find.text('Sign in to view your allowance.'), findsOneWidget);
         }
       },
+      timeout: devApiTimeout,
     );
   }
 
-  for (final failureStatus in [404, 503]) {
+  for (final (failure, failureStatus, failureMessage) in [
+    ('missing endpoint', 404, 'Cloud service error (404).'),
+    ('rejected credentials', 401, 'Authentication and App Check are required.'),
+  ]) {
     testWidgets(
-      'account deletion $failureStatus preserves local state and a later 204 clears cloud registration',
+      'account deletion $failure ($failureStatus) preserves local state and a later 204 clears cloud registration',
       (tester) async {
         const anchor = TextPosition(
           version: 1,
@@ -353,7 +460,9 @@ void main() {
           position: anchor,
           progress: .3,
         ).copyWith(wordCount: 42);
-        final identity = FakeCloudIdentity()..email = 'reader@example.test';
+        final client = DevApiClient.create();
+        final identity = (await tester.runAsync(DevApiIdentity.disposable))!;
+        final email = identity.email!;
         final store = MemoryNarrationStore();
         final registration = NarrationManifest(
           account: 'account',
@@ -377,13 +486,7 @@ void main() {
           ),
         );
         await illustrations.saveManifest(book, illustrationConsent);
-        final requests = <http.Request>[];
-        var deletion = Completer<http.Response>();
-        final client = MockClient((request) {
-          requests.add(request);
-          return deletion.future;
-        });
-        addTearDown(client.close);
+        final baseUri = DevApiEnvironment.instance.baseUri;
         final controller = await _accountController(
           identity: identity,
           book: book,
@@ -392,12 +495,12 @@ void main() {
           accountApi: HttpAccountApi(
             identity: identity,
             client: client,
-            baseUri: Uri.parse('https://example.test'),
+            baseUri: baseUri,
           ),
           narrationApi: HttpNarrationApi(
             identity: identity,
             client: client,
-            baseUri: Uri.parse('https://example.test'),
+            baseUri: baseUri,
           ),
         );
         await _mount(tester, suppliedController: controller);
@@ -410,18 +513,24 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.text('Cancel'));
         await tester.pumpAndSettle();
-        expect(requests, isEmpty);
+        expect(client.exchanges, isEmpty);
         expect(identity.reauthentications, 0);
 
+        if (failureStatus == 404) {
+          client.missingRoute(_isAccountDeletion);
+        } else {
+          identity.rejectAppCheck = true;
+        }
+        final deletion = client.hold(_isAccountDeletion);
+        final held = _heldOnce(deletion);
         await tester.tap(deleteButton);
         await tester.pumpAndSettle();
         await tester.tap(
           find.widgetWithText(FilledButton, 'Delete cloud account'),
         );
-        await tester.pumpAndSettle();
-        expect(requests, hasLength(1));
-        expect(requests.single.method, 'DELETE');
-        expect(requests.single.url.path, '/v1/account');
+        await tester.pump();
+        await pumpUntilDev(tester, held);
+        expect(identity.reauthentications, 1);
         expect(controller.cloudAccountBusy, true);
         expect(tester.widget<OutlinedButton>(deleteButton).onPressed, isNull);
         expect(
@@ -433,33 +542,40 @@ void main() {
           isNull,
         );
         await tester.tap(deleteButton);
-        await tester.pump();
-        expect(requests, hasLength(1));
-        deletion.complete(http.Response('', failureStatus));
         await tester.pumpAndSettle();
-        expect(
-          find.text('Cloud service error ($failureStatus).'),
-          findsOneWidget,
-        );
-        expect(find.text('reader@example.test'), findsWidgets);
+        expect(find.text('Delete cloud account?'), findsNothing);
+        deletion.release();
+        await pumpUntilDev(tester, () => !controller.cloudAccountBusy);
+        await tester.pumpAndSettle();
+        expect(find.text(failureMessage), findsOneWidget);
+        expect(client.exchanges.map((exchange) => '$exchange'), [
+          'DELETE /v1/account -> $failureStatus',
+        ]);
+        expect(find.text(email), findsWidgets);
         expect(identity.deletions, 0);
-        expect(identity.email, 'reader@example.test');
+        expect(identity.email, email);
         expect(controller.cloudAccountBusy, false);
         expect((await store.load(book)).toJson(), registration.toJson());
         expect(await store.cached(book, 'cached-audio'), isNotNull);
         expect((await illustrations.loadManifest(book)).profile?.enabled, true);
         expect(controller.catalog.books.single.toJson(), book.toJson());
 
-        deletion = Completer<http.Response>();
+        identity.rejectAppCheck = false;
         await tester.tap(deleteButton);
         await tester.pumpAndSettle();
         await tester.tap(
           find.widgetWithText(FilledButton, 'Delete cloud account'),
         );
+        await tester.pump();
+        await pumpUntilDev(
+          tester,
+          () => identity.deletions == 1 && !controller.cloudAccountBusy,
+        );
         await tester.pumpAndSettle();
-        expect(requests, hasLength(2));
-        deletion.complete(http.Response('', 204));
-        await tester.pumpAndSettle();
+        expect(client.exchanges.map((exchange) => '$exchange'), [
+          'DELETE /v1/account -> $failureStatus',
+          'DELETE /v1/account -> 204',
+        ]);
         expect(find.text('You are signed out'), findsOneWidget);
         expect(find.text('Sign in with Google'), findsOneWidget);
         expect(deleteButton, findsNothing);
@@ -482,6 +598,7 @@ void main() {
         );
         expect(controller.catalog.books.single.progress, .3);
       },
+      timeout: devApiTimeout,
     );
   }
 

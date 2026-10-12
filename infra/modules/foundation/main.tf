@@ -256,3 +256,12 @@ data "google_firebase_apple_app_config" "macos" {
   # Read only after the provider exists, including on the first core apply.
   depends_on = [google_identity_platform_default_supported_idp_config.google]
 }
+
+# Dev-API tests mint Firebase custom tokens and App Check tokens by signing as the
+# Admin SDK account; owners lack signBlob, so grant it explicitly and only here.
+resource "google_service_account_iam_member" "api_test_token_creator" {
+  for_each           = toset(var.api_test_principals)
+  service_account_id = "projects/${var.project_id}/serviceAccounts/firebase-adminsdk-fbsvc@${var.project_id}.iam.gserviceaccount.com"
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = each.value
+}

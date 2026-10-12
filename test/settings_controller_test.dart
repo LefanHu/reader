@@ -2,13 +2,12 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
-import 'package:reader/account/account_usage.dart';
 import 'package:reader/account/account_usage_exception.dart';
 import 'package:reader/account/api.dart';
 import 'package:reader/account/http_account_api.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/app/reader_controller.dart';
+import 'package:reader/identity/cloud_identity.dart';
 import 'package:reader/narration/api.dart';
 import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/player.dart';
@@ -22,9 +21,11 @@ import 'package:reader/text/document_store.dart';
 import 'package:reader/text/text_position.dart';
 
 import 'fixtures/catalog_book.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
 import 'support/memory_document_store.dart';
 import 'support/memory_settings_store.dart';
-import 'fixtures/account_usage.dart';
 import 'support/fake_account_api.dart';
 import 'support/cloud_identity_fake.dart';
 import 'support/fake_narration_api.dart';
@@ -53,9 +54,21 @@ class _FailingClearStore extends MemoryNarrationStore {
   }
 }
 
+/// Matches the read-only usage request that the coordinator fences.
+bool _isUsage(http.BaseRequest request) =>
+    request.method == 'GET' && request.url.path == '/v1/account/usage';
+
+/// Real account boundary on the dev backend sharing [client]'s exchange log.
+HttpAccountApi _devAccountApi(CloudIdentity identity, DevApiClient client) =>
+    HttpAccountApi(
+      identity: identity,
+      client: client,
+      baseUri: DevApiEnvironment.instance.baseUri,
+    );
+
 Future<ReaderController> _controller({
-  AccountApi? api,
-  FakeCloudIdentity? identity,
+  AccountApi? accountApi,
+  CloudIdentity? identity,
   MemorySettingsStore? settingsStore,
   NarrationApi? narrationApi,
   NarrationPlayer? narrationPlayer,
@@ -66,7 +79,7 @@ Future<ReaderController> _controller({
   final controller = await testController(
     books: [testBook()],
     settingsStore: settingsStore,
-    accountApi: api,
+    accountApi: accountApi,
     cloudIdentity: identity,
     narrationApi: narrationApi,
     narrationPlayer: narrationPlayer,
@@ -244,7 +257,7 @@ void main() {
   test('usage is not requested while signed out or unconfigured', () async {
     final api = FakeAccountApi();
     final identity = FakeCloudIdentity();
-    final controller = await _controller(api: api, identity: identity);
+    final controller = await _controller(accountApi: api, identity: identity);
     await controller.refreshAccountUsage();
     expect(api.requests, 0);
     identity.email = 'reader@example.test';
@@ -258,82 +271,103 @@ void main() {
   test(
     'disposal rejects pending usage and prevents further requests',
     () async {
-      final pending = Completer<AccountUsage>();
-      final api = FakeAccountApi()..response = () => pending.future;
-      final identity = FakeCloudIdentity()..email = 'reader@example.test';
+      final client = DevApiClient.create();
+      final identity = await DevApiIdentity.shared();
+      final hold = client.hold(_isUsage);
       final controller = await _controller(
-        api: api,
+        accountApi: _devAccountApi(identity, client),
         identity: identity,
         disposeOnTeardown: false,
       );
       var notifications = 0;
       controller.addListener(() => notifications++);
       final refresh = controller.refreshAccountUsage();
+      await hold.started;
       final beforeDispose = notifications;
       controller.dispose();
-      pending.complete(testAccountUsage());
+      hold.release();
       await refresh;
       expect(controller.accountUsage, isNull);
       expect(notifications, beforeDispose);
       await controller.refreshAccountUsage();
-      expect(api.requests, 1);
+      expect(client.exchanges.map((exchange) => '$exchange'), [
+        'GET /v1/account/usage -> 200',
+      ]);
     },
+    timeout: devApiTimeout,
   );
 
   test(
     'sign-out fences a pending usage response and prevents duplicate refreshes',
     () async {
-      final pending = Completer<AccountUsage>();
-      final api = FakeAccountApi()..response = () => pending.future;
-      final identity = FakeCloudIdentity()..email = 'reader@example.test';
-      final controller = await _controller(api: api, identity: identity);
+      final client = DevApiClient.create();
+      final identity = await DevApiIdentity.shared();
+      final hold = client.hold(_isUsage);
+      final controller = await _controller(
+        accountApi: _devAccountApi(identity, client),
+        identity: identity,
+      );
       final refresh = controller.refreshAccountUsage();
       await controller.refreshAccountUsage();
-      expect(api.requests, 1);
+      await hold.started;
       await controller.signOutOfCloud();
-      pending.complete(testAccountUsage());
+      hold.release();
       await refresh;
       expect(controller.accountUsage, isNull);
       expect(controller.usageLoading, false);
+      expect(client.exchanges.map((exchange) => '$exchange'), [
+        'GET /v1/account/usage -> 200',
+      ]);
     },
+    timeout: devApiTimeout,
   );
 
   test(
     'account switch discards the preceding account usage response',
     () async {
-      final pending = Completer<AccountUsage>();
-      final api = FakeAccountApi()..response = () => pending.future;
-      final identity = FakeCloudIdentity()..email = 'first@example.test';
-      final controller = await _controller(api: api, identity: identity);
+      final client = DevApiClient.create();
+      final identity = await DevApiIdentity.shared();
+      final hold = client.hold(_isUsage);
+      final controller = await _controller(
+        accountApi: _devAccountApi(identity, client),
+        identity: identity,
+      );
       final refresh = controller.refreshAccountUsage();
-      identity.email = 'second@example.test';
+      await hold.started;
+      await identity.switchAccount('dev-api-test-shared-b');
       await controller.refreshCloudAccount();
-      pending.complete(testAccountUsage());
+      hold.release();
       await refresh;
-      expect(controller.cloudEmail, 'second@example.test');
+      expect(controller.cloudEmail, 'dev-api-test-shared-b@dev-api.test');
       expect(controller.accountUsage, isNull);
+      expect(client.exchanges.map((exchange) => '$exchange'), [
+        'GET /v1/account/usage -> 200',
+      ]);
     },
+    timeout: devApiTimeout,
   );
 
   test(
     'failed refresh removes old balances and preserves a categorized failure',
     () async {
-      final api = FakeAccountApi();
-      final identity = FakeCloudIdentity()..email = 'reader@example.test';
-      final controller = await _controller(api: api, identity: identity);
+      final client = DevApiClient.create();
+      final identity = await DevApiIdentity.shared();
+      final api = _devAccountApi(identity, client);
+      final controller = await _controller(accountApi: api, identity: identity);
       await controller.refreshAccountUsage();
-      expect(controller.accountUsage!.narrationRemaining, 123456);
-      api.response = () => Future.error(
-        const AccountUsageException(
-          AccountUsageFailureKind.offline,
-          'Connect to the internet.',
-        ),
+      final snapshot = await api.usage();
+      expect(
+        controller.accountUsage!.narrationRemaining,
+        snapshot.narrationRemaining,
       );
+      client.failNext(_isUsage);
       await controller.refreshAccountUsage();
       expect(controller.accountUsage, isNull);
       expect(controller.usageFailure, AccountUsageFailureKind.offline);
-      expect(controller.cloudEmail, 'reader@example.test');
+      expect(controller.cloudEmail, identity.email);
+      expect(client.exchanges.last.status, isNull);
     },
+    timeout: devApiTimeout,
   );
 
   test(
@@ -352,16 +386,16 @@ void main() {
   );
 
   test('local cleanup failure reflects deleted identity and retains the complete anchor', () async {
-    final identity = FakeCloudIdentity()..email = 'reader@example.test';
-    final client = MockClient((request) async {
-      expect(request.method, 'DELETE');
-      expect(request.url.path, '/v1/account');
-      return http.Response('', 204);
-    });
-    final baseUri = Uri.parse('https://example.test');
+    final client = DevApiClient.create();
+    final identity = await DevApiIdentity.disposable();
+    final baseUri = DevApiEnvironment.instance.baseUri;
     final controller = await _controller(
       identity: identity,
-      api: HttpAccountApi(identity: identity, baseUri: baseUri, client: client),
+      accountApi: HttpAccountApi(
+        identity: identity,
+        baseUri: baseUri,
+        client: client,
+      ),
       narrationApi: HttpNarrationApi(
         identity: identity,
         baseUri: baseUri,
@@ -388,11 +422,14 @@ void main() {
         ),
       ),
     );
+    expect(client.exchanges.map((exchange) => '$exchange'), [
+      'DELETE /v1/account -> 204',
+    ]);
     expect(identity.deletions, 1);
     expect(identity.email, isNull);
     expect(controller.cloudEmail, identity.email);
     expect(controller.cloudAccountBusy, false);
     expect(controller.catalog.books.single.lastPosition, anchor);
     expect(controller.catalog.books.single.progress, .3);
-  });
+  }, timeout: devApiTimeout);
 }

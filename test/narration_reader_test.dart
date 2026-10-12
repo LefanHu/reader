@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/preferences/reading_mode.dart';
 import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/session.dart';
 import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/reader/reader_screen.dart';
@@ -13,6 +14,11 @@ import 'package:reader/text/viewport.dart';
 
 import 'fixtures/catalog_book.dart';
 import 'support/controller_lifecycle.dart';
+import 'support/dev_api_books.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
+import 'support/dev_api_pump.dart';
 import 'support/memory_document_store.dart';
 import 'support/test_controller.dart';
 import 'support/fake_account_api.dart';
@@ -27,8 +33,15 @@ void main() {
   testWidgets(
     'Listen opens registered controls without a consent dialog; hidden button loses semantics',
     (tester) async {
-      final api = FakeNarrationApi(), player = FakeNarrationPlayer();
-      final book = testBook();
+      final client = DevApiClient.create();
+      final identity = await tester.runAsync(DevApiIdentity.shared);
+      final api = HttpNarrationApi(
+        identity: identity!,
+        client: client,
+        baseUri: DevApiEnvironment.instance.baseUri,
+      );
+      final player = FakeNarrationPlayer();
+      final book = devBook();
       final documents = MemoryDocumentStore();
       final controller = await testController(
         books: [book],
@@ -50,11 +63,21 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Listen'));
+      await pumpUntilDev(
+        tester,
+        () => controller.narration!.manifest.cloudBookId != null,
+      );
+      final cloudBookId = controller.narration!.manifest.cloudBookId!;
+      addTearDown(() => tester.runAsync(() => api.deleteBook(cloudBookId)));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
       expect(find.byType(NarrationSheet), findsOneWidget);
-      expect(api.registrations, 1);
-      expect(api.requests, isEmpty);
+      final registrations = client.exchanges.where(
+        (exchange) =>
+            exchange.method == 'POST' && exchange.path == '/v1/narration/books',
+      );
+      expect(registrations.map((exchange) => exchange.status), [200]);
+      expect(cloudBookId, matches(RegExp(r'^[a-f0-9]{64}$')));
       expect(player.playing, isFalse);
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
@@ -65,6 +88,7 @@ void main() {
       expect(find.bySemanticsLabel('Listen'), findsNothing);
       semantics.dispose();
     },
+    timeout: devApiTimeout,
   );
 
   testWidgets(

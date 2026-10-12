@@ -30,7 +30,6 @@ class FakeBookAnalysisApi implements BookAnalysisApi {
   bool configured = true;
   bool enabled = true;
   bool signedOut = false;
-  bool offline = false;
   bool failProvider = false;
   bool lostChunkResponse = false;
   String accountKey = sha256
@@ -39,7 +38,6 @@ class FakeBookAnalysisApi implements BookAnalysisApi {
   Future<void> Function(String operation)? beforeRequest;
   final Map<String, EntityKind> surfaces;
   int configCalls = 0;
-  int progressCalls = 0;
   final registrations = <CatalogBook>[];
   final manifests = <AnalysisSourceManifest>[];
   final uploads = <AnalysisChunkInput>[];
@@ -60,9 +58,6 @@ class FakeBookAnalysisApi implements BookAnalysisApi {
         CloudFailureKind.signedOut,
         'No session.',
       );
-    }
-    if (offline) {
-      throw const CloudServiceException(CloudFailureKind.offline, 'Offline.');
     }
   }
 
@@ -170,7 +165,6 @@ class FakeBookAnalysisApi implements BookAnalysisApi {
 
   @override
   Future<AnalysisProgress> getProgress(String generationId) async {
-    progressCalls++;
     await _before('progress');
     final generation = _generations[generationId]!;
     final manifest = generation.manifest;

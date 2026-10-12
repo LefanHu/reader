@@ -5,9 +5,12 @@ import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/identity/cloud_identity.dart';
+import 'package:reader/illustrations/api.dart';
 import 'package:reader/illustrations/book_text_index.dart';
 import 'package:reader/illustrations/chapter_text_index.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
+import 'package:reader/illustrations/http_illustration_api.dart';
 import 'package:reader/illustrations/illustration_coordinator.dart';
 import 'package:reader/illustrations/illustration_figure.dart';
 import 'package:reader/illustrations/illustration_job_result.dart';
@@ -21,11 +24,19 @@ import 'package:reader/illustrations/scene_anchor.dart';
 import 'package:reader/illustrations/unlocked_illustration.dart';
 import 'package:reader/text/text_position.dart';
 
+import 'support/dev_api_books.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
 import 'support/cloud_identity_fake.dart';
 import 'support/fake_illustration_api.dart';
 import 'support/fake_text_indexer.dart';
 import 'support/illustration_image_fixture.dart';
 import 'support/memory_cloud_deletion_outbox.dart';
+
+/// Image source on dev that the lifecycle confirm test switches to; dev
+/// offers only `openai` and `diagnostic`, so the server profile starts on `openai`.
+const _provider = 'diagnostic';
 
 const _sceneId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _anchor = SceneAnchor(
@@ -453,43 +464,69 @@ void main() {
   });
 
   test('confirm saves server revision/current provider, retaining admitted jobs and art', () async {
-    final harness = await _Harness.create();
-    final old = harness.scene;
-    harness.api.currentProfile = const IllustrationProfile(
-      enabled: true,
-      style: 'Ink',
-      density: 3,
-      providerId: 'google',
-      revision: 4,
-      cloudBookId: 'cloud-book',
+    final identity = await DevApiIdentity.shared();
+    final client = DevApiClient.create();
+    final api = HttpIllustrationApi(
+      identity: identity,
+      client: client,
+      baseUri: DevApiEnvironment.instance.baseUri,
     );
+    final book = devBook();
+    final registered = await api.registerBook(book, chapterCount: 1);
+    final id = registered.cloudBookId!;
+    deleteDevBookAfterTest(api, id);
+    final current = await api.confirmProfile(
+      IllustrationProfile(
+        enabled: true,
+        style: 'Ink',
+        density: 3,
+        providerId: 'openai',
+        revision: 0,
+        cloudBookId: id,
+      ),
+    );
+    final harness = await _Harness.create(
+      cloudApi: api,
+      identity: identity,
+      cloudBookId: id,
+      hash: book.hash,
+    );
+    harness.analysisReady = false;
+    final old = harness.scene;
+    client.exchanges.clear();
     await harness.coordinator.confirm(
       harness.book,
       setup: IllustrationSetup(
-        cloudBookId: 'cloud-book',
+        cloudBookId: id,
         suggestedStyle: 'Watercolour',
         alternativeStyles: const [],
         estimatedCredits: 3,
-        configuration: FakeIllustrationApi.configuration,
-        currentProfile: harness.api.currentProfile,
+        configuration: await api.getConfiguration(),
+        currentProfile: current,
       ),
       selection: const IllustrationSelection(
         style: 'Watercolour',
-        providerId: 'google',
+        providerId: _provider,
       ),
     );
-    expect(harness.api.confirmedProfiles.single.providerId, 'google');
-    expect(harness.api.confirmedProfiles.single.revision, 4);
-    expect(harness.coordinator.manifestFor(harness.book).profile!.revision, 5);
-    expect(harness.api.createdChapterOrdinals, isEmpty);
+    expect(
+      client.exchanges
+          .where((e) => e.method == 'PUT')
+          .map((e) => (e.path, e.status)),
+      [('/v1/books/$id/profile', 200)],
+    );
+    void expectSaved() {
+      final manifest = harness.coordinator.manifestFor(harness.book);
+      expect(manifest.profile!.revision, 2);
+      expect(manifest.profile!.providerId, _provider);
+      expect(manifest.chapterJobs, {0: 'job-0'});
+    }
+
+    expectSaved();
     expect(harness.scene.localImagePath, old.localImagePath);
     await harness.reopen();
-    expect(
-      harness.coordinator.manifestFor(harness.book).profile!.providerId,
-      'google',
-    );
-    expect(harness.coordinator.manifestFor(harness.book).profile!.revision, 5);
-  });
+    expectSaved();
+  }, timeout: devApiTimeout);
 
   test(
     'version deletion is scene-owned and ignores unrelated files and symlinks',
@@ -593,12 +630,23 @@ void main() {
 }
 
 class _Harness {
-  _Harness(this.root, this.book, this.store, this.api);
+  _Harness(
+    this.root,
+    this.book,
+    this.store,
+    this.api,
+    this.cloudApi,
+    this.identity,
+  );
 
   final Directory root;
   final CatalogBook book;
   final _FaultingStore store;
   final FakeIllustrationApi api;
+
+  /// Client the coordinator talks to; [api] unless a real dev client is injected.
+  final IllustrationApi cloudApi;
+  final CloudIdentity identity;
   late IllustrationCoordinator coordinator;
   IllustrationScene get scene => coordinator.manifestFor(book).scenes.single;
   Directory get images =>
@@ -607,12 +655,16 @@ class _Harness {
   static Future<_Harness> create({
     IllustrationSceneState state = IllustrationSceneState.hidden,
     FakeIllustrationApi? api,
+    IllustrationApi? cloudApi,
+    CloudIdentity? identity,
+    String cloudBookId = 'cloud-book',
+    String? hash,
   }) async {
     final root = await Directory.systemTemp.createTemp(
       'illustration-lifecycle-',
     );
     addTearDown(() => root.delete(recursive: true));
-    final hash = 'a' * 64;
+    hash ??= 'a' * 64;
     final owned = Directory('${root.path}/books/$hash');
     await owned.create(recursive: true);
     final source = File('${owned.path}/book.epub');
@@ -650,7 +702,14 @@ class _Harness {
       book,
       IllustrationManifest(
         bookHash: hash,
-        profile: _profile,
+        profile: IllustrationProfile(
+          enabled: _profile.enabled,
+          style: _profile.style,
+          density: _profile.density,
+          providerId: _profile.providerId,
+          revision: _profile.revision,
+          cloudBookId: cloudBookId,
+        ),
         chapterJobs: const {0: 'job-0'},
         scenes: [
           IllustrationScene(
@@ -666,11 +725,14 @@ class _Harness {
         ],
       ),
     );
+    final fake = api ?? FakeIllustrationApi(configured: true);
     final harness = _Harness(
       root,
       book,
       store,
-      api ?? FakeIllustrationApi(configured: true),
+      fake,
+      cloudApi ?? fake,
+      identity ?? FakeCloudIdentity(),
     );
     await harness.reopen();
     return harness;
@@ -683,8 +745,8 @@ class _Harness {
     coordinator = IllustrationCoordinator(
       store: store,
       textIndexer: FakeTextIndexer(chapters: const [_chapter]),
-      api: api,
-      identity: FakeCloudIdentity(),
+      api: cloudApi,
+      identity: identity,
       deletionOutbox: MemoryCloudDeletionOutbox(),
       currentBook: (_) => book,
       narrationOwnsPosition: (_) => false,

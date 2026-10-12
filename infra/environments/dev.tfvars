@@ -10,7 +10,9 @@ illustrations_bucket = "reader-35ca1-illustrations"
 budget_amount_usd    = 25
 budget_currency      = "CAD"
 alert_email          = "lefanhu1@gmail.com"
-state_bucket         = "reader-iac-35ca1-tfstate"
+# Dev-API tests (flutter test) mint test identities by signing as the Admin SDK account.
+api_test_principals = ["user:lefanhu1@gmail.com"]
+state_bucket        = "reader-iac-35ca1-tfstate"
 # Dev-only generation smoke testing; native rollout checks remain required for production.
 illustrations_enabled       = true
 narration_enabled           = true

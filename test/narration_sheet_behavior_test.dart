@@ -3,16 +3,22 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/narration/api.dart';
+import 'package:reader/narration/http_narration_api.dart';
 import 'package:reader/narration/narration_manifest.dart';
-import 'package:reader/narration/narration_registration.dart';
 import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/text_position.dart';
 import 'package:reader/theme.dart';
 
-import 'fixtures/catalog_book.dart';
+import 'support/dev_api_books.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
+import 'support/dev_api_pump.dart';
 import 'support/fake_narration_api.dart';
 import 'support/fake_narration_player.dart';
 import 'support/memory_narration_store.dart';
@@ -29,8 +35,11 @@ void main() {
   testWidgets('sheet is visible throughout attachment and registration', (
     tester,
   ) async {
-    final api = FakeNarrationApi()
-      ..registrationGate = Completer<NarrationRegistration>();
+    final client = DevApiClient.create();
+    final api = await _devApi(tester, client);
+    final hold = client.hold(_isRegistration);
+    var held = false;
+    unawaited(hold.started.then((_) => held = true));
     final store = _GatedNarrationStore();
     final controller = await _mount(tester, api: api, store: store);
 
@@ -47,50 +56,53 @@ void main() {
     );
 
     store.loaded.complete();
-    await tester.pump();
+    await pumpUntilDev(tester, () => held);
     expect(find.byKey(_loading), findsOneWidget);
-    expect(api.registrations, 1);
-    api.registrationGate!.complete(
-      const NarrationRegistration('account', 'cloud-book', 500000),
-    );
+    hold.release();
+    final cloudBookId = await _registered(tester, controller, api);
     await tester.pumpAndSettle();
     expect(find.byKey(_loading), findsNothing);
     expect(find.text('Paused'), findsOneWidget);
     expect(find.text('Play'), findsOneWidget);
-    expect(api.requests, isEmpty);
+    expect(_registrationStatuses(client), [200]);
+    expect(cloudBookId, matches(RegExp(r'^[a-f0-9]{64}$')));
     expect(controller.catalog.books.single.lastPosition, _committed);
-  });
+  }, timeout: devApiTimeout);
 
   testWidgets('registration errors stay visible and Retry preserves reading', (
     tester,
   ) async {
-    final api = FakeNarrationApi()
-      ..registrationGate = Completer<NarrationRegistration>();
+    const offline = 'Connect to the internet to use cloud features.';
+    final client = DevApiClient.create();
+    final api = await _devApi(tester, client);
+    client.failNext(_isRegistration);
     final controller = await _mount(tester, api: api);
     await tester.tap(find.text('Open listening'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    api.registrationGate!.completeError(StateError('Offline registration'));
+    await pumpUntilDev(
+      tester,
+      () => find.textContaining(offline).evaluate().isNotEmpty,
+    );
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Offline registration'), findsOneWidget);
+    expect(find.textContaining(offline), findsOneWidget);
     expect(find.byKey(_retry), findsOneWidget);
     expect(find.byType(SnackBar), findsNothing);
     expect(controller.catalog.books.single.lastPosition, _committed);
     expect(controller.catalog.books.single.progress, .2);
 
-    api.registrationGate = null;
     await tester.tap(find.byKey(_retry));
+    await _registered(tester, controller, api);
     await tester.pumpAndSettle();
-    expect(api.registrations, 2);
-    expect(find.textContaining('Offline registration'), findsNothing);
+    expect(_registrationStatuses(client), [null, 200]);
+    expect(find.textContaining(offline), findsNothing);
     expect(find.text('Play'), findsOneWidget);
-    expect(api.requests, isEmpty);
     await tester.tap(find.byTooltip('Close listening controls'));
     await tester.pumpAndSettle();
     expect(find.text('Open listening'), findsOneWidget);
     expect(controller.catalog.books.single.lastPosition, _committed);
-  });
+  }, timeout: devApiTimeout);
 
   testWidgets(
     'selected playback shows buffering and retries without committing; settings are global',
@@ -200,10 +212,11 @@ void main() {
   }
 }
 
-/// Each sheet test uses real controller/session transactions and offline fakes.
+/// Each sheet test uses real controller/session transactions; [api] is an
+/// offline fake or a dev client.
 Future<ReaderController> _mount(
   WidgetTester tester, {
-  required FakeNarrationApi api,
+  required NarrationApi api,
   FakeNarrationPlayer? player,
   MemoryNarrationStore? store,
   MemorySettingsStore? settings,
@@ -213,7 +226,7 @@ Future<ReaderController> _mount(
 }) => pumpNarrationHarness(
   tester,
   api: api,
-  book: testBook(position: _committed, progress: .2),
+  book: devBook(position: _committed, progress: .2),
   player: player,
   store: store,
   settings: settings,
@@ -221,6 +234,41 @@ Future<ReaderController> _mount(
   theme: theme,
   textScale: textScale,
 );
+
+/// Real narration client on the shared dev identity.
+Future<HttpNarrationApi> _devApi(
+  WidgetTester tester,
+  DevApiClient client,
+) async => HttpNarrationApi(
+  identity: (await tester.runAsync(DevApiIdentity.shared))!,
+  client: client,
+  baseUri: DevApiEnvironment.instance.baseUri,
+);
+
+bool _isRegistration(http.BaseRequest request) =>
+    request.method == 'POST' && request.url.path == '/v1/narration/books';
+
+/// Statuses of narration registrations, null for injected network loss.
+List<int?> _registrationStatuses(DevApiClient client) => [
+  for (final exchange in client.exchanges)
+    if (exchange.method == 'POST' && exchange.path == '/v1/narration/books')
+      exchange.status,
+];
+
+/// Waits for dev registration and deletes the registered book at teardown.
+Future<String> _registered(
+  WidgetTester tester,
+  ReaderController controller,
+  HttpNarrationApi api,
+) async {
+  await pumpUntilDev(
+    tester,
+    () => controller.narration!.manifest.cloudBookId != null,
+  );
+  final cloudBookId = controller.narration!.manifest.cloudBookId!;
+  addTearDown(() => tester.runAsync(() => api.deleteBook(cloudBookId)));
+  return cloudBookId;
+}
 
 /// Delays local attachment independently of cloud authentication/registration.
 class _GatedNarrationStore extends MemoryNarrationStore {

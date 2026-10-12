@@ -20,13 +20,10 @@ class FakeIllustrationApi implements IllustrationApi {
   final bool configured;
   final deletedBooks = <String>[];
 
-  /// When set, `deleteBook` waits for it before recording, modelling a slow purge.
-  Completer<void>? deleteGate;
   final List<int> createdChapterOrdinals = [];
   final List<String> unlockedSceneIds = [];
   final Map<String, IllustrationJobResult> jobResults = {};
   IllustrationProfile? currentProfile;
-  final List<IllustrationProfile> confirmedProfiles = [];
   final List<String> regeneratedSceneIds = [];
   final Map<String, UnlockedIllustration> unlockedScenes = {};
 
@@ -100,7 +97,6 @@ class FakeIllustrationApi implements IllustrationApi {
   Future<IllustrationProfile> confirmProfile(
     IllustrationProfile profile,
   ) async {
-    confirmedProfiles.add(profile);
     final existing = currentProfile;
     if (existing != null &&
         existing.providerId == profile.providerId &&
@@ -136,7 +132,6 @@ class FakeIllustrationApi implements IllustrationApi {
 
   @override
   Future<void> deleteBook(String cloudBookId, {bool interactive = true}) async {
-    await deleteGate?.future;
     deletedBooks.add(cloudBookId);
   }
 

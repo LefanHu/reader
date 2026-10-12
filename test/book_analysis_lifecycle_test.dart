@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reader/book_analysis/api.dart';
+import 'package:reader/book_analysis/http_book_analysis_api.dart';
 import 'package:reader/book_analysis/analysis_coordinator.dart';
 import 'package:reader/book_analysis/analysis_entity.dart';
 import 'package:reader/book_analysis/book_analysis_state.dart';
@@ -8,6 +11,12 @@ import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/text/text_block.dart';
 import 'package:reader/text/text_position.dart';
 import 'package:reader/text/text_section.dart';
+import 'package:reader/illustrations/http_illustration_api.dart';
+
+import 'support/dev_api_books.dart';
+import 'support/dev_api_client.dart';
+import 'support/dev_api_environment.dart';
+import 'support/dev_api_identity.dart';
 
 import 'support/fake_book_analysis_api.dart';
 import 'support/memory_analysis_store.dart';
@@ -257,26 +266,54 @@ void main() {
   test(
     'late registration is handed to durable deletion owner rather than sidecar',
     () async {
-      final entered = Completer<void>();
-      final release = Completer<void>();
-      final h = _Harness();
+      final identity = await DevApiIdentity.shared();
+      final client = DevApiClient.create();
+      final baseUri = DevApiEnvironment.instance.baseUri;
+      final book = devBook();
+      final hold = client.hold(
+        (r) => r.method == 'POST' && r.url.path == '/v1/book-analysis/books',
+      );
+      final h = _Harness(
+        book: book,
+        remoteApi: HttpBookAnalysisApi(
+          identity: identity,
+          client: client,
+          baseUri: baseUri,
+        ),
+      );
       addTearDown(h.dispose);
-      h.api.beforeRequest = (operation) async {
-        if (operation == 'register') {
-          entered.complete();
-          await release.future;
-        }
-      };
       await h.start();
-      await entered.future;
+      await hold.started;
       h.coordinator.invalidateBook(h.book);
       h.books.clear();
-      release.complete();
-      await _until(() => h.abandoned.isNotEmpty);
-      expect(h.abandoned, [h.api.bookIdFor(h.book)]);
+      hold.release();
+      for (var i = 0; i < 1200 && h.abandoned.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      final registration = client.exchanges.singleWhere(
+        (e) => e.method == 'POST' && e.path == '/v1/book-analysis/books',
+      );
+      expect(registration.status, 200);
+      final bookId =
+          (jsonDecode(registration.body) as Map<String, dynamic>)['bookId']
+              as String;
+      deleteDevBookAfterTest(
+        HttpIllustrationApi(
+          identity: identity,
+          client: client,
+          baseUri: baseUri,
+        ),
+        bookId,
+      );
+      expect(bookId, matches(RegExp(r'^[a-f0-9]{40}$')));
+      expect(h.abandoned, [bookId]);
       expect(h.store.states[h.book.hash]?.cloudBookId, isNull);
-      expect(h.api.manifests, isEmpty);
+      expect(
+        client.exchanges.where((e) => e.path.contains('/generations')),
+        isEmpty,
+      );
     },
+    timeout: devApiTimeout,
   );
 
   test(
@@ -385,14 +422,20 @@ class _Harness {
   _Harness({
     this.consent = true,
     FakeBookAnalysisApi? api,
+    this.remoteApi,
+    CatalogBook? book,
     this.waiting = const Duration(milliseconds: 2),
-  }) : api = api ?? FakeBookAnalysisApi() {
-    books.add(book);
+  }) : api = api ?? FakeBookAnalysisApi(),
+       book = book ?? _book('a') {
+    books.add(this.book);
     _create();
   }
-  final book = _book('a');
+  final CatalogBook book;
   final books = <CatalogBook>[];
   final FakeBookAnalysisApi api;
+
+  /// Real transport that replaces [api] in the coordinator when provided.
+  final BookAnalysisApi? remoteApi;
   final store = MemoryAnalysisStore();
   final documents = MemoryDocumentStore(
     sections: [
@@ -425,7 +468,7 @@ class _Harness {
   BookAnalysisState get state => coordinator.states[book.hash]!;
   void _create() {
     coordinator = BookAnalysisCoordinator(
-      api: api,
+      api: remoteApi ?? api,
       store: store,
       documents: documents,
       books: () => books,
