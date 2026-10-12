@@ -57,7 +57,7 @@
 ## Validation
 
 - After Dart changes run `dart format lib test integration_test`, `flutter analyze`, and `flutter test`.
-- For shared reader/library changes run affected native scenarios on macOS and an iOS simulator when available; for platform integration changes build or run the platform.
+- For shared reader/library changes run affected native scenarios on an iOS simulator when available; for platform integration changes build or run the platform. macOS native scenarios are not required while the build host cannot build the macOS target.
 - Behavioral changes (selection, dictionary lookup) are checked by automated native interaction, clipboard, platform-call and committed-position assertions, not screenshots or screen recording.
 - After intentional visual changes regenerate and inspect affected goldens (Paper, Sepia, Dark; iOS lists and desktop grids, including revealed overlays); never accept baselines just because tests pass.
 - Run `npm run build` and `npm test` in `backend/` when backend behavior changes.
