@@ -40,7 +40,7 @@ docker build --platform linux/amd64 -t reader-backend-dev backend
 Required: `OPENAI_API_KEY`, `FINGERPRINT_SECRET`, `GOOGLE_CLOUD_PROJECT`,
 `ILLUSTRATION_BUCKET`, `TASK_LOCATION`, `TASK_QUEUE`, `TASK_SERVICE_ACCOUNT`,
 `WORKER_URL`, `SERVICE_ROLE`. `ILLUSTRATIONS_ENABLED=true` opens the
-illustration flag (default off). Optional: `OPENAI_SCENE_MODEL`,
+illustration flag (default off). Optional: `OPENAI_SCENE_MODEL` (Decisions scene-selection model),
 `OPENAI_IMAGE_MODEL`, `OPENAI_IMAGE_ORCHESTRATOR_MODEL`, `PILOT_CREDITS`.
 `IMAGE_PROVIDERS` is the comma-separated deployment availability list (OpenAI
 remains the initial default). Worker-only optional keys are `BYTEPLUS_API_KEY`,

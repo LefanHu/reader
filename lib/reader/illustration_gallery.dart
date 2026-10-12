@@ -4,13 +4,11 @@ import 'package:flutter/material.dart';
 
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
-import '../illustrations/illustration_exception.dart';
-import '../illustrations/illustration_scene.dart';
 import '../illustrations/illustration_selection.dart';
 import 'illustration_consent_dialog.dart';
 import 'illustration_scene_dialog.dart';
 
-/// Unlocked-only gallery; queued and locked scenes have no revealing UI.
+/// Downloaded scenes, including ones hidden from the page.
 class IllustrationGallery extends StatelessWidget {
   /// Creates a gallery subscribed to the shared controller for [book].
   const IllustrationGallery({
@@ -61,7 +59,7 @@ class IllustrationGallery extends StatelessWidget {
                         child: Padding(
                           padding: EdgeInsets.all(32),
                           child: Text(
-                            'Scenes will appear here after you read past them.',
+                            'Illustrations appear here once they are ready.',
                             textAlign: TextAlign.center,
                           ),
                         ),
@@ -85,7 +83,18 @@ class IllustrationGallery extends StatelessWidget {
                             child: InkWell(
                               onTap: path == null
                                   ? null
-                                  : () => _showScene(context, scene),
+                                  : () async {
+                                      if (await showIllustrationScene(
+                                            context,
+                                            controller,
+                                            book,
+                                            scene,
+                                            canGoTo: true,
+                                          ) &&
+                                          context.mounted) {
+                                        Navigator.pop(context, scene);
+                                      }
+                                    },
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
@@ -136,24 +145,6 @@ class IllustrationGallery extends StatelessWidget {
     ),
   );
 
-  Future<void> _showScene(BuildContext context, IllustrationScene scene) async {
-    final path = scene.localImagePath;
-    if (path == null || !File(path).existsSync()) return;
-    final action = await showDialog<IllustrationSceneAction>(
-      context: context,
-      builder: (context) => IllustrationSceneDialog(scene: scene),
-    );
-    try {
-      if (action == IllustrationSceneAction.delete) {
-        await controller.illustrations.deleteScene(book, scene);
-      } else if (action == IllustrationSceneAction.regenerate) {
-        await controller.illustrations.regenerate(book, scene);
-      }
-    } on Object catch (error) {
-      if (context.mounted) _showError(context, error);
-    }
-  }
-
   Future<void> _showSettings(BuildContext context) async {
     try {
       final setup = await controller.illustrations.beginSetup(book);
@@ -169,19 +160,7 @@ class IllustrationGallery extends StatelessWidget {
         selection: selection,
       );
     } on Object catch (error) {
-      if (context.mounted) _showError(context, error);
+      if (context.mounted) showIllustrationError(context, error);
     }
-  }
-
-  void _showError(BuildContext context, Object error) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          error is IllustrationException
-              ? error.message
-              : 'Illustrations could not be updated. Try again when connected.',
-        ),
-      ),
-    );
   }
 }

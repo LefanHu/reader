@@ -20,7 +20,6 @@ import 'reader_navigation.dart';
 import 'page_target.dart';
 import 'page_turn.dart';
 import 'layout/section_layout.dart';
-import 'block_slice.dart';
 import 'narration_range.dart';
 import 'narration_follow_target.dart';
 import 'text_page_slices.dart';
@@ -49,6 +48,8 @@ class TextViewport extends StatefulWidget {
     this.onRestored,
     this.onReadFromHere,
     this.activeNarrationRange,
+    this.figureBlocks = const {},
+    this.figureBuilder,
   });
 
   /// Immutable manifest used for navigation and source progress.
@@ -80,7 +81,7 @@ class TextViewport extends StatefulWidget {
   final bool initialPositionIsRestoration;
 
   /// Reports a leading passage and layout-independent progress. Curl previews
-  /// never report: only completed turns may persist or unlock illustrations.
+  /// never report: only completed turns may persist progress.
   final void Function(text.TextPosition position, double progress, String title)
   onPosition;
 
@@ -97,6 +98,14 @@ class TextViewport extends StatefulWidget {
   /// Complete normalized spoken bounds. Decoration never changes selection,
   /// reflows text, or commits reading progress.
   final NarrationRange? activeNarrationRange;
+
+  /// Section ID → block IDs followed by an inline figure slot; part of layout
+  /// identity, so changing it reflows and restores the logical position.
+  final Map<String, Set<String>> figureBlocks;
+
+  /// Builds the content of one figure slot. The slot's size is fixed by the
+  /// layout; the builder must fill it and own its own semantics.
+  final Widget Function(String sectionId, String blockId)? figureBuilder;
 
   /// Toggles reading chrome without intercepting drag navigation.
   final VoidCallback onTap;
@@ -418,6 +427,7 @@ class _TextViewportState extends State<TextViewport>
           height: _height,
           style: _style,
           scaler: _scaler,
+          figureBlockIds: _figureIds(target.section.id),
         ),
         widget.settings.mode,
       );
@@ -454,6 +464,10 @@ class _TextViewportState extends State<TextViewport>
     width: _width,
     height: _height,
     background: widget.background,
+    figureColor: Color.alphaBlend(
+      widget.foreground.withValues(alpha: .08),
+      widget.background,
+    ),
   );
 
   Future<void> _startTurn(int delta, {required bool automatic}) async {
@@ -661,6 +675,13 @@ class _TextViewportState extends State<TextViewport>
 
   TextStyle get _style => readerTextStyle(widget.settings, widget.foreground);
 
+  Set<String> _figureIds(String sectionId) =>
+      widget.figureBlocks[sectionId] ?? const {};
+
+  Widget _figure(String blockId) =>
+      widget.figureBuilder?.call(_section!.id, blockId) ??
+      const SizedBox.shrink();
+
   SectionLayout _obtainLayout(
     text.TextSection section,
     double width,
@@ -673,6 +694,7 @@ class _TextViewportState extends State<TextViewport>
     style: _style,
     scaler: scaler,
     committed: _layout,
+    figureBlockIds: _figureIds(section.id),
   );
 
   void _prepare(double width, double height, TextScaler scaler) {
@@ -685,6 +707,7 @@ class _TextViewportState extends State<TextViewport>
         height: height,
         style: style,
         scaler: scaler,
+        figureBlockIds: _figureIds(section.id),
       ),
       widget.settings.mode,
     );
@@ -701,6 +724,7 @@ class _TextViewportState extends State<TextViewport>
       style: style,
       scaler: scaler,
       committed: _layout,
+      figureBlockIds: _figureIds(section.id),
     );
     _layout = layout;
     _layoutKey = key;
@@ -789,24 +813,13 @@ class _TextViewportState extends State<TextViewport>
                       onSelectedBlock: (block) => _selectedBlock = block,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          for (final block in layout.blocks)
-                            BlockSlice(
-                              block: block,
-                              top: 0,
-                              height: block.painter.height,
-                              start: 0,
-                              end: block.block.text.length,
-                              bottomPadding: blockGap,
-                              narrationRange: narrationBlockRange(
-                                range: widget.activeNarrationRange,
-                                documentVersion: widget.document.version,
-                                sectionId: _section!.id,
-                                block: block,
-                              ),
-                            ),
-                          SizedBox(height: layout.viewportHeight),
-                        ],
+                        children: scrollSectionSlices(
+                          layout,
+                          documentVersion: widget.document.version,
+                          sectionId: _section!.id,
+                          activeNarrationRange: widget.activeNarrationRange,
+                          figureBuilder: _figure,
+                        ),
                       ),
                     ),
                   ),
@@ -839,6 +852,7 @@ class _TextViewportState extends State<TextViewport>
                               documentVersion: widget.document.version,
                               sectionId: _section!.id,
                               activeNarrationRange: widget.activeNarrationRange,
+                              figureBuilder: _figure,
                             ),
                           ),
                         ),

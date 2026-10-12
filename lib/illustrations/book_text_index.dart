@@ -2,6 +2,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'chapter_text_index.dart';
+import 'scene_anchor.dart';
 
 /// Versioned, local-only index used to submit bounded chapter prose.
 class BookTextIndex {
@@ -37,4 +38,15 @@ class BookTextIndex {
     }
     return null;
   }
+
+  /// Whether [anchor] names an existing paragraph of a matching chapter.
+  ///
+  /// Unknown anchors never download or render; the index is the same
+  /// normalized text the reader paints.
+  bool resolves(SceneAnchor anchor) => chapters.any(
+    (chapter) =>
+        chapter.href == anchor.href &&
+        chapter.spineOrdinal == anchor.spineOrdinal &&
+        chapter.paragraphs.any((p) => p.id == anchor.paragraphId),
+  );
 }

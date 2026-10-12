@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -16,11 +15,13 @@ import '../preferences/reading_mode.dart';
 import '../text/document.dart' as text;
 import '../text/document_store.dart' as text;
 import '../text/text_contents_entry.dart' as text;
+import '../text/text_position.dart' as text;
 import '../text/reader_navigation.dart';
 import '../text/viewport.dart';
 import 'illustration_consent_dialog.dart';
+import 'illustration_figure_view.dart';
 import 'illustration_gallery.dart';
-import 'illustration_reveal_dialog.dart';
+import 'illustration_scene_dialog.dart';
 import 'reader_contents_sheet.dart';
 import 'reader_controls_transition.dart';
 import 'reader_error.dart';
@@ -60,9 +61,7 @@ class _ReaderScreenState extends State<ReaderScreen>
   late final store = widget.documentStore ?? text.TextDocumentStore();
   bool controls = true;
   bool closed = false;
-  bool revealingIllustration = false;
   String? chapterTitle;
-  Timer? revealTimer;
   Timer? pollTimer;
   bool resumed = true;
   late final _narration = ReaderNarrationBinding(
@@ -108,51 +107,6 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   void _controllerChanged() {
     _narration.sync();
-    _queueIllustrationReveal();
-  }
-
-  void _queueIllustrationReveal() {
-    if (!mounted ||
-        revealingIllustration ||
-        widget.controller.illustrations.pendingRevealFor(widget.book) == null) {
-      return;
-    }
-    revealTimer?.cancel();
-    revealTimer = Timer(const Duration(seconds: 1), () {
-      if (!mounted) return;
-      final scene = widget.controller.illustrations.pendingRevealFor(
-        widget.book,
-      );
-      if (scene != null) _showIllustration(scene);
-    });
-  }
-
-  Future<void> _showIllustration(IllustrationScene scene) async {
-    final path = scene.localImagePath;
-    if (path == null || !File(path).existsSync() || revealingIllustration) {
-      return;
-    }
-    revealingIllustration = true;
-    await widget.controller.illustrations.markRevealed(widget.book, scene);
-    if (!mounted) return;
-    final action = await showDialog<IllustrationRevealAction>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => IllustrationRevealDialog(scene: scene),
-    );
-    if (action == IllustrationRevealAction.hide) {
-      await widget.controller.illustrations.hide(widget.book, scene);
-    } else if (action == IllustrationRevealAction.regenerate) {
-      try {
-        await widget.controller.illustrations.regenerate(widget.book, scene);
-      } on Object catch (error) {
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(error.toString())));
-        }
-      }
-    }
-    revealingIllustration = false;
   }
 
   // Page textures and every control use the same app-wide opaque paper and ink.
@@ -210,12 +164,21 @@ class _ReaderScreenState extends State<ReaderScreen>
       return;
     }
     if (!mounted) return;
-    await showModalBottomSheet<void>(
+    final target = await showModalBottomSheet<IllustrationScene>(
       context: context,
       isScrollControlled: true,
       builder: (context) =>
           IllustrationGallery(book: widget.book, controller: widget.controller),
     );
+    // Same committed-position path as a contents jump; it also pauses narration.
+    if (target != null) {
+      navigation.goTo(
+        text.TextPosition(
+          sectionId: target.anchor.href,
+          blockId: target.anchor.paragraphId,
+        ),
+      );
+    }
   }
 
   Future<void> _enableIllustrations() async {
@@ -263,7 +226,7 @@ class _ReaderScreenState extends State<ReaderScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Illustrations enabled. Scenes will appear only after you read them.',
+              'Illustrations enabled. Art appears beside its scene once it is ready.',
             ),
           ),
         );
@@ -296,7 +259,6 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   @override
   void dispose() {
-    revealTimer?.cancel();
     pollTimer?.cancel();
     widget.controller.removeListener(_controllerChanged);
     _narration.dispose();
@@ -452,7 +414,26 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   Widget _readerView(text.TextDocument document) {
     final liveAnchor = _narration.liveAnchor;
+    final figures = widget.controller.illustrations.figuresFor(widget.book);
     return TextViewport(
+      figureBlocks: {
+        for (final entry in figures.entries)
+          entry.key: entry.value.keys.toSet(),
+      },
+      figureBuilder: (section, block) {
+        final figure = figures[section]?[block];
+        if (figure == null) return const SizedBox.shrink();
+        return IllustrationFigureView(
+          figure: figure,
+          onOpen: () => showIllustrationScene(
+            context,
+            widget.controller,
+            widget.book,
+            figure.scene,
+            canGoTo: false,
+          ),
+        );
+      },
       document: document,
       sourcePath: widget.book.path,
       store: store,

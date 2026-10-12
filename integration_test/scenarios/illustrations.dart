@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/illustrations/illustration_scene.dart';
+import 'package:reader/reader/illustration_figure_view.dart';
 
 import '../support/native_illustration_api.dart';
 import '../support/native_test_app.dart';
@@ -40,7 +41,6 @@ void registerIllustrationTests() {
       final admitted = api.admissions.map((entry) => entry.id).toList();
 
       await _readUntilScene(app, tester, book);
-      await _dismissReveal(tester);
       final scene = _scene(app, book);
       final artwork = scene.localImagePath!;
       final anchor = app.viewport.navigation.leadingPosition;
@@ -114,7 +114,6 @@ void registerIllustrationTests() {
         'chapter admission',
       );
       await _readUntilScene(app, tester, book);
-      await _dismissReveal(tester);
       final first = _scene(app, book);
       final anchor = app.viewport.navigation.leadingPosition;
 
@@ -180,6 +179,47 @@ void registerIllustrationTests() {
       expect(app.viewport.navigation.leadingPosition, anchor);
     },
   );
+
+  testWidgets(
+    'placeholder becomes inline art and the gallery jumps to its scene',
+    (tester) async {
+      final api = NativeIllustrationApi()..holdGeneration = true;
+      final app = await NativeTestApp.launch(tester, illustrationApi: api);
+      await app.openBook('Unicode Test');
+      final book = app.book('Unicode Test');
+      await _openIllustrations(tester);
+      await tester.tap(find.text('Enable illustrations'));
+      await _until(
+        tester,
+        () => find.text('Illustrating this scene…').evaluate().isNotEmpty,
+        'the generating placeholder',
+      );
+      expect(_scene(app, book).localImagePath, isNull);
+
+      api.holdGeneration = false;
+      await _until(
+        tester,
+        () =>
+            _scene(app, book).localImagePath != null &&
+            find.byType(IllustrationFigureView).evaluate().isNotEmpty &&
+            find.text('Illustrating this scene…').evaluate().isEmpty,
+        'the inline art to replace the placeholder',
+      );
+      final scene = _scene(app, book);
+      expect(find.byType(Image), findsWidgets);
+
+      await app.advance();
+      await app.advance();
+      await _openIllustrations(tester);
+      await tester.tap(find.text('The quiet room, version 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, 'Go to scene'));
+      await tester.pumpAndSettle();
+      final position = app.viewport.navigation.leadingPosition!;
+      expect(position.blockId, scene.anchor.paragraphId);
+      expect(position.offset, 0);
+    },
+  );
 }
 
 IllustrationScene _scene(NativeTestApp app, book) =>
@@ -221,13 +261,6 @@ Future<void> _readUntilScene(
     }
   }
   fail('The passed scene was never downloaded.');
-}
-
-Future<void> _dismissReveal(WidgetTester tester) async {
-  final close = find.widgetWithText(FilledButton, 'Continue reading');
-  await _until(tester, () => close.evaluate().isNotEmpty, 'the reveal dialog');
-  await tester.tap(close);
-  await tester.pumpAndSettle();
 }
 
 Future<void> _regenerateFromGallery(WidgetTester tester, String caption) async {

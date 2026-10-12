@@ -23,6 +23,9 @@ class NativeIllustrationApi implements IllustrationApi {
 
   final bool publishInitialImages;
   bool offline = false;
+
+  /// While true, the scene is reported as still generating (no art to download).
+  bool holdGeneration = false;
   bool rejectNextRegeneration = false;
   int registrations = 0;
   int configurations = 0;
@@ -192,10 +195,18 @@ class NativeIllustrationApi implements IllustrationApi {
   Future<IllustrationJobResult> getJob(String jobId) async {
     _connected();
     polls++;
-    final scene = _jobs[jobId];
+    final stored = _jobs[jobId];
+    final held = holdGeneration && stored != null;
+    final scene = held
+        ? stored.copyWith(state: IllustrationSceneState.generating)
+        : stored;
     return IllustrationJobResult(
       id: jobId,
-      status: publishInitialImages ? 'complete' : 'queued',
+      status: held
+          ? 'analyzing'
+          : publishInitialImages
+          ? 'complete'
+          : 'queued',
       scenes: scene == null || !publishInitialImages ? const [] : [scene],
     );
   }

@@ -10,8 +10,9 @@ class TextLine {
     this.globalTop,
     this.height,
     this.start,
-    this.end,
-  );
+    this.end, {
+    this.figure = false,
+  });
 
   /// Borrowed block containing this line.
   final MeasuredBlock block;
@@ -21,6 +22,10 @@ class TextLine {
 
   /// UTF-16 source bounds aligned to normalized grapheme boundaries.
   final int start, end;
+
+  /// Inline figure slot after its block; `start == end ==` block length, so a
+  /// page starting here reports the block's end.
+  final bool figure;
 
   /// Creates the complete logical anchor at this line's leading offset.
   text.TextPosition position(String section) => text.TextPosition(

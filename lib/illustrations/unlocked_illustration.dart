@@ -3,7 +3,7 @@
 
 import 'dart:typed_data';
 
-/// Released metadata and bytes, returned only after the local spoiler gate.
+/// Released metadata and bytes for a scene whose anchor resolves locally.
 class UnlockedIllustration {
   const UnlockedIllustration({
     required this.image,

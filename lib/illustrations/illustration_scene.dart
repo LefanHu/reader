@@ -14,7 +14,7 @@ enum IllustrationSceneState {
   skippedSafety,
 }
 
-/// One server-planned illustration and its spoiler/reveal state.
+/// One server-planned illustration and its local download/visibility state.
 class IllustrationScene {
   const IllustrationScene({
     required this.id,
@@ -29,7 +29,6 @@ class IllustrationScene {
     this.regenerating = false,
     this.pendingGenerationVersion,
     this.failureCategory,
-    this.automaticRevealDismissed = false,
   });
 
   final String id;
@@ -44,14 +43,13 @@ class IllustrationScene {
   /// Last locally committed image version, not the newest server recipe.
   final int generationVersion;
 
-  /// Remote generation progress, independent of committed spoiler/reveal state.
+  /// Remote generation progress, independent of the committed local image.
   final bool regenerating;
 
-  /// Newer ready server version awaiting a passed gate and atomic local commit.
+  /// Newer ready server version awaiting atomic local commit.
   /// Null means no replacement is awaiting download; it never owns local paths.
   final int? pendingGenerationVersion;
   final String? failureCategory;
-  final bool automaticRevealDismissed;
 
   bool get available =>
       state == IllustrationSceneState.unlocked ||
@@ -60,7 +58,7 @@ class IllustrationScene {
   static const _unchanged = Object();
 
   /// Omitted nullable fields retain their values; explicit null clears them.
-  /// Replacements preserve committed paths/version/reveal until manifest commit.
+  /// Replacements preserve committed paths/version until manifest commit.
   IllustrationScene copyWith({
     IllustrationSceneState? state,
     Object? localImagePath = _unchanged,
@@ -71,7 +69,6 @@ class IllustrationScene {
     bool? regenerating,
     Object? pendingGenerationVersion = _unchanged,
     Object? failureCategory = _unchanged,
-    bool? automaticRevealDismissed,
   }) => IllustrationScene(
     id: id,
     jobId: jobId,
@@ -93,8 +90,6 @@ class IllustrationScene {
     failureCategory: identical(failureCategory, _unchanged)
         ? this.failureCategory
         : failureCategory as String?,
-    automaticRevealDismissed:
-        automaticRevealDismissed ?? this.automaticRevealDismissed,
   );
 
   Map<String, dynamic> toJson() => {
@@ -111,7 +106,6 @@ class IllustrationScene {
     if (pendingGenerationVersion != null)
       'pendingGenerationVersion': pendingGenerationVersion,
     if (failureCategory != null) 'failureCategory': failureCategory,
-    'automaticRevealDismissed': automaticRevealDismissed,
   };
 
   factory IllustrationScene.fromJson(Map<String, dynamic> json) =>
@@ -132,7 +126,5 @@ class IllustrationScene {
         regenerating: json['regenerating'] as bool? ?? false,
         pendingGenerationVersion: json['pendingGenerationVersion'] as int?,
         failureCategory: json['failureCategory'] as String?,
-        automaticRevealDismissed:
-            json['automaticRevealDismissed'] as bool? ?? false,
       );
 }

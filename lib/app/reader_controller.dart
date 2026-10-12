@@ -21,7 +21,6 @@ import '../identity/firebase_cloud_identity.dart';
 import '../illustrations/api.dart';
 import '../illustrations/document_text_indexer.dart';
 import '../illustrations/file_illustration_store.dart';
-import '../illustrations/gate.dart';
 import '../illustrations/http_illustration_api.dart';
 import '../illustrations/illustration_coordinator.dart';
 import '../illustrations/indexer.dart';
@@ -76,7 +75,6 @@ class ReaderController extends ChangeNotifier {
     required this.cloudIdentity,
     NarrationServices? narration,
     this.accountApi,
-    IllustrationGate illustrationGate = const IllustrationGate(),
   }) {
     catalog = CatalogSession(
       store: catalogStore,
@@ -102,7 +100,6 @@ class ReaderController extends ChangeNotifier {
       api: illustrationApi,
       identity: cloudIdentity,
       deletionOutbox: illustrationDeletionOutbox,
-      gate: illustrationGate,
       currentBook: catalog.find,
       narrationOwnsPosition: (book) =>
           this.narration?.ownsPosition(book) == true,
@@ -189,7 +186,7 @@ class ReaderController extends ChangeNotifier {
   /// Authoritative reader settings and serialized native/persistence updates.
   late final ReaderPreferencesCoordinator preferences;
 
-  /// Authoritative illustration sidecars, indexing, and gated cloud workflows.
+  /// Authoritative illustration sidecars, indexing, and cloud workflows.
   late final IllustrationCoordinator illustrations;
 
   bool _disposed = false;
@@ -270,7 +267,7 @@ class ReaderController extends ChangeNotifier {
     await catalog.markOpened(book);
   }
 
-  /// Updates the leading text position and evaluates spoiler gates asynchronously.
+  /// Updates the leading text position and schedules illustration downloads.
   Future<void> savePosition(
     CatalogBook book,
     TextPosition position,

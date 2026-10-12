@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/painting.dart';
 
 import '../text_section.dart' as text;
@@ -18,8 +20,9 @@ class SectionLayout {
     double width,
     this.viewportHeight,
     TextStyle style,
-    TextScaler scaler,
-  ) {
+    TextScaler scaler, {
+    this.figureBlockIds = const {},
+  }) : figureHeight = math.min(width / 1.5, viewportHeight * .75) {
     var globalTop = 0.0;
     for (final block in section.blocks) {
       final painter = TextPainter(
@@ -63,11 +66,27 @@ class SectionLayout {
         start = end;
       }
       globalTop += painter.height + blockGap;
+      if (figureBlockIds.contains(block.id)) {
+        lines.add(
+          TextLine(
+            measured,
+            0,
+            globalTop,
+            figureHeight,
+            block.text.length,
+            block.text.length,
+            figure: true,
+          ),
+        );
+        globalTop += figureHeight + blockGap;
+      }
     }
     var page = <TextLine>[];
     var used = 0.0;
     for (final line in lines) {
-      final gap = page.isNotEmpty && page.last.block != line.block
+      final gap =
+          page.isNotEmpty &&
+              (page.last.block != line.block || page.last.figure != line.figure)
           ? blockGap
           : 0.0;
       if (page.isNotEmpty && used + gap + line.height > viewportHeight) {
@@ -75,7 +94,10 @@ class SectionLayout {
         page = [];
         used = 0;
       }
-      if (page.isNotEmpty && page.last.block != line.block) used += blockGap;
+      if (page.isNotEmpty &&
+          (page.last.block != line.block || page.last.figure != line.figure)) {
+        used += blockGap;
+      }
       page.add(line);
       used += line.height;
     }
@@ -84,6 +106,13 @@ class SectionLayout {
 
   /// Available page height used to partition measured lines.
   final double viewportHeight;
+
+  /// Blocks followed by an inline figure slot. Part of layout identity.
+  final Set<String> figureBlockIds;
+
+  /// Height of every figure slot: a 3:2 landscape frame that always fits on
+  /// one page, so figures never split across pages.
+  final double figureHeight;
 
   /// Blocks whose text painters are owned exclusively by this layout.
   final blocks = <MeasuredBlock>[];
@@ -94,11 +123,15 @@ class SectionLayout {
   /// Pages borrowing contiguous measured lines.
   final pages = <List<TextLine>>[];
 
-  /// Finds the last line starting at or before the complete logical anchor.
+  /// Finds the last text line starting at or before the complete logical anchor.
+  ///
+  /// Figure slots are skipped so restoration and narration following always
+  /// target text lines.
   TextLine lineFor(text.TextPosition position) =>
       lines
           .where(
             (line) =>
+                !line.figure &&
                 line.block.block.id == position.blockId &&
                 line.start <= position.offset,
           )

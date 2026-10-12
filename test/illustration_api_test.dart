@@ -159,7 +159,9 @@ void main() {
     expect(result.scenes[1].state, IllustrationSceneState.readyLocked);
     expect(result.scenes[1].failureCategory, 'provider');
     expect(result.scenes[2].regenerating, isTrue);
-    expect(result.scenes[3].regenerating, isTrue);
+    // A first generation is a placeholder state, not a replacement in progress.
+    expect(result.scenes[3].regenerating, isFalse);
+    expect(result.scenes[3].state, IllustrationSceneState.generating);
     expect(
       result.scenes.every((scene) => scene.localImagePath == null),
       isTrue,

@@ -161,6 +161,17 @@ test("polling reports committed and pending versions independently", async () =>
   });
 });
 
+test("polling reports a generating scene before any image exists", async () => {
+  await fixture(async (memory, request) => {
+    memory.values.set("illustrationJobs/job", { schemaVersion: 2, uid: "owner", status: "analyzing" });
+    memory.values.set("illustrationScenes/scene", { schemaVersion: 2, uid: "owner", jobId: "job", status: "generating", generationVersion: 0, anchor: {} });
+    const result = await (await request("/jobs/job")).json() as { scenes: Array<{ status: string; generationVersion: number; regenerating: boolean }> };
+    assert.equal(result.scenes[0]?.status, "generating");
+    assert.equal(result.scenes[0]?.generationVersion, 0);
+    assert.equal(result.scenes[0]?.regenerating, false);
+  });
+});
+
 test("registration retries return the authoritative current profile without changing credits", async () => {
   await fixture(async (memory, request) => {
     const registration = { schemaVersion: 2, fingerprint: "same-book", title: "Book" };

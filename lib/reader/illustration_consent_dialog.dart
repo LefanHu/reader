@@ -62,8 +62,9 @@ class _SelectionDialogState extends State<_SelectionDialog> {
                         'Ready artwork and already-submitted chapters stay unchanged. '
                         'Explicit regeneration costs one credit per completed image.'
                   : 'Reader sends only the current and next chapter’s normalized '
-                        'text for analysis. The source book is never uploaded or '
-                        'changed, and art stays locked until you pass the scene it depicts.',
+                        'text so OpenAI can pick illustrated scenes. The source book '
+                        'is never uploaded or changed, and art appears beside its '
+                        'scene as soon as it is ready.',
             ),
             const SizedBox(height: 16),
             if (!widget.editing) ...[

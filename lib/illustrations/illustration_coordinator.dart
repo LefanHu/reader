@@ -9,8 +9,9 @@ import '../identity/cloud_service_exception.dart';
 import '../text/text_position.dart';
 import 'api.dart';
 import 'book_text_index.dart';
-import 'gate.dart';
 import 'illustration_exception.dart';
+import 'illustration_figure.dart';
+import 'illustration_job_result.dart';
 import 'illustration_manifest.dart';
 import 'illustration_profile.dart';
 import 'illustration_scene.dart';
@@ -19,7 +20,7 @@ import 'illustration_setup.dart';
 import 'indexer.dart';
 import 'store.dart';
 
-/// Owns illustration sidecars, indexing, spoiler gates, and cloud job workflows.
+/// Owns illustration sidecars, indexing, and cloud job workflows.
 ///
 /// Dependencies and live catalog/narration callbacks are installed once. Changes
 /// publish through the application notifier; this owner introduces no additional
@@ -32,7 +33,6 @@ class IllustrationCoordinator {
     required this.api,
     required this.identity,
     required this.deletionOutbox,
-    required this.gate,
     required this._currentBook,
     required this._narrationOwnsPosition,
     required this._refreshCloudAccount,
@@ -42,7 +42,7 @@ class IllustrationCoordinator {
   /// Persists indexes, manifests, and downloaded scene files.
   final IllustrationStore store;
 
-  /// Builds normalized chapter indexes for scheduling and spoiler evaluation.
+  /// Builds normalized chapter indexes for scheduling and anchor resolution.
   final TextIndexer textIndexer;
 
   /// Cloud registration, generation, unlock, and privacy boundary.
@@ -60,9 +60,6 @@ class IllustrationCoordinator {
     delete: (id) => api.deleteBook(id, interactive: false),
   );
 
-  /// Evaluates scene anchors before any unlock request.
-  final IllustrationGate gate;
-
   /// Authoritative loaded and lazily created book manifests.
   final Map<String, IllustrationManifest> manifests = {};
 
@@ -79,6 +76,10 @@ class IllustrationCoordinator {
   final Map<String, BookTextIndex> _textIndexes = {};
   final Set<String> _advancingIllustrations = {};
   final Map<String, DateTime> _lastIllustrationRefresh = {};
+
+  /// Whether each book's server jobs still await image generation; shortens the
+  /// poll interval so inline placeholders turn into art promptly.
+  final Map<String, bool> _jobsActive = {};
 
   // A future ID remains readable in the manifest, but this client cannot admit
   // generation for a source it does not support. Existing art/jobs still load.
@@ -341,31 +342,24 @@ class IllustrationCoordinator {
     );
   }
 
-  /// First downloaded scene that has not yet interrupted the reader.
-  IllustrationScene? pendingRevealFor(CatalogBook book) {
-    if (_narrationOwnsPosition(book)) return null;
-    for (final scene in manifestFor(book).scenes) {
-      if (scene.state == IllustrationSceneState.unlocked &&
-          !scene.automaticRevealDismissed &&
-          scene.localImagePath != null) {
-        return scene;
-      }
-    }
-    return null;
-  }
+  /// Inline figure state per section ID and anchor block ID for [book].
+  ///
+  /// Empty while illustrations are disabled so the text layer reserves nothing.
+  Map<String, Map<String, IllustrationFigure>> figuresFor(CatalogBook book) =>
+      manifestFor(book).enabled
+      ? illustrationFigures(manifestFor(book).scenes)
+      : const {};
 
-  /// Prevents a cinematic scene from presenting automatically more than once.
-  Future<void> markRevealed(CatalogBook book, IllustrationScene scene) =>
-      _updateScene(book, scene.copyWith(automaticRevealDismissed: true));
+  /// Removes a scene from the page while retaining its local image.
+  Future<void> hide(CatalogBook book, IllustrationScene scene) =>
+      _updateScene(book, scene.copyWith(state: IllustrationSceneState.hidden));
 
-  /// Retains a scene locally but suppresses future automatic presentation.
-  Future<void> hide(CatalogBook book, IllustrationScene scene) => _updateScene(
-    book,
-    scene.copyWith(
-      state: IllustrationSceneState.hidden,
-      automaticRevealDismissed: true,
-    ),
-  );
+  /// Returns a hidden scene to its inline position.
+  Future<void> unhide(CatalogBook book, IllustrationScene scene) =>
+      _updateScene(
+        book,
+        scene.copyWith(state: IllustrationSceneState.unlocked),
+      );
 
   /// Requests a one-credit replacement while retaining the current image.
   Future<void> regenerate(CatalogBook book, IllustrationScene scene) async {
@@ -477,6 +471,7 @@ class IllustrationCoordinator {
         chapter: index.chapters[ordinal],
       );
       jobs[ordinal] = id;
+      _jobsActive[book.hash] = true;
       final updated = manifestFor(book).copyWith(chapterJobs: jobs);
       await store.saveManifest(book, updated);
       manifests[book.hash] = updated;
@@ -484,9 +479,11 @@ class IllustrationCoordinator {
     _changed();
   }
 
-  /// Schedules nearby chapters, refreshes jobs, and unlocks only passed gates.
+  /// Schedules nearby chapters, refreshes jobs, and downloads ready art.
   ///
-  /// Both image and thumbnail are committed before a scene becomes unlocked.
+  /// Art downloads as soon as it is ready, wherever the reader is; only anchors
+  /// that resolve in the normalized index are admitted. Both image and thumbnail
+  /// are committed before a scene becomes unlocked.
   Future<void> advance(CatalogBook book, TextPosition position) async {
     if (_advancingIllustrations.contains(book.hash) ||
         !manifestFor(book).enabled) {
@@ -499,20 +496,19 @@ class IllustrationCoordinator {
         await _scheduleAhead(book, manifestFor(book), index, position);
       }
       final lastRefresh = _lastIllustrationRefresh[book.hash];
+      // Poll quickly while the server still has chapter work in flight.
+      final interval = Duration(
+        seconds: _jobsActive[book.hash] == true ? 4 : 15,
+      );
       if (lastRefresh == null ||
-          DateTime.now().difference(lastRefresh) >
-              const Duration(seconds: 15)) {
+          DateTime.now().difference(lastRefresh) > interval) {
         await _refreshIllustrationJobs(book);
         _lastIllustrationRefresh[book.hash] = DateTime.now();
       }
       for (final scene in List.of(manifestFor(book).scenes)) {
         if ((scene.state != IllustrationSceneState.readyLocked &&
                 scene.pendingGenerationVersion == null) ||
-            !gate.hasPassed(
-              anchor: scene.anchor,
-              index: index,
-              position: position,
-            )) {
+            !index.resolves(scene.anchor)) {
           continue;
         }
         final released = await api.unlockScene(scene.id);
@@ -656,7 +652,6 @@ class IllustrationCoordinator {
         state: latest.available
             ? latest.state
             : IllustrationSceneState.unlocked,
-        automaticRevealDismissed: latest.automaticRevealDismissed,
       );
       final manifest = snapshot.copyWith(
         scenes: snapshot.scenes
@@ -699,11 +694,17 @@ class IllustrationCoordinator {
     final beforePolling = manifests[book.hash];
     if (beforePolling?.enabled != true || _currentBook(book) == null) return;
     final incomingScenes = <IllustrationScene>[];
+    final results = <IllustrationJobResult>[];
     for (final jobId in beforePolling!.chapterJobs.values) {
       final result = await api.getJob(jobId);
+      results.add(result);
       incomingScenes.addAll(result.scenes);
     }
-    // Polling awaits network IO; merge into the newest local reveal/path state.
+    // The server keeps a job analyzing through image generation.
+    _jobsActive[book.hash] = results.any(
+      (result) => result.status == 'queued' || result.status == 'analyzing',
+    );
+    // Polling awaits network IO; merge into the newest local path state.
     final current = manifests[book.hash];
     if (current?.enabled != true || _currentBook(book) == null) return;
     final scenes = List<IllustrationScene>.of(current!.scenes);
@@ -740,7 +741,7 @@ class IllustrationCoordinator {
       return committed.copyWith(
         state: incoming.state,
         generationVersion: incoming.generationVersion,
-        regenerating: generating,
+        regenerating: incoming.regenerating,
         pendingGenerationVersion: null,
         failureCategory: incoming.failureCategory,
       );

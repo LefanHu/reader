@@ -97,7 +97,7 @@ export function illustrationJobRouter(deps: {
       profileRevision, analysisVersion, paragraphs,
     };
     const idempotency = createHash("sha256")
-      .update(`${uid}:${bookId}:${ordinal}:${profileRevision}:${analysisVersion}:illustrations-v2:prompt-v2`)
+      .update(`${uid}:${bookId}:${ordinal}:${profileRevision}:${analysisVersion}:illustrations-v2:prompt-v3`)
       .digest("hex");
     const jobId = idempotency.slice(0, 40);
     const jobRef = db.collection("illustrationJobs").doc(jobId);

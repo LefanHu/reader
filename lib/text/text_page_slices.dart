@@ -39,21 +39,40 @@ TextSelection? narrationBlockRange({
 }
 
 /// Builds visible page fragments while borrowing retained line/painter owners.
+///
+/// Figure slots reserve exactly their measured height; [figureBuilder] fills
+/// them and the text layer never learns what they contain.
 List<Widget> textPageSlices(
   List<TextLine> page, {
   required int documentVersion,
   required String sectionId,
   NarrationRange? activeNarrationRange,
+  Widget Function(String blockId)? figureBuilder,
 }) {
   final slices = <Widget>[];
   var start = 0;
   while (start < page.length) {
     var end = start + 1;
-    while (end < page.length && page[end].block == page[start].block) {
+    while (end < page.length &&
+        page[end].block == page[start].block &&
+        page[end].figure == page[start].figure) {
       end++;
     }
     final first = page[start];
     final last = page[end - 1];
+    if (first.figure) {
+      slices.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: end < page.length ? blockGap : 0),
+          child: SizedBox(
+            height: first.height,
+            child: figureBuilder?.call(first.block.block.id),
+          ),
+        ),
+      );
+      start = end;
+      continue;
+    }
     final range = narrationBlockRange(
       range: activeNarrationRange,
       documentVersion: documentVersion,
@@ -80,13 +99,55 @@ List<Widget> textPageSlices(
   return slices;
 }
 
+/// Builds the full scroll-mode column children for [layout].
+///
+/// Heights reproduce the layout's `globalTop` arithmetic exactly: each block
+/// is followed by [blockGap], and each figure slot by its own height and gap.
+List<Widget> scrollSectionSlices(
+  SectionLayout layout, {
+  required int documentVersion,
+  required String sectionId,
+  NarrationRange? activeNarrationRange,
+  Widget Function(String blockId)? figureBuilder,
+}) => [
+  for (final block in layout.blocks) ...[
+    BlockSlice(
+      block: block,
+      top: 0,
+      height: block.painter.height,
+      start: 0,
+      end: block.block.text.length,
+      bottomPadding: blockGap,
+      narrationRange: narrationBlockRange(
+        range: activeNarrationRange,
+        documentVersion: documentVersion,
+        sectionId: sectionId,
+        block: block,
+      ),
+    ),
+    if (layout.figureBlockIds.contains(block.block.id))
+      Padding(
+        padding: const EdgeInsets.only(bottom: blockGap),
+        child: SizedBox(
+          height: layout.figureHeight,
+          child: figureBuilder?.call(block.block.id),
+        ),
+      ),
+  ],
+  SizedBox(height: layout.viewportHeight),
+];
+
 /// Rasterizes borrowed page lines for curl previews without retaining painters.
+///
+/// Figures paint as flat [figureColor] placeholders; curl textures never decode
+/// images.
 ui.Image textPageTexture({
   required SectionLayout layout,
   required int page,
   required double width,
   required double height,
   required Color background,
+  required Color figureColor,
 }) {
   final ratio = math.min(2.0, 2048 / math.max(width, height));
   final recorder = ui.PictureRecorder();
@@ -100,12 +161,26 @@ ui.Image textPageTexture({
   var start = 0;
   while (start < lines.length) {
     var end = start + 1;
-    while (end < lines.length && lines[end].block == lines[start].block) {
+    while (end < lines.length &&
+        lines[end].block == lines[start].block &&
+        lines[end].figure == lines[start].figure) {
       end++;
     }
     final first = lines[start];
     final last = lines[end - 1];
     final extent = last.top + last.height - first.top;
+    if (first.figure) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(0, y, width, extent),
+          const Radius.circular(12),
+        ),
+        Paint()..color = figureColor,
+      );
+      y += extent + blockGap;
+      start = end;
+      continue;
+    }
     canvas.save();
     canvas.clipRect(Rect.fromLTWH(0, y, width, extent));
     first.block.painter.paint(canvas, Offset(0, y - first.top));

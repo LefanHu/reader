@@ -41,6 +41,12 @@ class TextViewportHarness {
   /// Optional selection action observed without introducing a narration fake.
   ValueChanged<text.TextPosition>? onReadFromHere;
 
+  /// Section ID → block IDs followed by an inline figure slot.
+  Map<String, Set<String>> figureBlocks = const {};
+
+  /// Fills figure slots with test content.
+  Widget Function(String sectionId, String blockId)? figureBuilder;
+
   /// Rebuilds the same element hierarchy with optional replacement navigation.
   Widget app({TextReaderNavigation? navigation}) => MaterialApp(
     home: Scaffold(
@@ -64,6 +70,8 @@ class TextViewportHarness {
                 onPosition: (p, _, _) => reports.add(p),
                 onTap: () => taps++,
                 onReadFromHere: onReadFromHere,
+                figureBlocks: figureBlocks,
+                figureBuilder: figureBuilder,
               ),
             ),
           ),

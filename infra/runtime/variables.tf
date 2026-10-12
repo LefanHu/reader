@@ -41,9 +41,9 @@ variable "pilot_credits" {
 }
 
 variable "openai_scene_model" {
-  description = "OpenAI model used for narrative scene analysis."
+  description = "OpenAI Decisions model used to select illustrated scenes."
   type        = string
-  default     = "gpt-5.6-luna"
+  default     = "gpt-6-luna"
 }
 
 variable "openai_image_orchestrator_model" {

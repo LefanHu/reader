@@ -161,7 +161,6 @@ class HttpIllustrationApi implements IllustrationApi {
             },
             generationVersion: value['generationVersion'] as int,
             regenerating:
-                value['status'] == 'generating' ||
                 value['status'] == 'regenerating' ||
                 value['regenerating'] == true,
             failureCategory: value['failureCategory'] as String?,

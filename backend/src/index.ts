@@ -7,11 +7,11 @@ import { getAppCheck } from "firebase-admin/app-check";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import {
-  analyzeNarrative,
   composeImagePrompt,
   moderateImage,
   moderateText,
 } from "./openai.js";
+import { selectScenes } from "./scene-selection.js";
 import { NarrationBackend } from "./narration.js";
 import { RealtimeNarrationProvider } from "./narration-provider.js";
 import { workerTaskRequest } from "./task-request.js";
@@ -126,7 +126,7 @@ app.use("/internal", (_req, res, next) => {
 
 app.use("/internal", illustrationWorkerRouter({
   db, storage, bucket: bucketName, assetRetentionMilliseconds,
-  analyzeNarrative, composeImagePrompt, imageGenerationProvider: createImageProviderRegistry(), moderateImage, moderateText,
+  selectScenes, composeImagePrompt, imageGenerationProvider: createImageProviderRegistry(), moderateImage, moderateText,
 }));
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

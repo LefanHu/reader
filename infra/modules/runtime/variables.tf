@@ -69,7 +69,7 @@ variable "pilot_credits" {
 }
 
 variable "openai_scene_model" {
-  description = "OpenAI narrative analysis model."
+  description = "OpenAI Decisions model used to select illustrated scenes."
   type        = string
 }
 

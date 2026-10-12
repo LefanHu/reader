@@ -11,13 +11,27 @@ class SectionLayoutCache {
   int get length => _layouts.length;
 
   /// Identity of a layout for one section, viewport, typography and scale.
+  ///
+  /// [figureBlockIds] are part of the identity because figure slots change
+  /// pagination and scroll extents.
   Object keyFor({
     required text.TextSection section,
     required double width,
     required double height,
     required TextStyle style,
     required TextScaler scaler,
-  }) => (section.id, width, height, style, scaler.scale(20));
+    Set<String> figureBlockIds = const {},
+  }) => (
+    section.id,
+    width,
+    height,
+    style,
+    scaler.scale(20),
+    [
+      for (final block in section.blocks)
+        if (figureBlockIds.contains(block.id)) block.id,
+    ].join('\u0000'),
+  );
 
   /// Returns the cached or newly measured layout, evicting older ones.
   ///
@@ -30,6 +44,7 @@ class SectionLayoutCache {
     required TextStyle style,
     required TextScaler scaler,
     required SectionLayout? committed,
+    Set<String> figureBlockIds = const {},
   }) {
     final key = keyFor(
       section: section,
@@ -37,10 +52,18 @@ class SectionLayoutCache {
       height: height,
       style: style,
       scaler: scaler,
+      figureBlockIds: figureBlockIds,
     );
     final layout =
         _layouts.remove(key) ??
-        SectionLayout(section, width, height, style, scaler);
+        SectionLayout(
+          section,
+          width,
+          height,
+          style,
+          scaler,
+          figureBlockIds: figureBlockIds,
+        );
     _layouts[key] = layout;
     while (_layouts.length > 2) {
       final victim = _layouts.keys.firstWhere(

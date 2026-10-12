@@ -5,9 +5,6 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/illustrations/document_text_indexer.dart';
-import 'package:reader/illustrations/gate.dart';
-import 'package:reader/illustrations/scene_anchor.dart';
 import 'package:reader/narration/native_narration_player.dart';
 import 'package:reader/narration/narration_sheet.dart';
 import 'package:reader/narration/narration_registration.dart';
@@ -241,105 +238,78 @@ void registerNarrationTests() {
     skip: !Platform.isIOS,
   );
 
-  testWidgets(
-    'local natural clip endings alone commit exact anchors and paragraph gates',
-    (tester) async {
-      final paragraph =
-          'Hello. ${List.filled(12, 'One two three four five six seven eight nine ten').join(', ')}.';
-      final app = await NativeTestApp.launch(
-        tester,
-        localNarration: true,
-        textBytes: Uint8List.fromList(utf8.encode(paragraph)),
-      );
-      final book = app.book('Unicode Test');
-      await app.openBook('Unicode Test');
-      final session = app.controller.narration!;
-      await app.runWithFrames(() => session.attach(book));
-      final section = await session.documents.loadSection(
-        book.path,
-        session.document!.sections.first.id,
-      );
-      final units = await app.localNarrationSource!.units(section);
-      final index = await DocumentTextIndexer(store: session.documents)
-          .index(sourcePath: book.path, bookHash: book.hash);
-      final block = section.blocks.first;
-      final gateAnchor = SceneAnchor(
-        href: section.id,
-        spineOrdinal: 0,
-        paragraphId: block.id,
-        cssSelector: '#${block.id}',
-        fallbackProgression: 1,
-      );
-      TextPosition? position() => app.controller.catalog.books
-          .firstWhere((item) => item.hash == book.hash)
-          .lastPosition;
-      final initial = position();
-      await app.runWithFrames(
-        () => app.controller.preferences.configure(narrationSpeed: 2),
-      );
-      await app.runWithFrames(session.play);
-      expect(position(), initial);
-      final first = units.first.chunk;
-      expect(session.activeChunk!.id, first.id);
-      await _waitForNativeState(
-        app,
-        () => position() == first.end,
-        'the short native clip to naturally commit its exact ending',
-      );
-      await app.runWithFrames(session.pause);
-      expect(position(), first.end);
-      expect(
-        const IllustrationGate().hasPassed(
-          anchor: gateAnchor,
-          index: index,
-          position: position()!,
-        ),
-        isFalse,
-      );
-      final longUnits = units
-          .where((unit) => unit.sentence == units[1].sentence)
-          .toList();
-      expect(longUnits.length, greaterThan(1));
-      expect(longUnits.first.chunk.end.offset, lessThan(block.text.length));
-      expect(units.map((unit) => unit.chunk.text).join(), block.text);
-      expect(units.every((unit) => unit.chunk.text.length <= 300), isTrue);
-      final middle = longUnits.first.chunk;
-      await app.runWithFrames(() => session.playFrom(middle.start));
-      expect(position(), first.end);
-      await _waitForNativeState(
-        app,
-        () => position() == middle.end,
-        'an intermediate long-sentence clip to naturally complete',
-      );
-      await app.runWithFrames(session.pause);
-      expect(position(), middle.end);
-      expect(
-        const IllustrationGate().hasPassed(
-          anchor: gateAnchor,
-          index: index,
-          position: position()!,
-        ),
-        isFalse,
-      );
-      // A real native tail ending after seeking is not proof of hearing a clip.
-      await app.runWithFrames(() => session.playFrom(longUnits[1].chunk.start));
-      final duration = session.player.duration!;
-      await app.runWithFrames(
-        () => session.seek(duration - const Duration(milliseconds: 100)),
-      );
-      expect(position(), middle.end);
-      await _waitForNativeState(
-        app,
-        () => session.status == NarrationStatus.paused,
-        'the seek-tainted native ending to pause without a text commit',
-      );
-      expect(position(), middle.end);
-      final api = session.api as FakeNarrationApi;
-      expect(api.registrations, 0);
-      expect(api.requests, isEmpty);
-    },
-    skip: !Platform.isIOS,
-  );
+  testWidgets('local natural clip endings alone commit exact anchors', (
+    tester,
+  ) async {
+    final paragraph =
+        'Hello. ${List.filled(12, 'One two three four five six seven eight nine ten').join(', ')}.';
+    final app = await NativeTestApp.launch(
+      tester,
+      localNarration: true,
+      textBytes: Uint8List.fromList(utf8.encode(paragraph)),
+    );
+    final book = app.book('Unicode Test');
+    await app.openBook('Unicode Test');
+    final session = app.controller.narration!;
+    await app.runWithFrames(() => session.attach(book));
+    final section = await session.documents.loadSection(
+      book.path,
+      session.document!.sections.first.id,
+    );
+    final units = await app.localNarrationSource!.units(section);
+    final block = section.blocks.first;
+    TextPosition? position() => app.controller.catalog.books
+        .firstWhere((item) => item.hash == book.hash)
+        .lastPosition;
+    final initial = position();
+    await app.runWithFrames(
+      () => app.controller.preferences.configure(narrationSpeed: 2),
+    );
+    await app.runWithFrames(session.play);
+    expect(position(), initial);
+    final first = units.first.chunk;
+    expect(session.activeChunk!.id, first.id);
+    await _waitForNativeState(
+      app,
+      () => position() == first.end,
+      'the short native clip to naturally commit its exact ending',
+    );
+    await app.runWithFrames(session.pause);
+    expect(position(), first.end);
+    final longUnits = units
+        .where((unit) => unit.sentence == units[1].sentence)
+        .toList();
+    expect(longUnits.length, greaterThan(1));
+    expect(longUnits.first.chunk.end.offset, lessThan(block.text.length));
+    expect(units.map((unit) => unit.chunk.text).join(), block.text);
+    expect(units.every((unit) => unit.chunk.text.length <= 300), isTrue);
+    final middle = longUnits.first.chunk;
+    await app.runWithFrames(() => session.playFrom(middle.start));
+    expect(position(), first.end);
+    await _waitForNativeState(
+      app,
+      () => position() == middle.end,
+      'an intermediate long-sentence clip to naturally complete',
+    );
+    await app.runWithFrames(session.pause);
+    expect(position(), middle.end);
+    // A real native tail ending after seeking is not proof of hearing a clip.
+    await app.runWithFrames(() => session.playFrom(longUnits[1].chunk.start));
+    final duration = session.player.duration!;
+    await app.runWithFrames(
+      () => session.seek(duration - const Duration(milliseconds: 100)),
+    );
+    expect(position(), middle.end);
+    await _waitForNativeState(
+      app,
+      () => session.status == NarrationStatus.paused,
+      'the seek-tainted native ending to pause without a text commit',
+    );
+    expect(position(), middle.end);
+    final api = session.api as FakeNarrationApi;
+    expect(api.registrations, 0);
+    expect(api.requests, isEmpty);
+  }, skip: !Platform.isIOS);
 
   testWidgets(
     'markerless real Apple WAV uses enclosing sentence in every reading mode',

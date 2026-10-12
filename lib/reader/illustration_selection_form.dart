@@ -145,9 +145,9 @@ class IllustrationSelectionForm extends StatelessWidget {
           )
         else
           Text(
-            '${selected.label} receives the scene prompt and up to two prior '
-            'artworks. OpenAI still analyzes normalized chapter text and '
-            'moderates every image. Your source EPUB is never uploaded.',
+            '${selected.label} receives the selected passage and art '
+            'direction. OpenAI still picks scenes from normalized chapter text '
+            'and moderates every image. Your source EPUB is never uploaded.',
           ),
         const SizedBox(height: 8),
         const Text(

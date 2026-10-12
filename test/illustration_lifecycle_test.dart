@@ -8,8 +8,8 @@ import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/illustrations/book_text_index.dart';
 import 'package:reader/illustrations/chapter_text_index.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
-import 'package:reader/illustrations/gate.dart';
 import 'package:reader/illustrations/illustration_coordinator.dart';
+import 'package:reader/illustrations/illustration_figure.dart';
 import 'package:reader/illustrations/illustration_job_result.dart';
 import 'package:reader/illustrations/illustration_manifest.dart';
 import 'package:reader/illustrations/illustration_profile.dart';
@@ -106,7 +106,6 @@ void main() {
       regenerating: true,
       pendingGenerationVersion: 2,
       failureCategory: 'provider',
-      automaticRevealDismissed: true,
     );
     final restored = IllustrationScene.fromJson(scene.toJson());
     expect(restored.regenerating, isTrue);
@@ -122,30 +121,20 @@ void main() {
     expect(cleared.failureCategory, isNull);
     expect(cleared.localThumbnailPath, isNull);
     expect(cleared.localImagePath, 'original.png');
-    expect(cleared.automaticRevealDismissed, isTrue);
     expect(cleared.toJson().containsKey('pendingGenerationVersion'), isFalse);
   });
 
   test(
-    'replacement waits for whole ending paragraph and preserves hidden state',
+    'replacement downloads on the next poll and preserves hidden state',
     () async {
       final harness = await _Harness.create();
       harness.ready(2);
       final old = harness.scene;
       await harness.coordinator.advance(harness.book, _before);
-      expect(harness.api.unlockedSceneIds, isEmpty);
-      expect(harness.scene.pendingGenerationVersion, 2);
-      expect(harness.scene.generationVersion, 1);
-      expect(harness.scene.localImagePath, old.localImagePath);
-      expect(harness.scene.state, IllustrationSceneState.hidden);
-      expect(harness.coordinator.pendingRevealFor(harness.book), isNull);
-
-      await harness.coordinator.advance(harness.book, _passed);
       expect(harness.scene.generationVersion, 2);
       expect(harness.scene.pendingGenerationVersion, isNull);
       expect(harness.scene.regenerating, isFalse);
       expect(harness.scene.state, IllustrationSceneState.hidden);
-      expect(harness.scene.automaticRevealDismissed, isTrue);
       expect(harness.scene.localImagePath, endsWith('.v2.png'));
       expect(harness.scene.localThumbnailPath, endsWith('.v2.thumb.webp'));
       expect(
@@ -162,7 +151,6 @@ void main() {
       await harness.reopen();
       expect(harness.scene.generationVersion, 2);
       expect(harness.scene.state, IllustrationSceneState.hidden);
-      expect(harness.coordinator.pendingRevealFor(harness.book), isNull);
     },
   );
 
@@ -180,7 +168,6 @@ void main() {
     await harness.coordinator.advance(harness.book, _before);
     expect(harness.scene.regenerating, isTrue);
     expect(harness.scene.generationVersion, 1);
-    expect(harness.scene.automaticRevealDismissed, isTrue);
 
     harness.remote(
       IllustrationSceneState.readyLocked,
@@ -200,7 +187,6 @@ void main() {
       harness.coordinator.error,
       contains('previous artwork is still available'),
     );
-    expect(harness.coordinator.pendingRevealFor(harness.book), isNull);
     expect(await File(old.localImagePath!).readAsBytes(), illustrationPng());
     await harness.reopen();
     expect(harness.scene.regenerating, isFalse);
@@ -230,7 +216,6 @@ void main() {
           illustrationWebp(),
         );
         expect(harness.scene.state, IllustrationSceneState.hidden);
-        expect(harness.scene.automaticRevealDismissed, isTrue);
 
         harness.store.failure = null;
         await harness.reopen();
@@ -243,7 +228,6 @@ void main() {
         expect(harness.scene.pendingGenerationVersion, isNull);
         expect(await File(old.localImagePath!).exists(), isFalse);
         expect(await File(harness.scene.localImagePath!).exists(), isTrue);
-        expect(harness.coordinator.pendingRevealFor(harness.book), isNull);
       },
     );
   }
@@ -275,36 +259,29 @@ void main() {
   );
 
   test(
-    'poll and download preserve hide/dismiss changes made while awaiting IO',
+    'poll and download preserve hide changes made while awaiting IO',
     () async {
       final api = _DelayedApi();
       final harness = await _Harness.create(
         state: IllustrationSceneState.unlocked,
-        dismissed: false,
         api: api,
       );
       harness.ready(2);
       api.pollStarted = Completer<void>();
       api.continuePoll = Completer<void>();
-      final poll = harness.coordinator.advance(harness.book, _before);
-      await api.pollStarted!.future;
-      await harness.coordinator.markRevealed(harness.book, harness.scene);
-      api.continuePoll!.complete();
-      await poll;
-      expect(harness.scene.automaticRevealDismissed, isTrue);
-      expect(harness.scene.pendingGenerationVersion, 2);
-
       api.unlockStarted = Completer<void>();
       api.continueUnlock = Completer<void>();
-      final download = harness.coordinator.advance(harness.book, _passed);
+      final advance = harness.coordinator.advance(harness.book, _before);
+      await api.pollStarted!.future;
+      await harness.coordinator.hide(harness.book, harness.scene);
+      api.continuePoll!.complete();
       await api.unlockStarted!.future;
+      await harness.coordinator.unhide(harness.book, harness.scene);
       await harness.coordinator.hide(harness.book, harness.scene);
       api.continueUnlock!.complete();
-      await download;
+      await advance;
       expect(harness.scene.generationVersion, 2);
       expect(harness.scene.state, IllustrationSceneState.hidden);
-      expect(harness.scene.automaticRevealDismissed, isTrue);
-      expect(harness.coordinator.pendingRevealFor(harness.book), isNull);
     },
   );
 
@@ -401,26 +378,70 @@ void main() {
     },
   );
 
+  test('new ready scene downloads without a reading gate', () async {
+    final harness = await _Harness.create();
+    await harness.coordinator.deleteScene(harness.book, harness.scene);
+    harness.ready(1);
+    await harness.coordinator.advance(harness.book, _before);
+    expect(harness.scene.state, IllustrationSceneState.unlocked);
+    expect(harness.scene.localImagePath, isNotNull);
+    expect(harness.api.unlockedSceneIds, [_sceneId]);
+    final figure = harness.coordinator.figuresFor(harness.book)['s0']!['p1']!;
+    expect(figure.stage, IllustrationFigureStage.ready);
+  });
+
   test(
-    'new server-unlocked scene still requires the local ending gate',
+    'a generating scene yields a generating figure and no download',
+    () async {
+      final harness = await _Harness.create();
+      await harness.coordinator.deleteScene(harness.book, harness.scene);
+      harness.remote(IllustrationSceneState.generating, 0);
+      await harness.coordinator.advance(harness.book, _before);
+      expect(harness.scene.localImagePath, isNull);
+      expect(harness.api.unlockedSceneIds, isEmpty);
+      expect(
+        harness.coordinator.figuresFor(harness.book)['s0']!['p1']!.stage,
+        IllustrationFigureStage.generating,
+      );
+    },
+  );
+
+  test(
+    'a ready scene whose anchor cannot resolve is never downloaded',
     () async {
       final harness = await _Harness.create();
       await harness.coordinator.deleteScene(harness.book, harness.scene);
       harness.ready(1);
+      harness.api.jobResults['job-0'] = IllustrationJobResult(
+        id: 'job-0',
+        status: 'complete',
+        scenes: [
+          IllustrationScene(
+            id: _sceneId,
+            jobId: 'job-0',
+            anchor: const SceneAnchor(
+              href: 's0',
+              spineOrdinal: 0,
+              paragraphId: 'missing',
+              cssSelector: '',
+              fallbackProgression: .5,
+            ),
+            state: IllustrationSceneState.readyLocked,
+          ),
+        ],
+      );
       await harness.coordinator.advance(harness.book, _before);
+      expect(harness.api.unlockedSceneIds, isEmpty);
       expect(harness.scene.state, IllustrationSceneState.readyLocked);
       expect(harness.scene.localImagePath, isNull);
-      expect(harness.api.unlockedSceneIds, isEmpty);
-      await harness.coordinator.advance(harness.book, _passed);
-      expect(harness.scene.state, IllustrationSceneState.unlocked);
-      expect(harness.scene.localImagePath, isNotNull);
-      expect(harness.coordinator.pendingRevealFor(harness.book)?.id, _sceneId);
     },
   );
 
   test('older ready polling cannot discard a pending replacement', () async {
     final harness = await _Harness.create();
     harness.ready(2);
+    // A failed download leaves the replacement pending for a later retry.
+    harness.store.failure = 'image';
     await harness.coordinator.advance(harness.book, _before);
     expect(harness.scene.pendingGenerationVersion, 2);
     harness.remote(IllustrationSceneState.readyLocked, 1);
@@ -428,7 +449,6 @@ void main() {
     await harness.coordinator.advance(harness.book, _before);
     expect(harness.scene.pendingGenerationVersion, 2);
     expect(harness.scene.generationVersion, 1);
-    expect(harness.api.unlockedSceneIds, isEmpty);
   });
 
   test('confirm saves server revision/current provider, retaining admitted jobs and art', () async {
@@ -585,7 +605,6 @@ class _Harness {
 
   static Future<_Harness> create({
     IllustrationSceneState state = IllustrationSceneState.hidden,
-    bool dismissed = true,
     FakeIllustrationApi? api,
   }) async {
     final root = await Directory.systemTemp.createTemp(
@@ -642,7 +661,6 @@ class _Harness {
             localThumbnailPath: thumbnail,
             altText: 'Committed scene',
             caption: 'Committed caption',
-            automaticRevealDismissed: dismissed,
           ),
         ],
       ),
@@ -664,7 +682,6 @@ class _Harness {
       api: api,
       identity: FakeCloudIdentity(),
       deletionOutbox: MemoryCloudDeletionOutbox(),
-      gate: const IllustrationGate(),
       currentBook: (_) => book,
       narrationOwnsPosition: (_) => false,
       refreshCloudAccount: () async {},
