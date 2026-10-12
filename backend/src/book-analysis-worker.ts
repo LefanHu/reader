@@ -578,6 +578,9 @@ export function bookAnalysisWorkerRouter(deps: { db: Firestore; provider: BookAn
       if (error instanceof HttpError && error.status === 409 && error.message === "Book analysis claim expired.") throw error;
       const category = error instanceof BookAnalysisProviderError ? error.category :
         error instanceof AnalysisValidationError ? "invalid_provider_result" : "analysis_failed";
+      // Sanitized diagnostics only: operation, category and a fixed reason/code location; never prose or provider text.
+      console.error(JSON.stringify({ component: "book-analysis", operation: "extract_or_finalize", jobId: claim.jobId, category,
+        ...(error instanceof BookAnalysisProviderError && error.reason ? { reason: error.reason } : {}) }));
       try { await store.fail(claim, category); }
       catch (failure) { if (!(failure instanceof CancelledAnalysisClaim)) throw failure; }
       res.status(204).end();
