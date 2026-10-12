@@ -58,6 +58,7 @@ export function illustrationJobRouter(deps: {
     requireIllustrationSchema(req.body.schemaVersion);
     const profileRevision = requireInteger(req.body.profileRevision, "profileRevision", 1);
     const analysisVersion = requireInteger(req.body.analysisVersion, "analysisVersion", 1);
+    const documentVersion = requireInteger(req.body.documentVersion, "documentVersion", 1);
     const ordinal = Number(routeParam(req, "ordinal"));
     if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= 10000) {
       throw new HttpError(400, "Chapter ordinal is invalid.");
@@ -94,7 +95,7 @@ export function illustrationJobRouter(deps: {
       href: requireString(req.body.href, "href", 2000),
       ...(typeof req.body.title === "string" ? { title: req.body.title.slice(0, 500) } : {}),
       ...(typeof req.body.language === "string" ? { language: req.body.language.slice(0, 100) } : {}),
-      profileRevision, analysisVersion, paragraphs,
+      profileRevision, analysisVersion, documentVersion, paragraphs,
     };
     const idempotency = createHash("sha256")
       .update(`${uid}:${bookId}:${ordinal}:${profileRevision}:${analysisVersion}:illustrations-v2:prompt-v3`)
@@ -115,6 +116,14 @@ export function illustrationJobRouter(deps: {
           throw new HttpError(409, "Illustration operation is invalid.");
         }
         return;
+      }
+      // Image intents wait for finalized, matching preprocessing; no scene-only fallback or credit use.
+      const analysisId = fence.book.data()?.latestAnalysisGenerationId;
+      const analysis = typeof analysisId === "string"
+        ? (await transaction.get(db.collection("bookAnalysisRecords").doc(analysisId))).data() : undefined;
+      if (!analysis || analysis.uid !== uid || analysis.bookId !== bookId || analysis.status !== "complete" ||
+          analysis.admission?.documentVersion !== documentVersion) {
+        throw new HttpError(409, "Book preprocessing is not complete.");
       }
       const profile = requireIllustrationProfile(fence.book.data()?.profile);
       if (profile.revision !== profileRevision || profile.analysisVersion !== analysisVersion) {

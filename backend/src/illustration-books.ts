@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
-import { asyncRoute, HttpError, requireString, routeParam } from "./http.js";
-import { bookReference, readBookFence } from "./fences.js";
+import { asyncRoute, HttpError, routeParam } from "./http.js";
+import { bookReference } from "./fences.js";
+import { registerOwnedBook } from "./book-registration.js";
 import { refundReservation } from "./illustration-credits.js";
 import { getIllustrationConfiguration, requireIllustrationProfile, requireIllustrationSchema } from "./illustration-configuration.js";
 
@@ -30,39 +30,22 @@ export function illustrationBookRegistration(dependencies: { db: Firestore; pilo
     if (!configuration.enabled || !configuration.providers.some(provider => provider.available)) {
       throw new HttpError(503, "Illustrations are currently unavailable.");
     }
-    const fingerprint = requireString(req.body.fingerprint, "fingerprint", 128);
-    const title = requireString(req.body.title, "title", 500);
-    const chapterCount = Math.max(1, Math.min(10000, Number(req.body.chapterCount) || 1));
-    const bookId = createHash("sha256").update(`${uid}:${fingerprint}:illustrations-v2`).digest("hex").slice(0, 40);
-    const styles = stylesFor(title);
-    const profile = await db.runTransaction(async (transaction) => {
-      const userRef = db.collection("users").doc(uid);
-      const bookRef = bookReference(db, "books", uid, bookId);
-      const [user, fence] = await Promise.all([
-        transaction.get(userRef),
-        readBookFence(transaction, db, "books", uid, bookId),
-      ]);
-      if (fence.accountDeleted) throw new HttpError(410, "Account was deleted.");
-      if (fence.book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
-      transaction.set(bookRef, {
-        schemaVersion: 2,
-        uid,
-        fingerprint,
-        title,
-        authors: Array.isArray(req.body.authors) ? req.body.authors.slice(0, 20) : [],
-        language: typeof req.body.language === "string" ? req.body.language : null,
-        chapterCount,
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
-      if (user.data()?.creditsRemaining === undefined) {
-        transaction.set(userRef, {
-          creditsRemaining: pilotCredits,
-          updatedAt: FieldValue.serverTimestamp(),
-        }, { merge: true });
-      }
-      return fence.book.data()?.profile ? requireIllustrationProfile(fence.book.data()?.profile) : undefined;
+    const { bookId, chapterCount, extension: profile } = await registerOwnedBook({
+      db, uid, metadata: req.body,
+      extendTransaction: async (transaction, existingBook) => {
+        const userRef = db.collection("users").doc(uid);
+        const user = await transaction.get(userRef);
+        const profile = existingBook?.profile ? requireIllustrationProfile(existingBook.profile) : undefined;
+        if (user.data()?.creditsRemaining === undefined) {
+          transaction.set(userRef, {
+            creditsRemaining: pilotCredits,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        }
+        return profile;
+      },
     });
+    const styles = stylesFor(req.body.title);
     res.json({
       id: bookId,
       schemaVersion: 2,
@@ -93,6 +76,9 @@ export function illustrationBookDeletion(dependencies: { db: Firestore; storage:
       db.collection("creditReservations").where("uid", "==", uid).where("bookId", "==", bookId).get(),
       db.collection("worldRevisions").where("uid", "==", uid).where("bookId", "==", bookId).get(),
       db.collection("worldReferences").where("uid", "==", uid).where("bookId", "==", bookId).get(),
+      db.collection("bookAnalysisJobs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
+      db.collection("bookAnalysisRecords").where("uid", "==", uid).where("bookId", "==", bookId).get(),
+      db.collection("bookAnalysisInputs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
     ]);
     // Deletion owns releasing reservations; a fenced late worker cannot refund.
     for (const reservation of records[3]!.docs) await refundReservation(db, uid, reservation.ref);

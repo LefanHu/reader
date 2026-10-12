@@ -183,6 +183,7 @@ void main() {
     final chapters = List.generate(
       3,
       (chapter) => ChapterTextIndex(
+        documentVersion: 1,
         href: 's$chapter',
         spineOrdinal: chapter,
         title: 'Chapter $chapter',
@@ -269,6 +270,46 @@ void main() {
     );
     await _waitUntil(() => api.createdChapterOrdinals.contains(2));
     expect(api.createdChapterOrdinals, [0, 1, 2]);
+  });
+
+  test('chapter image jobs wait for finalized preprocessing and resume on completion', () async {
+    var ready = false;
+    final book = CatalogBook(
+      hash: 'abc124',
+      fileName: 'book.epub',
+      path: '/tmp/book.epub',
+      title: 'Test Book',
+      authors: const ['Test Author'],
+      addedAt: DateTime.utc(2026),
+      lastPosition: const TextPosition(sectionId: 's0', blockId: 'p1'),
+    );
+    final api = FakeIllustrationApi(configured: true);
+    final controller = await testController(
+      books: [book],
+      illustrationApi: api,
+      analysisReady: (_) => ready,
+    );
+    addTearDown(controller.dispose);
+    await controller.illustrations.confirm(
+      book,
+      setup: const IllustrationSetup(
+        cloudBookId: 'cloud-book',
+        suggestedStyle: 'Cinematic ink',
+        alternativeStyles: [],
+        estimatedCredits: 6,
+        configuration: FakeIllustrationApi.configuration,
+      ),
+      selection: const IllustrationSelection(
+        style: 'Cinematic ink',
+        providerId: 'openai',
+      ),
+    );
+    expect(api.createdChapterOrdinals, isEmpty);
+    expect(controller.illustrations.figuresFor(book), isEmpty);
+
+    ready = true;
+    await controller.illustrations.nudge(book);
+    expect(api.createdChapterOrdinals, isNotEmpty);
   });
 }
 

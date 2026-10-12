@@ -38,6 +38,7 @@ const _anchor = SceneAnchor(
 const _before = TextPosition(sectionId: 's0', blockId: 'p1', offset: 5);
 const _passed = TextPosition(sectionId: 's0', blockId: 'p1', offset: 6);
 const _chapter = ChapterTextIndex(
+  documentVersion: 1,
   href: 's0',
   spineOrdinal: 0,
   title: null,
@@ -675,6 +676,9 @@ class _Harness {
     return harness;
   }
 
+  /// Preprocessing readiness seen by the coordinator under test.
+  bool analysisReady = true;
+
   Future<void> reopen() async {
     coordinator = IllustrationCoordinator(
       store: store,
@@ -685,6 +689,7 @@ class _Harness {
       currentBook: (_) => book,
       narrationOwnsPosition: (_) => false,
       refreshCloudAccount: () async {},
+      analysisReady: (_) => analysisReady,
       changed: () {},
     );
     await coordinator.loadManifests([book]);

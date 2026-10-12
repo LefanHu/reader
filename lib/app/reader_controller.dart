@@ -7,6 +7,10 @@ import '../account/account_usage_exception.dart';
 import '../account/api.dart';
 import '../account/http_account_api.dart';
 import '../account/usage_coordinator.dart';
+import '../book_analysis/analysis_coordinator.dart';
+import '../book_analysis/file_analysis_store.dart';
+import '../book_analysis/http_book_analysis_api.dart';
+import '../book_analysis/services.dart';
 import '../catalog/catalog_book.dart';
 import '../catalog/catalog_session.dart';
 import '../catalog/catalog_store.dart';
@@ -59,6 +63,10 @@ typedef NarrationServices = ({
 /// injected by [create] or tests, so reading never depends on cloud plugins.
 /// Account usage owns its request lifecycle separately.
 class ReaderController extends ChangeNotifier {
+  /// Replaces finalized-preprocessing readiness for service-less tests only;
+  /// production never sets it, so image intents always wait for real analysis.
+  final bool Function(CatalogBook)? analysisReadyForTesting;
+
   /// Composes authoritative owners before installing optional narration.
   ReaderController({
     required CatalogStore catalogStore,
@@ -74,7 +82,9 @@ class ReaderController extends ChangeNotifier {
     required CloudDeletionOutbox narrationDeletionOutbox,
     required this.cloudIdentity,
     NarrationServices? narration,
+    BookAnalysisServices? analysis,
     this.accountApi,
+    @visibleForTesting this.analysisReadyForTesting,
   }) {
     catalog = CatalogSession(
       store: catalogStore,
@@ -82,6 +92,7 @@ class ReaderController extends ChangeNotifier {
       picker: picker,
       wordCounter: wordCounter,
       changed: notifyListeners,
+      acceptedBook: _acceptedBook,
     );
     preferences = ReaderPreferencesCoordinator(
       store: settingsStore,
@@ -104,6 +115,14 @@ class ReaderController extends ChangeNotifier {
       narrationOwnsPosition: (book) =>
           this.narration?.ownsPosition(book) == true,
       refreshCloudAccount: refreshCloudAccount,
+      analysisReady: (book) =>
+          analysisReadyForTesting?.call(book) ??
+          this.analysis?.isComplete(book) == true,
+      accountActionStarted: _invalidateAnalysisAccount,
+      consentConfirmed: (book) {
+        this.analysis?.queue(book);
+        this.analysis?.nudge();
+      },
       changed: notifyListeners,
     );
     _narrationDeletions = CloudDeletionQueue(
@@ -143,10 +162,61 @@ class ReaderController extends ChangeNotifier {
         currentPosition: (book) => catalog.find(book)?.lastPosition,
       );
     }
+    if (analysis != null) {
+      this.analysis = BookAnalysisCoordinator(
+        api: analysis.api,
+        store: analysis.store,
+        documents: analysis.documents,
+        books: () => catalog.books,
+        isBookLive: catalog.isLive,
+        uploadEligible: (book) {
+          final profile = illustrations.manifests[book.hash]?.profile;
+          // Confirmation is upload consent; disabling paid images does not revoke it.
+          return profile != null &&
+              profile.revision > 0 &&
+              profile.cloudBookId.isNotEmpty;
+        },
+        accountGeneration: () => _accountActionGeneration,
+        abandonRegistration: illustrations.enqueueBookDeletion,
+        changed: _analysisChanged,
+      );
+    }
   }
 
   /// App-lifetime narration; absent in offline/test dependency graphs.
   NarrationSession? narration;
+
+  /// Default-enabled preprocessing owner; absent only in offline/test graphs.
+  BookAnalysisCoordinator? analysis;
+
+  int _accountActionGeneration = 0;
+
+  void _acceptedBook(CatalogBook book) {
+    try {
+      analysis?.queue(book);
+    } on Object {
+      // Cloud scheduling cannot roll back a committed import; startup reconciles.
+    }
+  }
+
+  void _analysisChanged() {
+    if (_disposed) return;
+    notifyListeners();
+    for (final book in catalog.books) {
+      if (analysis?.isComplete(book) == true &&
+          illustrations.manifests[book.hash]?.enabled == true) {
+        unawaited(illustrations.nudge(book));
+      }
+    }
+  }
+
+  void _invalidateAnalysisAccount() {
+    _accountActionGeneration++;
+    analysis?.invalidateAccount();
+  }
+
+  /// Background dispatch runs only while resumed; reading state is unaffected.
+  void setAppResumed(bool resumed) => analysis?.setResumed(resumed);
 
   /// Platform voice catalog and synthesis identity, independent of attachment.
   final NarrationSource narrationSource;
@@ -206,6 +276,11 @@ class ReaderController extends ChangeNotifier {
     final controller = ReaderController(
       cloudIdentity: identity,
       accountApi: HttpAccountApi(identity: identity),
+      analysis: (
+        api: HttpBookAnalysisApi(identity: identity),
+        store: FileAnalysisStore(store.root),
+        documents: null,
+      ),
       narrationSource: source,
       narration: (
         api: narrationApi,
@@ -230,6 +305,8 @@ class ReaderController extends ChangeNotifier {
       textIndexer: DocumentTextIndexer(),
       wordCounter: FileBookWordCounter(),
     );
+    // The mounted app supplies the actual native lifecycle before any dispatch.
+    controller.setAppResumed(false);
     await controller.initialize();
     return controller;
   }
@@ -252,6 +329,7 @@ class ReaderController extends ChangeNotifier {
       await preferences.configure(narrationVoice: narrationSource.defaultVoice);
     }
     await illustrations.loadManifests(catalog.books);
+    await analysis?.restore(catalog.books);
     unawaited(illustrations.drainDeletions());
     unawaited(_narrationDeletions.drain());
     unawaited(catalog.backfillWordCounts());
@@ -265,6 +343,8 @@ class ReaderController extends ChangeNotifier {
       await narration!.pause();
     }
     await catalog.markOpened(book);
+    analysis?.queue(book);
+    analysis?.nudge();
   }
 
   /// Updates the leading text position and schedules illustration downloads.
@@ -320,11 +400,16 @@ class ReaderController extends ChangeNotifier {
     if (preferences.pendingOperations > 0) await preferences.flush();
     await _narrationShutdown;
     await narration?.flush();
+    await analysis?.flush();
     await catalog.flush();
   }
 
   /// Removes the catalog row, source directory, and generated cloud data.
   Future<void> delete(CatalogBook book) async {
+    final analysisBookId = analysis?.cloudBookIdFor(book);
+    analysis?.invalidateBook(book);
+    // Drain captured local receipts before the source directory can disappear.
+    await analysis?.flush();
     final audio = narration;
     if (audio != null) {
       await audio.detach(book);
@@ -334,7 +419,10 @@ class ReaderController extends ChangeNotifier {
         unawaited(_narrationDeletions.drain());
       }
     }
-    await illustrations.requestBookDeletion(book);
+    await illustrations.requestBookDeletion(
+      book,
+      analysisCloudBookId: analysisBookId,
+    );
     catalog.removeFromMemory(book);
     illustrations.forget(book);
     await catalog.persist();
@@ -351,12 +439,14 @@ class ReaderController extends ChangeNotifier {
       await narration?.attach(book);
       return;
     }
+    _invalidateAnalysisAccount();
     await _narrationDeletions.drain();
     if (await _narrationDeletions.hasPending) {
       throw StateError('Cloud cleanup is pending. Retry when connected.');
     }
     await narration?.register(book);
     await refreshCloudAccount();
+    analysis?.nudge();
   }
 
   /// Restores account metadata without sign-in, attestation or feature requests.
@@ -368,6 +458,7 @@ class ReaderController extends ChangeNotifier {
       if (_disposed) return;
       if (email != cloudEmail) _usage.invalidate();
       cloudEmail = email;
+      analysis?.nudge();
       if (!_disposed) notifyListeners();
     } on Object {
       // Offline startup never blocks local reading or forces authentication.
@@ -382,12 +473,14 @@ class ReaderController extends ChangeNotifier {
     if (cloudAccountBusy) return;
     cloudAccountBusy = true;
     _usage.invalidate();
+    _invalidateAnalysisAccount();
     notifyListeners();
     try {
       await action();
     } finally {
       settle();
       cloudAccountBusy = false;
+      analysis?.nudge();
       if (!_disposed) notifyListeners();
     }
   }
@@ -441,6 +534,7 @@ class ReaderController extends ChangeNotifier {
           if (active != null) await narration!.attach(active);
         }
         await illustrations.clearLocalAccountData(catalog.books);
+        await analysis?.clearAccountData(List.of(catalog.books));
         cloudEmail = null;
       },
       // Local cleanup can fail after Firebase deletion; show the actual identity.
@@ -475,6 +569,7 @@ class ReaderController extends ChangeNotifier {
     }
     unawaited(_narrationShutdown);
     _disposed = true;
+    analysis?.dispose();
     _usage.dispose();
     catalog.dispose();
     preferences.dispose();

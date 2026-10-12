@@ -1,11 +1,20 @@
 import type { ImageMimeType } from "./image-generation.js";
+import type { IllustrationContext } from "./types.js";
 
 const moderationsUrl = "https://api.openai.com/v1/moderations";
 
-export function composeImagePrompt(args: { style: string; sceneText: string }): string {
+/** Supported facts are separate evidence; the depicted scene remains the only action source. */
+export function composeImagePrompt(args: { style: string; sceneText: string; context?: IllustrationContext }): string {
+  const facts = args.context?.facts ?? [];
+  const subjects = (args.context?.subjects ?? []).filter(subject => subject.names.length > 0);
   return [
     "Draw a cinematic landscape illustration of this exact novel scene.",
     `Art direction: ${args.style}.`,
+    ...(facts.length || subjects.length ? [
+      "Established story context that already applies at this moment (visual evidence only; never depict later events or reveal anything not stated here):",
+      ...subjects.map(subject => `- ${subject.kind} known as ${subject.names.join(" / ")}`),
+      ...facts.map(fact => `- ${fact.subject} ${fact.property}: ${fact.value}${fact.object ? ` (${fact.object})` : ""}`),
+    ] : []),
     `Source scene: ${args.sceneText}`,
     "No text, lettering, captions, interface, border, signature, logo, or watermark.",
   ].join("\n");

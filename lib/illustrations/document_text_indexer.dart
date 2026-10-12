@@ -24,6 +24,7 @@ class DocumentTextIndexer implements TextIndexer {
       final section = await store.loadSection(sourcePath, summary.id);
       chapters.add(
         ChapterTextIndex(
+          documentVersion: document.version,
           href: section.id,
           spineOrdinal: ordinal,
           title: summary.title,

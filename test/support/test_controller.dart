@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:reader/account/api.dart';
 import 'package:reader/app/reader_controller.dart';
+import 'package:reader/book_analysis/services.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/catalog/catalog_store.dart';
 import 'package:reader/cloud_deletion_outbox.dart';
@@ -59,6 +60,8 @@ Future<ReaderController> testController({
   CloudDeletionOutbox? narrationDeletionOutbox,
   CloudIdentity? cloudIdentity,
   AccountApi? accountApi,
+  BookAnalysisServices? analysisServices,
+  bool Function(CatalogBook)? analysisReady,
   bool initialize = true,
 }) async {
   assert(catalogStore == null || books.isEmpty);
@@ -90,6 +93,9 @@ Future<ReaderController> testController({
         narrationDeletionOutbox ?? MemoryCloudDeletionOutbox(),
     cloudIdentity: cloudIdentity ?? (FakeCloudIdentity()..configured = false),
     accountApi: accountApi,
+    analysis: analysisServices,
+    analysisReadyForTesting:
+        analysisReady ?? (analysisServices == null ? (_) => true : null),
   );
   if (initialize) await controller.initialize();
   return controller;

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
 import '../illustrations/illustration_selection.dart';
+import 'analysis_progress_banner.dart';
 import 'illustration_consent_dialog.dart';
 import 'illustration_scene_dialog.dart';
 
@@ -45,6 +46,9 @@ class IllustrationGallery extends StatelessWidget {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+              ),
+              AnalysisProgressBanner(
+                state: controller.analysis?.states[book.hash],
               ),
               TextButton.icon(
                 onPressed: controller.illustrations.busy

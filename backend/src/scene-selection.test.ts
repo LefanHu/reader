@@ -8,7 +8,7 @@ const story = (count: number, length = 60) => Array.from({ length: count }, (_, 
   cssSelector: `p:nth-of-type(${ordinal + 1})`, ordinal, progression: ordinal / count,
 }));
 const chapterOf = (paragraphs: ChapterInput["paragraphs"], density = 1): ChapterInput => ({
-  href: "one.xhtml", profileRevision: 1, analysisVersion: 2, density, paragraphs,
+  href: "one.xhtml", profileRevision: 1, analysisVersion: 2, documentVersion: 1, density, paragraphs,
 });
 const recorder = (answer: (body: Record<string, any>, index: number) => unknown) => {
   const bodies: Array<Record<string, any>> = [];

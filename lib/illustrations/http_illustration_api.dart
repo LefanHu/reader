@@ -121,6 +121,7 @@ class HttpIllustrationApi implements IllustrationApi {
         'language': chapter.language,
         'profileRevision': profile.revision,
         'analysisVersion': profile.analysisVersion,
+        'documentVersion': chapter.documentVersion,
         'paragraphs': chapter.paragraphs
             .map(
               (paragraph) => {

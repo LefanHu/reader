@@ -23,6 +23,9 @@ import { illustrationSceneRouter } from "./illustration-scenes.js";
 import { illustrationJobRouter } from "./illustration-jobs.js";
 import { illustrationConfiguration } from "./illustration-configuration.js";
 import { createImageProviderRegistry } from "./image-provider-registry.js";
+import { bookAnalysisApiRouter } from "./book-analysis-api.js";
+import { bookAnalysisWorkerRouter } from "./book-analysis-worker.js";
+import { ResponsesBookAnalysisProvider } from "./book-analysis-provider.js";
 
 if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
 const db = getFirestore();
@@ -85,6 +88,11 @@ function requireFeature(_req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// Preprocessing shares Auth/App Check and rollout, but never image credits or availability.
+app.use("/v1/book-analysis", bookAnalysisApiRouter({
+  db, requireFeature, enqueue, fingerprintSecret,
+}));
+
 app.get("/v1/fingerprint-key", asyncRoute(async (req, res) => {
   if (!fingerprintSecret) throw new HttpError(503, "Fingerprinting is not configured.");
   const key = createHmac("sha256", fingerprintSecret)
@@ -116,6 +124,16 @@ function requireTask(req: Request, res: Response, next: NextFunction) {
 }
 app.use("/internal", requireTask);
 app.use("/internal/narration", narration.worker());
+app.use("/internal/book-analysis", requireFeature, (_req, res, next) => {
+  // API instances have no provider secret; workers wait without consuming paid intent.
+  if (!process.env.OPENAI_API_KEY) {
+    res.status(503).json({ error: "Book preprocessing is temporarily unavailable." });
+    return;
+  }
+  next();
+}, bookAnalysisWorkerRouter({
+  db, provider: new ResponsesBookAnalysisProvider(),
+}));
 app.use("/internal", (_req, res, next) => {
   if (!illustrationsEnabled) {
     res.status(503).json({ error: "Illustration generation is disabled." });

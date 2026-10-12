@@ -115,7 +115,7 @@ class FileIllustrationStore implements IllustrationStore {
     }
     final stored = await file.read((json) {
       final value = BookTextIndex.fromJson(json);
-      return value.version == 1 && value.bookHash == book.hash ? value : null;
+      return value.version == 2 && value.bookHash == book.hash ? value : null;
     });
     return stored?.value;
   }

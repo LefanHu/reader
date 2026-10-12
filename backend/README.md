@@ -32,6 +32,10 @@ docker build --platform linux/amd64 -t reader-backend-dev backend
   independent of the selected image source.
 - `src/narration.ts`, `narration-provider.ts`, `account.ts`: narration lifecycle
   and account routes.
+- `src/book-analysis-api.ts`: preprocessing-only registration, immutable generation
+  admission, descriptor/window transport, progress and client-driven finalization;
+  `book-analysis-store.ts`: owner-fenced leases, private immutable staging, durable
+  cursors and atomic finalized pointers.
 - `src/illustration-worker.test.ts` runs lifecycle regressions over local HTTP
   with isolated storage and deterministic provider barriers.
 
@@ -57,6 +61,30 @@ The mobile build supplies Firebase/API values with `--dart-define`.
   provider billing, not IAM. Fund the organization before replacing a key.
 - Firestore: TTL on `illustrationJobInputs.expiresAt`; deny all direct client
   access to Firestore and Storage; grant service accounts least privilege.
+- `bookAnalysisInputs.expiresAt` has a TTL policy; composite indexes for the three
+  analysis collections live in `firestore.indexes.json` and the illustrations
+  Terraform module. Identity relations use the reserved property `same_identity`.
+  Result pages publish in batches of 32 per finalization call; clients resume by
+  repeating `POST .../finalize` until status is `complete`.
+- Book preprocessing registration shares the schema-2 owned book identity and
+  tombstones, but does not initialize image credits or modify illustration
+  profiles. `bookAnalysisJobs` and `bookAnalysisRecords` hold book-owned
+  intents/pages; bounded raw windows live in `bookAnalysisInputs` with a
+  24-hour `expiresAt` TTL. Book/account deletion purges all three collections,
+  including unpublished pages, after committing the existing deletion fence.
+- Analysis admission and continuation routes use the illustration rollout flag,
+  not image-provider availability, profiles or credits. Configuration, progress
+  and finalized page retrieval are read-only even while rollout is off. Descriptor
+  pages may arrive in any upload order, but complete exact source coverage must
+  validate before sequential extraction. Repeated chunk submissions repair lost
+  task enqueue responses and restore expired input only before provider submission.
+  The persisted `providerSubmitted` flag prevents paid retries after an incomplete
+  provider operation. UUID claims have ten-minute leases; every staging/cursor/
+  pointer write checks the same live token, generation and account/book fences.
+  Worker finalization progresses through `reconcile`, `materialize`, `index`,
+  `publish`; only authenticated continuation POSTs enqueue these bounded units.
+  Staging pages are never served as finalized results. A previous complete book
+  pointer remains visible until its replacement's checksummed pages publish.
 - Bucket lifecycle deletes `users/**/scenes/**` after 30 days. Scenes carry
   `assetExpiresAt`; `/unlock` queues an uncharged refresh within 24 hours of
   expiry. Storage stays private: clients get only ten-minute signed URLs.
@@ -148,9 +176,21 @@ users, tombstones, `narrationBooks`, `narrationAccountTombstones` and
   `.claim-<token>` objects and removes its own on cancellation. An expired,
   still-owned lease returns 409 for task retry; the next claim transfers the
   reservation exactly once.
-- Job documents temporarily hold a `plan` (bounded anchors, paraphrased facts,
-  specs/world snapshots). Raw chapter text lives only in the 24-hour-TTL input
-  until the guarded analysis commit deletes it. Terminal states remove the plan.
+- Job documents temporarily hold a `plan` (bounded anchors, selected scene text,
+  source range and the admitted temporal `context`). Raw chapter text lives only
+  in the 24-hour-TTL input until the guarded commit deletes it. Terminal states
+  remove the plan.
+- Image intents (`POST /books/:id/chapters/:n/jobs`) require `documentVersion` and
+  a complete preprocessing generation of that exact version, else 409 `Book
+  preprocessing is not complete.` with no intent, input or credit mutation.
+  `book-analysis-context.ts` snapshots into each scene recipe only facts that are
+  `asserted`, applicable at the scene's story time by partial-order reachability,
+  not superseded, and revealed by the scene end; vetted world baselines
+  (geography, architecture, climate, ambient environment, world rules) may be
+  retroactive. Aliases, character, group, artifact and event facts never appear
+  early; conflicting or incomparable chronology is omitted. Context is capped at
+  8,000 UTF-16 units and reused by regeneration and refresh; recipes without it
+  stay scene-only. Preprocessing never starts image generation or spends credits.
 - Regeneration persists `regenerationTarget`, `regenerationRefresh`,
   `regenerationTaskId` and `regenerationGenerationSpec` before enqueue; retries
   (including `/unlock`) resubmit the

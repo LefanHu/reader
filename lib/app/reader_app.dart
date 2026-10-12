@@ -27,6 +27,9 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.controller.setAppResumed(
+      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+    );
     _settingsChannel.setMethodCallHandler((call) async {
       if (call.method == 'openSettings' && _navigator.currentState != null) {
         unawaited(
@@ -38,6 +41,7 @@ class _ReaderAppState extends State<ReaderApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    widget.controller.setAppResumed(state == AppLifecycleState.resumed);
     // Persist the latest debounced text position before the process is suspended.
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {

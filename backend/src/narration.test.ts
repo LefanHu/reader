@@ -285,6 +285,9 @@ test("account HTTP deletion stays available with rollout disabled and ignores sp
       "creditReservations",
       "worldRevisions",
       "worldReferences",
+      "bookAnalysisJobs",
+      "bookAnalysisRecords",
+      "bookAnalysisInputs",
     ];
     for (const collection of collections) {
       app.db.values.set(`${collection}/owner`, { uid: "user" });

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/illustrations/illustration_scene.dart';
 import 'package:reader/reader/illustration_figure_view.dart';
 
+import '../support/native_analysis_scenario.dart';
 import '../support/native_illustration_api.dart';
 import '../support/native_test_app.dart';
 
@@ -14,6 +15,11 @@ import '../support/native_test_app.dart';
 /// Cloud behavior is a deterministic fixture; import, indexing, storage, image
 /// decoding, gating, polling and every interaction below are the real app.
 void registerIllustrationTests() {
+  testWidgets(
+    'default preprocessing completes without opening books or prompting for authentication',
+    runDefaultPreprocessingScenario,
+  );
+
   testWidgets(
     'cancel uploads no prose, then each source saves per book without touching admitted work or art',
     (tester) async {

@@ -90,20 +90,23 @@ export function accountDeletionRouter(dependencies: {
       const { db, storage, bucket, narration } = dependencies;
       // The narration account tombstone fences both workers before shared assets are purged.
       await narration.deleteAccount(uid);
-      const [scenes, jobs, inputs, reservations, revisions, references] = await Promise.all([
+      const records = await Promise.all([
         db.collection("illustrationScenes").where("uid", "==", uid).get(),
         db.collection("illustrationJobs").where("uid", "==", uid).get(),
         db.collection("illustrationJobInputs").where("uid", "==", uid).get(),
         db.collection("creditReservations").where("uid", "==", uid).get(),
         db.collection("worldRevisions").where("uid", "==", uid).get(),
         db.collection("worldReferences").where("uid", "==", uid).get(),
+        db.collection("bookAnalysisJobs").where("uid", "==", uid).get(),
+        db.collection("bookAnalysisRecords").where("uid", "==", uid).get(),
+        db.collection("bookAnalysisInputs").where("uid", "==", uid).get(),
       ]);
       await storage.bucket(bucket).deleteFiles({
         prefix: `users/${uid}/`,
         force: true,
       });
       const writer = db.bulkWriter();
-      for (const snapshot of [scenes, jobs, inputs, reservations, revisions, references]) {
+      for (const snapshot of records) {
         for (const document of snapshot.docs) writer.delete(document.ref);
       }
       await writer.close();

@@ -9,7 +9,7 @@ class BookTextIndex {
   const BookTextIndex({
     required this.bookHash,
     required this.chapters,
-    this.version = 1,
+    this.version = 2,
   });
 
   final int version;

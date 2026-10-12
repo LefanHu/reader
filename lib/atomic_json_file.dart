@@ -59,14 +59,25 @@ class AtomicJsonFile {
 
   /// Serializes a complete read-modify-write operation, including the read.
   /// Return null for no change; use [read] to read and validate inside the
-  /// callback. Do not call [write] or [update] from that callback.
-  Future<void> update(Future<Map<String, dynamic>?> Function() change) =>
-      _queue.run(file.absolute.path, () async {
-        final value = await change();
-        if (value != null) await _replace(jsonEncode(value));
-      });
+  /// callback. Do not call [write] or [update] from that callback. An optional
+  /// [isCurrent] fence is rechecked after each preparation await and immediately
+  /// before the synchronous commit, so invalidated work cannot publish late.
+  Future<void> update(
+    Future<Map<String, dynamic>?> Function() change, {
+    bool Function()? isCurrent,
+  }) => _queue.run(file.absolute.path, () async {
+    if (isCurrent != null && !isCurrent()) return;
+    final value = await change();
+    if (value != null) {
+      await _replace(jsonEncode(value), isCurrent: isCurrent);
+    }
+  });
 
-  Future<void> _replace(String body) async {
+  Future<void> _replace(String body, {bool Function()? isCurrent}) async {
+    if (isCurrent != null) {
+      await _replaceFenced(body, isCurrent);
+      return;
+    }
     await file.parent.create(recursive: true);
     final temporary = _generations[1];
     final backup = _generations[2];
@@ -76,5 +87,24 @@ class AtomicJsonFile {
     if (await file.exists()) await file.rename(backup.path);
     await temporary.rename(file.path);
     if (await backup.exists()) await backup.delete();
+  }
+
+  Future<void> _replaceFenced(String body, bool Function() isCurrent) async {
+    if (!isCurrent()) return;
+    await file.parent.create(recursive: true);
+    if (!isCurrent()) return;
+    final temporary = _generations[1];
+    final backup = _generations[2];
+    await temporary.writeAsString(body, flush: true);
+    if (!isCurrent()) {
+      // This path's queue is held: no other writer can own this temporary file.
+      temporary.deleteSync();
+      return;
+    }
+    // No event-loop gap between the final ownership check and publication.
+    if (backup.existsSync()) backup.deleteSync();
+    if (file.existsSync()) file.renameSync(backup.path);
+    temporary.renameSync(file.path);
+    if (backup.existsSync()) backup.deleteSync();
   }
 }

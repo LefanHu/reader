@@ -12,7 +12,9 @@ async function fixture(action: (memory: MemoryFirestore, request: (path: string,
   process.env.ILLUSTRATIONS_ENABLED = "true";
   process.env.IMAGE_PROVIDERS = "openai,google,seedream,qwen,xai,flux";
   const memory = new MemoryFirestore();
-  memory.values.set("users/owner/books/book", { uid: "owner", schemaVersion: 2 });
+  memory.values.set("users/owner/books/book", { uid: "owner", schemaVersion: 2, latestAnalysisGenerationId: "analysis" });
+  // Unrelated image behavior runs against a finalized, empty analysis of document version 1.
+  memory.values.set("bookAnalysisRecords/analysis", { uid: "owner", bookId: "book", recordType: "generation", status: "complete", admission: { documentVersion: 1 } });
   const tasks: string[] = [];
   const app = express();
   app.use(express.json());
@@ -38,7 +40,24 @@ async function fixture(action: (memory: MemoryFirestore, request: (path: string,
   }
 }
 const settings = { schemaVersion: 2, providerId: "openai", style: "Ink", density: 2, analysisVersion: 2, expectedRevision: 0 };
-const chapter = { schemaVersion: 2, profileRevision: 1, analysisVersion: 2, href: "chapter.xhtml", paragraphs: [{ id: "p1", text: "The knight enters the courtyard.", cssSelector: "#p1", ordinal: 0, progression: 1 }] };
+const chapter = { schemaVersion: 2, profileRevision: 1, analysisVersion: 2, documentVersion: 1, href: "chapter.xhtml", paragraphs: [{ id: "p1", text: "The knight enters the courtyard.", cssSelector: "#p1", ordinal: 0, progression: 1 }] };
+
+test("new image intents wait for finalized matching preprocessing and reserve nothing", async () => {
+  await fixture(async (memory, request, tasks) => {
+    await request("/books/book/profile", settings, "PUT");
+    memory.values.set("bookAnalysisRecords/analysis", { uid: "owner", bookId: "book", recordType: "generation", status: "finalizing", admission: { documentVersion: 1 } });
+    for (const body of [chapter, { ...chapter, documentVersion: 2 }]) {
+      const response = await request("/books/book/chapters/0/jobs", body);
+      assert.equal(response.status, 409);
+      assert.equal((await response.json() as { error: string }).error, "Book preprocessing is not complete.");
+    }
+    memory.values.set("bookAnalysisRecords/analysis", { uid: "owner", bookId: "book", recordType: "generation", status: "complete", admission: { documentVersion: 2 } });
+    assert.equal((await request("/books/book/chapters/0/jobs", chapter)).status, 409);
+    assert.deepEqual(tasks, []);
+    assert(![...memory.values.keys()].some(path => path.startsWith("illustrationJobs/") || path.startsWith("illustrationJobInputs/")));
+    assert.equal(memory.values.get("users/owner")?.creditsRemaining, undefined);
+  });
+});
 
 test("catalogue remains readable with rollout disabled and exposes all seven nonsecret sources", async () => {
   await fixture(async (_memory, request) => {

@@ -18,7 +18,14 @@ locals {
     flux     = "reader-bfl-api-key"
   }
   index_spec = jsondecode(var.firestore_indexes_json)
-  indexes    = { for index in local.index_spec.indexes : index.collectionGroup => index }
+  # Existing single-index collections keep their historic address; collections with
+  # several indexes add their field list so no resource is renamed or collapsed.
+  indexes = {
+    for index in local.index_spec.indexes :
+    (length([for other in local.index_spec.indexes : other if other.collectionGroup == index.collectionGroup]) == 1
+      ? index.collectionGroup
+    : "${index.collectionGroup}.${join(".", [for field in index.fields : field.fieldPath])}") => index
+  }
   ttl_fields = { for field in local.index_spec.fieldOverrides : "${field.collectionGroup}.${field.fieldPath}" => field if try(field.ttl, false) }
   labels     = { application = "reader", environment = var.environment, managed_by = "terraform" }
 }

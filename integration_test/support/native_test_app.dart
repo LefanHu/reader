@@ -11,6 +11,7 @@ import 'package:reader/account/api.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
 import 'package:reader/app/reader_controller.dart';
+import 'package:reader/book_analysis/services.dart';
 import 'package:reader/identity/cloud_identity.dart';
 import 'package:reader/illustrations/api.dart';
 import 'package:reader/illustrations/document_text_indexer.dart';
@@ -57,6 +58,8 @@ class NativeTestApp {
   IllustrationApi? _illustrationApi;
   CloudIdentity? _cloudIdentity;
   AccountApi? _accountApi;
+  BookAnalysisServices? _analysisServices;
+  BookAnalysisServices Function(Directory root)? _analysisServicesFactory;
   bool _hasNarration = false;
   final _screenshotKey = GlobalKey();
   bool _mounted = false;
@@ -72,6 +75,8 @@ class NativeTestApp {
     CloudIdentity? cloudIdentity,
     AccountApi? accountApi,
     IllustrationApi? illustrationApi,
+    BookAnalysisServices? analysisServices,
+    BookAnalysisServices Function(Directory root)? analysisServicesFactory,
     Uint8List? textBytes,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
@@ -82,6 +87,8 @@ class NativeTestApp {
     app._illustrationApi = illustrationApi;
     app._cloudIdentity = cloudIdentity;
     app._accountApi = accountApi;
+    app._analysisServices = analysisServices;
+    app._analysisServicesFactory = analysisServicesFactory;
     app._hasNarration = hasNarration;
     if (localNarration) {
       app.localNarrationSource = await AppleNarrationSource.create(root: root);
@@ -123,6 +130,7 @@ class NativeTestApp {
       wordCounter: FileBookWordCounter(),
       cloudIdentity: cloudIdentity,
       accountApi: accountApi,
+      analysisServices: analysisServicesFactory?.call(root) ?? analysisServices,
       narrationApi: api,
       narrationSource: app.localNarrationSource,
       narrationPlayer: app._initializingPlayer,
@@ -169,6 +177,8 @@ class NativeTestApp {
       wordCounter: FileBookWordCounter(),
       cloudIdentity: _cloudIdentity,
       accountApi: _accountApi,
+      analysisServices:
+          _analysisServicesFactory?.call(root) ?? _analysisServices,
     );
     _ownedController = controller;
     await controller.initialize();

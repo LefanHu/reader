@@ -22,6 +22,7 @@ class CatalogSession {
     required this.picker,
     required this.wordCounter,
     required this._changed,
+    this.acceptedBook,
   });
 
   /// Persists complete catalog snapshots and owns source-directory deletion.
@@ -35,6 +36,10 @@ class CatalogSession {
 
   /// Counts normalized text independently of cloud indexing.
   final BookWordCounter wordCounter;
+
+  /// Runs only after an accepted import's catalog snapshot is durable.
+  /// The composition root queues noninteractive work and must not throw.
+  final void Function(CatalogBook)? acceptedBook;
 
   /// Authoritative live catalog records.
   List<CatalogBook> books = [];
@@ -83,6 +88,7 @@ class CatalogSession {
           books = [...books, imported.book!];
           hashes.add(imported.book!.hash);
           await store.save(books);
+          acceptedBook?.call(imported.book!);
         }
         importDone++;
         _changed();

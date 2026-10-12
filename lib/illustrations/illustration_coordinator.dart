@@ -36,7 +36,10 @@ class IllustrationCoordinator {
     required this._currentBook,
     required this._narrationOwnsPosition,
     required this._refreshCloudAccount,
+    required this._analysisReady,
     required this._changed,
+    this.accountActionStarted,
+    this.consentConfirmed,
   });
 
   /// Persists indexes, manifests, and downloaded scene files.
@@ -53,6 +56,12 @@ class IllustrationCoordinator {
 
   /// Durable book-deletion receipts outside source-book directories.
   final CloudDeletionOutbox deletionOutbox;
+
+  /// Fences automatic preprocessing before this explicit native account action.
+  final VoidCallback? accountActionStarted;
+
+  /// Queues preprocessing only after confirmed upload consent is durable.
+  final void Function(CatalogBook)? consentConfirmed;
 
   late final _deletions = CloudDeletionQueue(
     outbox: deletionOutbox,
@@ -72,6 +81,9 @@ class IllustrationCoordinator {
   final CatalogBook? Function(CatalogBook) _currentBook;
   final bool Function(CatalogBook) _narrationOwnsPosition;
   final Future<void> Function() _refreshCloudAccount;
+
+  /// True once finalized preprocessing for the exact document exists.
+  final bool Function(CatalogBook) _analysisReady;
   final VoidCallback _changed;
   final Map<String, BookTextIndex> _textIndexes = {};
   final Set<String> _advancingIllustrations = {};
@@ -103,20 +115,30 @@ class IllustrationCoordinator {
       );
   }
 
-  /// Deletes an existing cloud profile or durably enqueues its failed deletion.
-  ///
-  /// Reads only an existing manifest, never creating one during book deletion.
-  Future<void> requestBookDeletion(CatalogBook book) async {
-    final cloudBookId = manifests[book.hash]?.profile?.cloudBookId;
-    if (cloudBookId != null && cloudBookId.isNotEmpty) {
+  /// Uses the shared deletion owner/outbox for both illustration and analysis IDs.
+  /// Receipts outlive source directories; local deletion never prompts for sign-in.
+  Future<void> requestBookDeletion(
+    CatalogBook book, {
+    String? analysisCloudBookId,
+  }) async {
+    final ids = <String>{
+      if (manifests[book.hash]?.profile?.cloudBookId case final String id) id,
+      if (analysisCloudBookId != null) analysisCloudBookId,
+    };
+    for (final id in ids.where((id) => id.isNotEmpty)) {
       try {
-        await api.deleteBook(cloudBookId);
+        await api.deleteBook(id, interactive: false);
       } on Object {
-        // Local privacy remains usable offline; the receipt outlives the book.
-        await _deletions.enqueue(cloudBookId);
+        // One durable owner avoids competing analysis/image deletion retries.
+        await _deletions.enqueue(id);
       }
     }
   }
+
+  /// Keeps a delayed preprocessing registration's deletion receipt outside books.
+  /// Dispatch remains owned by the existing noninteractive deletion lifecycle.
+  Future<void> enqueueBookDeletion(String cloudBookId) =>
+      _deletions.enqueue(cloudBookId);
 
   /// Removes only the book's in-memory manifest and normalized index.
   void forget(CatalogBook book) {
@@ -160,6 +182,7 @@ class IllustrationCoordinator {
     error = null;
     _changed();
     try {
+      accountActionStarted?.call();
       await identity.signIn();
       await _refreshCloudAccount();
       await drainDeletions();
@@ -221,6 +244,7 @@ class IllustrationCoordinator {
       final manifest = manifestFor(book).copyWith(profile: profile);
       await store.saveManifest(book, manifest);
       manifests[book.hash] = manifest;
+      consentConfirmed?.call(book);
       _changed();
       await _scheduleAhead(
         book,
@@ -450,6 +474,9 @@ class IllustrationCoordinator {
     BookTextIndex index,
     TextPosition? position,
   ) async {
+    // Image intents wait for finalized preprocessing: no placeholder, position
+    // change or scene-only fallback; completion nudges scheduling again.
+    if (!_analysisReady(book)) return;
     final profile = manifest.profile;
     if (profile == null ||
         !profile.enabled ||
@@ -477,6 +504,35 @@ class IllustrationCoordinator {
       manifests[book.hash] = updated;
     }
     _changed();
+  }
+
+  /// Nudges enabled books at the committed anchor without advancing reading state.
+  /// This also schedules an unopened book once preprocessing finishes.
+  Future<void> nudge(CatalogBook book) async {
+    if (_advancingIllustrations.contains(book.hash) ||
+        !manifestFor(book).enabled)
+      return;
+    _advancingIllustrations.add(book.hash);
+    try {
+      final current = _currentBook(book);
+      if (current == null ||
+          current.path != book.path ||
+          current.addedAt != book.addedAt)
+        return;
+      final index = await _indexFor(book);
+      final latest = _currentBook(book);
+      if (latest == null ||
+          latest.path != book.path ||
+          latest.addedAt != book.addedAt ||
+          busy)
+        return;
+      await _scheduleAhead(book, manifestFor(book), index, latest.lastPosition);
+    } on Object catch (failure) {
+      error = _safeFailure(failure).toString();
+      _changed();
+    } finally {
+      _advancingIllustrations.remove(book.hash);
+    }
   }
 
   /// Schedules nearby chapters, refreshes jobs, and downloads ready art.

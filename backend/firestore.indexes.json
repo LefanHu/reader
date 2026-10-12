@@ -1,6 +1,62 @@
 {
   "indexes": [
     {
+      "collectionGroup": "bookAnalysisRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "generationId", "order": "ASCENDING" },
+        { "fieldPath": "recordType", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookAnalysisJobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "generationId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookAnalysisRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "generationId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookAnalysisInputs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "generationId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookAnalysisJobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "bookId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookAnalysisRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "bookId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bookAnalysisInputs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "bookId", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "illustrationJobs",
       "queryScope": "COLLECTION",
       "fields": [
@@ -42,6 +98,12 @@
     }
   ],
   "fieldOverrides": [
+    {
+      "collectionGroup": "bookAnalysisInputs",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
     {
       "collectionGroup": "illustrationJobInputs",
       "fieldPath": "expiresAt",

@@ -10,7 +10,9 @@ import { requireImageGenerationConfig, requireIllustrationProfile } from "./illu
 import { asyncRoute, HttpError, routeParam } from "./http.js";
 import { readBookFence } from "./fences.js";
 import { CancelledClaim, reserveCredit, settleCredit } from "./illustration-credits.js";
-import type { ChapterInput, ImageGenerationConfig, SceneGenerationSpec } from "./types.js";
+import type { ChapterInput, IllustrationContext, ImageGenerationConfig, SceneGenerationSpec } from "./types.js";
+import type { AnalysisPosition } from "./book-analysis-types.js";
+import { resolveIllustrationContext } from "./book-analysis-context.js";
 
 /** Worker dispatch includes credential/config validation before any credit reservation. */
 export interface IllustrationWorkerDependencies {
@@ -25,6 +27,8 @@ export interface IllustrationWorkerDependencies {
   imageGenerationProvider: ImageGenerationProvider & {
     validateCredentials(config: ImageGenerationConfig): void | Promise<void>;
   };
+  /** Test seam; production reads the latest finalized preprocessing generation. */
+  resolveContext?: typeof resolveIllustrationContext;
 }
 
 class SafetyError extends Error {}
@@ -51,6 +55,10 @@ type ScenePlan = {
   caption: string;
   /** Selected paragraphs, so a new lease can resume after the chapter input is deleted. */
   sceneText: string;
+  /** Complete source range and admitted temporal context (absent for pre-preprocessing plans). */
+  sceneStart?: AnalysisPosition;
+  sceneEnd?: AnalysisPosition;
+  context?: IllustrationContext;
 };
 type JobPlan = { scenes: ScenePlan[] };
 
@@ -81,6 +89,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     selectScenes, composeImagePrompt, moderateText, moderateImage,
     imageGenerationProvider,
   } = dependencies;
+  const resolveContext = dependencies.resolveContext ?? resolveIllustrationContext;
   const router = express.Router();
 
   async function liveClaim(transaction: Transaction, claim: Claim) {
@@ -166,19 +175,27 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
           throw new Error("Operation snapshot is incomplete");
         }
         const selected = await selectScenes(input, profile.density);
-        plan = { scenes: selected.map((scene) => {
+        const scenes: ScenePlan[] = [];
+        for (const scene of selected) {
           const id = createHash("sha256").update(`${jobId}:${scene.startParagraphId}:${scene.endParagraphId}`).digest("hex").slice(0, 40);
           const start = input.paragraphs.findIndex((paragraph) => paragraph.id === scene.startParagraphId);
           const end = input.paragraphs.findIndex((paragraph) => paragraph.id === scene.endParagraphId);
           const paragraph = input.paragraphs[end]!;
           const opening = input.paragraphs[start]!.text.trim();
           const excerpt = opening.length > 120 ? `${opening.slice(0, 117)}…` : opening;
-          return { id, paragraphOrdinal: end,
+          // Paragraph IDs are normalized block IDs, so source positions map from unchanged selected text.
+          const sceneStart: AnalysisPosition = { version: input.documentVersion, sectionId: input.href, blockId: input.paragraphs[start]!.id, offset: 0 };
+          const sceneEnd: AnalysisPosition = { version: input.documentVersion, sectionId: input.href, blockId: paragraph.id, offset: paragraph.text.length };
+          // Snapshotted once here so retries, regeneration and refresh reuse the same admitted truth.
+          const context = await resolveContext(db, { uid, bookId, anchor: sceneEnd, sceneStart, sceneEnd });
+          scenes.push({ id, paragraphOrdinal: end,
             anchor: { href: input.href, spineOrdinal: chapterOrdinal, paragraphId: paragraph.id,
               cssSelector: paragraph.cssSelector, fallbackProgression: paragraph.progression },
             altText: `Illustration of the passage beginning “${excerpt}”`, caption: "",
-            sceneText: input.paragraphs.slice(start, end + 1).map((item) => item.text).join("\n\n").slice(0, 6000) };
-        }) };
+            sceneText: input.paragraphs.slice(start, end + 1).map((item) => item.text).join("\n\n").slice(0, 6000),
+            sceneStart, sceneEnd, ...(context ? { context } : {}) });
+        }
+        plan = { scenes };
         const planned = plan;
         await db.runTransaction(async (transaction) => {
           await liveClaim(transaction, claim);
@@ -198,6 +215,9 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
         const spec: SceneGenerationSpec = {
           imageConfig: requireImageGenerationConfig(jobData.imageConfig),
           style: profile.style, sceneText: candidate.sceneText,
+          ...(candidate.sceneStart ? { sceneStart: candidate.sceneStart } : {}),
+          ...(candidate.sceneEnd ? { sceneEnd: candidate.sceneEnd } : {}),
+          ...(candidate.context ? { context: candidate.context } : {}),
         };
         const prompt = composeImagePrompt(spec);
         // No scene record exists yet, so a blocked prompt never shows a placeholder.
@@ -304,7 +324,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
         if (!reserved) throw new HttpError(402, "Insufficient credits.");
       }
       if (typeof spec?.sceneText !== "string") throw new Error("Scene recipe has no selected passage");
-      const prompt = composeImagePrompt({ style: spec.style, sceneText: spec.sceneText });
+      const prompt = composeImagePrompt({ style: spec.style, sceneText: spec.sceneText, ...(spec.context ? { context: spec.context } : {}) });
       if (await moderateText(prompt)) throw new SafetyError("text blocked");
       const image = await imageGenerationProvider.generate(config, prompt);
       if (await moderateImage(image.bytes, image.mimeType)) throw new SafetyError("image blocked");

@@ -8,12 +8,12 @@ import sharp from "sharp";
 import { composeImagePrompt } from "./openai.js";
 import { HttpError } from "./http.js";
 import { MemoryFirestore } from "./test-support/firestore.js";
-import { illustrationWorkerRouter } from "./illustration-worker.js";
+import { illustrationWorkerRouter, type IllustrationWorkerDependencies } from "./illustration-worker.js";
 import { illustrationSceneRouter } from "./illustration-scenes.js";
 import { illustrationBookDeletion } from "./illustration-books.js";
 import { accountDeletionRouter } from "./account.js";
 import { NarrationBackend } from "./narration.js";
-import type { ChapterInput, ImageGenerationConfig, IllustrationBookProfile, SceneGenerationSpec } from "./types.js";
+import type { ChapterInput, ImageGenerationConfig, IllustrationBookProfile, IllustrationContext, SceneGenerationSpec } from "./types.js";
 import { snapshotImageGenerationConfig } from "./illustration-configuration.js";
 import { validateGeneratedImage, type GeneratedImage, type ReferenceImage } from "./image-generation.js";
 import type { SelectedScene } from "./scene-selection.js";
@@ -24,7 +24,7 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 const reservationPath = (operation: string) => `creditReservations/${hash(`owner:${operation}`)}`;
 
 const input: ChapterInput = {
-  href: "chapter.xhtml", profileRevision: 1, analysisVersion: 1, density: 1,
+  href: "chapter.xhtml", profileRevision: 1, analysisVersion: 1, documentVersion: 1, density: 1,
   paragraphs: [{ id: "paragraph", text: "A traveler enters the courtyard.",
     cssSelector: "#paragraph", ordinal: 0, progression: 0.5 }],
 };
@@ -36,6 +36,7 @@ const profile: IllustrationBookProfile = { schemaVersion: 2, providerId: "openai
   style: "Painted", revision: 1, density: 1, analysisVersion: 1 };
 const imageConfig = snapshotImageGenerationConfig("openai", {});
 const generationSpec: SceneGenerationSpec = { imageConfig, style: "Painted", sceneText: "A courtyard" };
+let contextStub: IllustrationWorkerDependencies["resolveContext"] | undefined;
 type Generation = { config: ImageGenerationConfig; prompt: string; references: readonly ReferenceImage[] };
 
 async function fixture(action: (harness: {
@@ -93,6 +94,7 @@ async function fixture(action: (harness: {
     assetRetentionMilliseconds: 30 * 86400000, composeImagePrompt,
     selectScenes: async () => { calls.selection++; return select(); },
     moderateText: async () => false,
+    resolveContext: async (database, args) => contextStub?.(database, args) ?? null,
     moderateImage: async (bytes, mimeType) => { moderatedImages.push({ bytes, mimeType }); return false; },
     imageGenerationProvider: {
       validateCredentials: config => credentials(config),
@@ -181,6 +183,22 @@ test("missing input marks the claimed job failed and clears its lease before ret
     assert(!("leaseUntil" in job));
     assert.deepEqual(calls, { selection: 0, images: 0 });
     assert.equal(db.values.get("users/owner")!.creditsRemaining, 2);
+  });
+});
+test("admitted temporal context is snapshotted into the scene recipe and prompt", async () => {
+  await fixture(async ({ db, request, generations }) => {
+    seedJob(db);
+    contextStub = async (_db, args) => ({ schemaVersion: 1, analysisRevision: "rev", generationId: "gen",
+      sceneStart: args.sceneStart, sceneEnd: args.sceneEnd, subjects: [],
+      facts: [{ assertionId: "a", subject: "Valley", property: "sky", value: "permanent dark sky", category: "ambient_environment",
+        evidence: [], revealAt: args.sceneEnd } as unknown as IllustrationContext["facts"][number]] });
+    try {
+      assert.equal((await request("/jobs/job")).status, 204);
+    } finally { contextStub = undefined; }
+    assert.match(generations[0]!.prompt, /sky: permanent dark sky/);
+    const spec = db.values.get(`illustrationScenes/${sceneId}`)!.generationSpec as SceneGenerationSpec;
+    assert.equal(spec.context?.facts[0]?.value, "permanent dark sky");
+    assert.deepEqual(spec.sceneEnd, { version: 1, sectionId: "chapter.xhtml", blockId: "paragraph", offset: input.paragraphs[0]!.text.length });
   });
 });
 test("scene publication follows reservation and prose deletion, then commits a single credit", async () => {
