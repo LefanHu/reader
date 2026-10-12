@@ -41,13 +41,29 @@ export function layoutPrompt(prompt: string): string[] {
   for (const logical of sanitize(prompt).split("\n")) {
     const points = Array.from(logical);
     if (points.length === 0) wrapped.push("");
-    for (let start = 0; start < points.length; start += COLUMNS) {
-      wrapped.push(points.slice(start, start + COLUMNS).join(""));
+    // Wide (CJK) glyphs occupy two columns so lines never overflow the frame.
+    let line = "";
+    let used = 0;
+    for (const point of points) {
+      const width = isWide(point) ? 2 : 1;
+      if (used + width > COLUMNS) {
+        wrapped.push(line);
+        line = "";
+        used = 0;
+      }
+      line += point;
+      used += width;
     }
+    if (line !== "") wrapped.push(line);
   }
   if (wrapped.length <= MAX_LINES) return wrapped;
   const hidden = wrapped.slice(MAX_LINES - 1).reduce((sum, line) => sum + Array.from(line).length, 0);
   return [...wrapped.slice(0, MAX_LINES - 1), `… [truncated ${hidden} more characters]`];
+}
+
+/** East Asian wide/fullwidth ranges that render two columns wide. */
+function isWide(point: string): boolean {
+  return /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{20000}-\u{3FFFD}]/u.test(point);
 }
 
 /** Deterministic for a given input: no timestamps or randomness. */
@@ -59,7 +75,7 @@ export async function renderPromptImage(prompt: string, referenceCount: number):
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">` +
     `<rect width="${WIDTH}" height="${HEIGHT}" fill="#ffffff"/>` +
     `<rect x="1" y="1" width="${WIDTH - 2}" height="${HEIGHT - 2}" fill="none" stroke="#222222" stroke-width="2"/>` +
-    `<g font-family="DejaVu Sans Mono, monospace" fill="#111111">` +
+    `<g font-family="DejaVu Sans Mono, Noto Sans CJK SC, Noto Sans CJK JP, Noto Sans CJK KR, monospace" fill="#111111">` +
     `<text x="40" y="40" font-size="26" font-weight="bold">Reader illustration pipeline test</text>` +
     `${body}<text x="40" y="1010" font-size="16" fill="#444444">${escapeXml(footer)}</text></g></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();

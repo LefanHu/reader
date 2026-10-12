@@ -3,6 +3,17 @@ import type { ChapterInput, Paragraph } from "./types.js";
 const decisionsUrl = "https://api.openai.com/v1/decisions";
 /** Shorter paragraphs (headings, one-liners) are context only, never a scene peak. */
 const MIN_CANDIDATE_CHARACTERS = 40;
+
+/**
+ * Length in Latin-character equivalents. Han, kana and hangul carry roughly
+ * three Latin characters of meaning each, so a raw 40-unit floor would discard
+ * most Chinese, Japanese and Korean story paragraphs as "too short".
+ */
+function weightedLength(text: string): number {
+  let total = 0;
+  for (const ch of text) total += /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u.test(ch) ? 3 : 1;
+  return total;
+}
 /** The Decisions API allows 255 choices; one slot is reserved for `none`. */
 const MAX_CHOICES = 254;
 const NEIGHBOR_RADIUS = 3;
@@ -74,7 +85,7 @@ export async function selectScenes(
 
   const results = await Promise.all(buckets.map(async (bucket): Promise<SelectedScene | null> => {
     if (bucket.length === 0) return null;
-    let candidates = bucket.filter((p) => p.text.trim().length >= MIN_CANDIDATE_CHARACTERS);
+    let candidates = bucket.filter((p) => weightedLength(p.text.trim()) >= MIN_CANDIDATE_CHARACTERS);
     if (candidates.length === 0) return null;
     if (candidates.length > MAX_CHOICES) {
       candidates = [...candidates].sort((a, b) => b.text.length - a.text.length)
