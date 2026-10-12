@@ -7,6 +7,10 @@ import { HttpError } from "./http.js";
 
 /** Serial transactions preserve the same initial-credit decision under concurrent retries. */
 async function fixture(action: (values: Map<string, MemoryData>, register: (fingerprint: string) => Promise<Response>) => Promise<void>) {
+  const previousEnabled = process.env.ILLUSTRATIONS_ENABLED;
+  const previousProviders = process.env.IMAGE_PROVIDERS;
+  process.env.ILLUSTRATIONS_ENABLED = "true";
+  process.env.IMAGE_PROVIDERS = "openai";
   const memory = new MemoryFirestore();
   const values = memory.values;
   const db = memory.firestore;
@@ -24,10 +28,14 @@ async function fixture(action: (values: Map<string, MemoryData>, register: (fing
   try {
     await action(values, fingerprint => fetch(`http://127.0.0.1:${address.port}/v1/books`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fingerprint, title: "A courtyard", chapterCount: 1 }),
+      body: JSON.stringify({ schemaVersion: 2, fingerprint, title: "A courtyard", chapterCount: 1 }),
     }));
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    if (previousEnabled === undefined) delete process.env.ILLUSTRATIONS_ENABLED;
+    else process.env.ILLUSTRATIONS_ENABLED = previousEnabled;
+    if (previousProviders === undefined) delete process.env.IMAGE_PROVIDERS;
+    else process.env.IMAGE_PROVIDERS = previousProviders;
   }
 }
 

@@ -1,5 +1,6 @@
 locals {
   required_services = toset([
+    "aiplatform.googleapis.com",
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "cloudtasks.googleapis.com",
@@ -9,6 +10,13 @@ locals {
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
   ])
+  # Provider key name -> protected Secret Manager container ID.
+  image_provider_secrets = {
+    seedream = "reader-byteplus-api-key"
+    qwen     = "reader-qwen-api-key"
+    xai      = "reader-xai-api-key"
+    flux     = "reader-bfl-api-key"
+  }
   index_spec = jsondecode(var.firestore_indexes_json)
   indexes    = { for index in local.index_spec.indexes : index.collectionGroup => index }
   ttl_fields = { for field in local.index_spec.fieldOverrides : "${field.collectionGroup}.${field.fieldPath}" => field if try(field.ttl, false) }
@@ -324,4 +332,42 @@ resource "google_secret_manager_secret_iam_member" "worker_openai" {
   secret_id = google_secret_manager_secret.openai.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.worker.email}"
+}
+
+# Containers only: values are provisioned out of band by tool/deploy_backend and
+# never enter Terraform state, variables or plans. The API never reads them.
+resource "google_secret_manager_secret" "image_provider" {
+  for_each = local.image_provider_secrets
+
+  project             = var.project_id
+  secret_id           = each.value
+  labels              = local.labels
+  deletion_protection = true
+  deletion_policy     = "PREVENT"
+
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_iam_member" "worker_image_provider" {
+  for_each = google_secret_manager_secret.image_provider
+
+  project   = var.project_id
+  secret_id = each.value.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.worker.email}"
+}
+
+# Google images use Vertex AI through the worker's own service-account identity.
+resource "google_project_iam_member" "worker_vertex" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.worker.email}"
 }

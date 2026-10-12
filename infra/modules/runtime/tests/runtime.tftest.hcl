@@ -7,6 +7,13 @@ override_data {
   }
 }
 
+override_data {
+  target = data.google_iam_policy.image_test_provider
+  values = {
+    policy_data = "{\"bindings\":[{\"role\":\"roles/run.invoker\",\"members\":[\"serviceAccount:reader-test-worker@reader-test-12345.iam.gserviceaccount.com\"]}]}"
+  }
+}
+
 variables {
   narration_task_queue            = "reader-narration"
   environment                     = "test"
@@ -79,4 +86,85 @@ run "runtime_keeps_worker_private_and_injects_only_secret_references" {
     ])
     error_message = "The API service is missing a required declarative environment variable."
   }
+}
+
+run "runtime_exposes_only_provisioned_image_sources_to_the_worker" {
+  command = plan
+
+  variables {
+    google_image_generation_enabled = true
+    image_provider_secret_ids       = { flux = "reader-bfl-api-key", xai = "reader-xai-api-key" }
+  }
+
+  assert {
+    condition     = [for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.value if env.name == "IMAGE_PROVIDERS"][0] == "openai,google,flux,xai"
+    error_message = "Availability must list OpenAI, enabled Google and only provisioned direct providers."
+  }
+
+  assert {
+    condition = one([
+      for env in google_cloud_run_v2_service.worker.template[0].containers[0].env : env.value_source[0].secret_key_ref[0].secret
+      if env.name == "BFL_API_KEY"
+    ]) == "reader-bfl-api-key" && length([for env in google_cloud_run_v2_service.worker.template[0].containers[0].env : env.name if env.name == "QWEN_API_KEY" || env.name == "BYTEPLUS_API_KEY"]) == 0
+    error_message = "The worker must reference only provisioned keys."
+  }
+
+  assert {
+    condition     = length([for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.name if contains(["BFL_API_KEY", "XAI_API_KEY", "QWEN_API_KEY", "BYTEPLUS_API_KEY"], env.name)]) == 0
+    error_message = "The API must never receive direct provider keys."
+  }
+}
+
+run "runtime_defaults_advertise_only_openai" {
+  command = plan
+
+  assert {
+    condition     = [for env in google_cloud_run_v2_service.worker.template[0].containers[0].env : env.value if env.name == "IMAGE_PROVIDERS"][0] == "openai"
+    error_message = "Without provisioning only OpenAI is advertised."
+  }
+
+  assert {
+    condition     = length(google_cloud_run_v2_service.image_test_provider) == 0 && length(google_cloud_run_v2_service_iam_policy.image_test_provider) == 0
+    error_message = "The pipeline-test service must not exist unless enabled."
+  }
+}
+
+run "runtime_pipeline_test_provider_is_dev_only_and_worker_invoked" {
+  command = plan
+
+  variables {
+    environment                 = "dev"
+    image_test_provider_enabled = true
+  }
+
+  assert {
+    condition     = length(google_cloud_run_v2_service.image_test_provider) == 1 && google_cloud_run_v2_service.image_test_provider[0].template[0].containers[0].command == tolist(["node", "dist/image-test-provider-server.js"])
+    error_message = "The test service must run the dedicated server entry point."
+  }
+
+  assert {
+    condition     = one(data.google_iam_policy.image_test_provider[0].binding).members == toset(["serviceAccount:${var.worker_service_account}"]) && one(data.google_iam_policy.image_test_provider[0].binding).role == "roles/run.invoker"
+    error_message = "Only the worker identity may invoke the test service."
+  }
+
+  assert {
+    condition     = endswith([for env in google_cloud_run_v2_service.worker.template[0].containers[0].env : env.value if env.name == "IMAGE_PROVIDERS"][0], ",diagnostic")
+    error_message = "The diagnostic source must be advertised when the service exists."
+  }
+
+  assert {
+    condition     = length([for env in google_cloud_run_v2_service.worker.template[0].containers[0].env : env.name if env.name == "IMAGE_TEST_PROVIDER_URL"]) == 1 && length([for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.name if env.name == "IMAGE_TEST_PROVIDER_URL"]) == 0
+    error_message = "Only the worker receives the test service URL."
+  }
+}
+
+run "runtime_rejects_pipeline_test_provider_outside_dev" {
+  command = plan
+
+  variables {
+    environment                 = "prod"
+    image_test_provider_enabled = true
+  }
+
+  expect_failures = [google_cloud_run_v2_service.image_test_provider]
 }

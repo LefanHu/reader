@@ -12,6 +12,7 @@ import '../identity/cloud_identity.dart';
 import 'api.dart';
 import 'chapter_text_index.dart';
 import 'illustration_exception.dart';
+import 'illustration_configuration.dart';
 import 'illustration_job_result.dart';
 import 'illustration_profile.dart';
 import 'illustration_scene.dart';
@@ -40,6 +41,12 @@ class HttpIllustrationApi implements IllustrationApi {
   bool get configured => _http.configured;
 
   @override
+  Future<IllustrationConfiguration> getConfiguration() async =>
+      IllustrationConfiguration.fromJson(
+        await _json('GET', '/v1/illustrations/config'),
+      );
+
+  @override
   Future<IllustrationSetup> registerBook(
     CatalogBook book, {
     required int chapterCount,
@@ -54,6 +61,7 @@ class HttpIllustrationApi implements IllustrationApi {
       'POST',
       '/v1/books',
       body: {
+        'schemaVersion': 2,
         'fingerprint': fingerprint,
         'title': book.title,
         'authors': book.authors,
@@ -69,21 +77,32 @@ class HttpIllustrationApi implements IllustrationApi {
               .whereType<String>()
               .toList(),
       estimatedCredits: (json['estimatedCredits'] as num?)?.round() ?? 0,
+      configuration: IllustrationConfiguration.fromJson(
+        (json['configuration'] as Map).cast<String, dynamic>(),
+      ),
+      currentProfile: json['currentProfile'] == null
+          ? null
+          : _profile(json['currentProfile'], _id(json['id'])),
     );
   }
 
   @override
-  Future<void> confirmProfile(IllustrationProfile profile) async {
-    await _json(
+  Future<IllustrationProfile> confirmProfile(
+    IllustrationProfile profile,
+  ) async {
+    final json = await _json(
       'PUT',
       '/v1/books/${_id(profile.cloudBookId)}/profile',
       body: {
+        'schemaVersion': 2,
+        'providerId': profile.providerId,
         'style': profile.style,
         'density': profile.density,
-        'styleVersion': profile.styleVersion,
+        'expectedRevision': profile.revision,
         'analysisVersion': profile.analysisVersion,
       },
     );
+    return _profile(json, profile.cloudBookId);
   }
 
   @override
@@ -96,12 +115,12 @@ class HttpIllustrationApi implements IllustrationApi {
       '/v1/books/${_id(profile.cloudBookId)}/chapters/'
           '${chapter.spineOrdinal}/jobs',
       body: {
+        'schemaVersion': 2,
         'href': chapter.href,
         'title': chapter.title,
         'language': chapter.language,
-        'styleVersion': profile.styleVersion,
+        'profileRevision': profile.revision,
         'analysisVersion': profile.analysisVersion,
-        'density': profile.density,
         'paragraphs': chapter.paragraphs
             .map(
               (paragraph) => {
@@ -132,13 +151,19 @@ class HttpIllustrationApi implements IllustrationApi {
               (value['anchor'] as Map).cast<String, dynamic>(),
             ),
             state: switch (value['status'] as String? ?? 'queued') {
-              'ready_locked' => IllustrationSceneState.readyLocked,
+              'ready_locked' ||
+              'unlocked' => IllustrationSceneState.readyLocked,
               'generating' => IllustrationSceneState.generating,
               'regenerating' => IllustrationSceneState.generating,
               'skipped_safety' => IllustrationSceneState.skippedSafety,
               'failed' => IllustrationSceneState.failed,
               _ => IllustrationSceneState.queued,
             },
+            generationVersion: value['generationVersion'] as int,
+            regenerating:
+                value['status'] == 'generating' ||
+                value['status'] == 'regenerating' ||
+                value['regenerating'] == true,
             failureCategory: value['failureCategory'] as String?,
           );
         })
@@ -154,14 +179,27 @@ class HttpIllustrationApi implements IllustrationApi {
   @override
   Future<UnlockedIllustration> unlockScene(String sceneId) async {
     final json = await _json('POST', '/v1/scenes/${_id(sceneId)}/unlock');
+    final imageMimeType = _mime(json['imageMimeType']);
+    final thumbnailMimeType = _mime(json['thumbnailMimeType']);
+    final thumbnailUsesOriginal = json['thumbnailUsesOriginal'] as bool;
+    if (thumbnailUsesOriginal &&
+        (json['imageUrl'] != json['thumbnailUrl'] ||
+            imageMimeType != thumbnailMimeType)) {
+      throw const FormatException('Invalid illustration thumbnail alias.');
+    }
     final image = await _bytes(Uri.parse(json['imageUrl'] as String));
-    final thumbnail = await _bytes(Uri.parse(json['thumbnailUrl'] as String));
+    final thumbnail = thumbnailUsesOriginal
+        ? image
+        : await _bytes(Uri.parse(json['thumbnailUrl'] as String));
     return UnlockedIllustration(
       image: image,
       thumbnail: thumbnail,
       altText: json['altText'] as String? ?? 'Generated scene illustration',
       caption: json['caption'] as String? ?? '',
-      generationVersion: (json['generationVersion'] as num?)?.round() ?? 1,
+      generationVersion: json['generationVersion'] as int,
+      imageMimeType: imageMimeType,
+      thumbnailMimeType: thumbnailMimeType,
+      thumbnailUsesOriginal: thumbnailUsesOriginal,
     );
   }
 
@@ -184,6 +222,22 @@ class HttpIllustrationApi implements IllustrationApi {
       interactive: interactive,
       missingIsSuccess: true,
     );
+  }
+
+  IllustrationProfile _profile(Object? value, String cloudBookId) =>
+      IllustrationProfile.fromJson({
+        ...(value as Map).cast<String, dynamic>(),
+        'enabled': true,
+        'cloudBookId': cloudBookId,
+      });
+
+  String _mime(Object? value) {
+    if (value == 'image/png' ||
+        value == 'image/jpeg' ||
+        value == 'image/webp') {
+      return value as String;
+    }
+    throw const FormatException('Invalid illustration image MIME.');
   }
 
   String _id(Object? value) {

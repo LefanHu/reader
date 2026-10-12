@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 import test from "node:test";
 import express from "express";
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
@@ -13,14 +14,17 @@ import { illustrationSceneRouter } from "./illustration-scenes.js";
 import { illustrationBookDeletion } from "./illustration-books.js";
 import { accountDeletionRouter } from "./account.js";
 import { NarrationBackend } from "./narration.js";
-import type { ChapterInput, NarrativeAnalysis } from "./types.js";
+import type { ChapterInput, ImageGenerationConfig, IllustrationBookProfile, NarrativeAnalysis, SceneGenerationSpec } from "./types.js";
+import { snapshotImageGenerationConfig } from "./illustration-configuration.js";
+import { MAX_REFERENCE_BYTES, validateGeneratedImage, type GeneratedImage, type ReferenceImage } from "./image-generation.js";
+import { renderPromptImage } from "./image-test-provider.js";
 
 type Data = Record<string, unknown>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const reservationPath = (operation: string) => `creditReservations/${hash(`owner:${operation}`)}`;
 
 const input: ChapterInput = {
-  href: "chapter.xhtml", styleVersion: 1, analysisVersion: 1, density: 1,
+  href: "chapter.xhtml", profileRevision: 1, analysisVersion: 1, density: 1,
   paragraphs: [{ id: "paragraph", text: "A traveler enters the courtyard.",
     cssSelector: "#paragraph", ordinal: 0, progression: 0.5 }],
 };
@@ -34,11 +38,19 @@ const analysis: NarrativeAnalysis = {
 const sceneId = hash("job:paragraph:paragraph").slice(0, 40);
 const oldImageObject = "users/owner/books/book/scenes/scene.v1.webp";
 const oldThumbnailObject = "users/owner/books/book/scenes/scene.v1.thumb.webp";
+const profile: IllustrationBookProfile = { schemaVersion: 2, providerId: "openai",
+  style: "Painted", revision: 1, density: 1, analysisVersion: 1 };
+const imageConfig = snapshotImageGenerationConfig("openai", {});
+const generationSpec: SceneGenerationSpec = { imageConfig, style: "Painted", facts: ["A courtyard"], world: [] };
+type Generation = { config: ImageGenerationConfig; prompt: string; references: readonly ReferenceImage[] };
 
 async function fixture(action: (harness: {
-  db: MemoryFirestore; objects: Map<string, Buffer>; calls: { analysis: number; images: number };
+  db: MemoryFirestore; objects: Map<string, Buffer>; image: Buffer; calls: { analysis: number; images: number };
+  generations: Generation[]; contentTypes: Map<string, string>; moderatedImages: GeneratedImage[];
   request: (path: string, body?: Data, method?: string) => Promise<Response>;
-  generate: (implementation: () => Promise<Buffer>) => void;
+  generate: (implementation: (config: ImageGenerationConfig, prompt: string, references: readonly ReferenceImage[]) => Promise<Buffer | GeneratedImage>) => void;
+  credentials: (implementation: (config: ImageGenerationConfig) => void | Promise<void>) => void;
+  referenceStream: (implementation: (path: string) => Readable) => void;
   analyze: (implementation: () => Promise<NarrativeAnalysis>) => void;
   save: (implementation: (path: string) => Promise<void>) => void;
   enqueue: (implementation: (path: string, body: Data, id: string) => Promise<void>) => void;
@@ -46,8 +58,22 @@ async function fixture(action: (harness: {
   const db = new MemoryFirestore();
   const objects = new Map<string, Buffer>();
   const calls = { analysis: 0, images: 0 };
-  const image = await sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
-  let generate: () => Promise<Buffer> = async () => image;
+  const generations: Generation[] = [];
+  const contentTypes = new Map<string, string>();
+  const moderatedImages: GeneratedImage[] = [];
+  const image = await sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
+  let generate: (config: ImageGenerationConfig, prompt: string, references: readonly ReferenceImage[]) => Promise<Buffer | GeneratedImage> = async () => image;
+  let credentials: (config: ImageGenerationConfig) => void | Promise<void> = () => {};
+  let referenceStream = (path: string): Readable => {
+    db.events.push(`read-object:${path}`);
+    return objects.has(path) ? Readable.from([objects.get(path)!]) : Readable.from((async function* () {
+      throw new Error("Reference object not found");
+    })());
+  };
+  const priorProviders = process.env.IMAGE_PROVIDERS;
+  const priorImageModel = process.env.OPENAI_IMAGE_MODEL;
+  const priorOrchestrator = process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL;
+  process.env.IMAGE_PROVIDERS = "openai,google,seedream,qwen,xai,flux,diagnostic";
   let analyze: () => Promise<NarrativeAnalysis> = async () => analysis;
   let save: (path: string) => Promise<void> = async () => {};
   let enqueue: (path: string, body: Data, id: string) => Promise<void> = async () => {};
@@ -56,10 +82,12 @@ async function fixture(action: (harness: {
       for (const path of objects.keys()) if (path.startsWith(prefix)) objects.delete(path);
     },
     file: (path: string) => ({
-      download: async () => { assert(objects.has(path)); return [objects.get(path)!]; },
-      save: async (bytes: Buffer) => { await save(path); objects.set(path, bytes); db.events.push(`save:${path}`); },
-      delete: async () => { objects.delete(path); db.events.push(`delete-object:${path}`); },
-      getSignedUrl: async () => [`https://private.invalid/${path}`],
+      createReadStream: () => referenceStream(path),
+      save: async (bytes: Buffer, options: { contentType: string }) => {
+        await save(path); objects.set(path, bytes); contentTypes.set(path, options.contentType); db.events.push(`save:${path}`);
+      },
+      delete: async () => { objects.delete(path); contentTypes.delete(path); db.events.push(`delete-object:${path}`); },
+      getSignedUrl: async () => { db.events.push(`sign:${path}`); return [`https://private.invalid/${path}`]; },
     }),
   }) } as unknown as Storage;
   const app = express();
@@ -78,8 +106,16 @@ async function fixture(action: (harness: {
     db: db.firestore, storage, bucket: "private",
     assetRetentionMilliseconds: 30 * 86400000, composeImagePrompt,
     analyzeNarrative: async () => { calls.analysis++; return analyze(); },
-    moderateText: async () => false, moderateImage: async () => false,
-    imageGenerationProvider: { generate: async () => { calls.images++; return generate(); } },
+    moderateText: async () => false,
+    moderateImage: async (bytes, mimeType) => { moderatedImages.push({ bytes, mimeType }); return false; },
+    imageGenerationProvider: {
+      validateCredentials: config => credentials(config),
+      generate: async (config, prompt, references = []) => {
+        calls.images++; generations.push({ config, prompt, references });
+        const image = await generate(config, prompt, references);
+        return Buffer.isBuffer(image) ? validateGeneratedImage(image) : image;
+      },
+    },
   }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof HttpError ? error.status : 500)
@@ -91,30 +127,46 @@ async function fixture(action: (harness: {
   assert(address && typeof address === "object");
   const url = `http://127.0.0.1:${address.port}`;
   try {
-    await action({ db, objects, calls,
+    await action({ db, objects, image, calls, generations, contentTypes, moderatedImages,
       request: (path, body = {}, method = "POST") => fetch(`${url}${path.startsWith("/v1/") ? path : `/internal${path}`}`, {
         method, headers: { "content-type": "application/json" }, ...(method === "DELETE" ? {} : { body: JSON.stringify(body) }),
       }),
       generate: implementation => { generate = implementation; },
+      credentials: implementation => { credentials = implementation; },
+      referenceStream: implementation => { referenceStream = implementation; },
       analyze: implementation => { analyze = implementation; },
       save: implementation => { save = implementation; },
       enqueue: implementation => { enqueue = implementation; },
     });
-  } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  } finally {
+    if (priorProviders === undefined) delete process.env.IMAGE_PROVIDERS;
+    else process.env.IMAGE_PROVIDERS = priorProviders;
+    if (priorImageModel === undefined) delete process.env.OPENAI_IMAGE_MODEL;
+    else process.env.OPENAI_IMAGE_MODEL = priorImageModel;
+    if (priorOrchestrator === undefined) delete process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL;
+    else process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL = priorOrchestrator;
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
 }
 function seedJob(db: MemoryFirestore) {
   db.values.set("users/owner", { creditsRemaining: 2, creditsReserved: 0 });
-  db.values.set("users/owner/books/book", { profile: { style: "Painted" } });
-  db.values.set("illustrationJobs/job", { uid: "owner", bookId: "book", chapterOrdinal: 0, status: "queued" });
-  db.values.set("illustrationJobInputs/job", { uid: "owner", bookId: "book", chapterOrdinal: 0, input });
+  db.values.set("users/owner/books/book", { schemaVersion: 2, profile });
+  db.values.set("illustrationJobs/job", { schemaVersion: 2, uid: "owner", bookId: "book", chapterOrdinal: 0, status: "queued",
+    profile, imageConfig });
+  db.values.set("illustrationJobInputs/job", { schemaVersion: 2, uid: "owner", bookId: "book", chapterOrdinal: 0, input });
 }
 function seedScene(db: MemoryFirestore) {
   db.values.set("users/owner", { creditsRemaining: 2, creditsReserved: 0 });
-  db.values.set("users/owner/books/book", { profile: { style: "Painted" } });
-  db.values.set("illustrationScenes/scene", { uid: "owner", bookId: "book", status: "regenerating",
+  db.values.set("users/owner/books/book", { schemaVersion: 2, profile });
+  db.values.set("illustrationScenes/scene", { schemaVersion: 2, uid: "owner", bookId: "book", status: "regenerating",
+    chapterOrdinal: 0, paragraphOrdinal: 0, entityIds: [],
+    anchor: { href: "chapter.xhtml", spineOrdinal: 0, paragraphId: "paragraph", cssSelector: "#paragraph", fallbackProgression: 0.5 },
+    altText: "A courtyard", caption: "Courtyard",
     regenerationTarget: 2, regenerationRefresh: false, regenerationTaskId: "regen-scene-2",
+    regenerationPreviousStatus: "unlocked", regenerationGenerationSpec: generationSpec,
     generationVersion: 1, imageObject: oldImageObject, thumbnailObject: oldThumbnailObject,
-    generationSpec: { style: "Painted", facts: ["A courtyard"], world: [] } });
+    imageMimeType: "image/webp", thumbnailMimeType: "image/webp", thumbnailUsesOriginal: false,
+    generationSpec });
 }
 
 test("completed and actively leased jobs leave input and credits untouched", async () => {
@@ -153,7 +205,7 @@ test("scene publication follows reservation and prose deletion, then commits a s
       assert(!db.values.has("illustrationJobInputs/job"));
       assert.equal(db.values.get(reservationPath(sceneId))!.state, "reserved");
       assert.equal(db.values.get("users/owner")!.creditsReserved, 1);
-      return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+      return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
     });
     assert.equal((await request("/jobs/job")).status, 204);
     const scene = db.values.get(`illustrationScenes/${sceneId}`)!;
@@ -190,15 +242,15 @@ test("candidate provider failure refunds its reservation, cleans artifacts and p
     assert(!db.values.has(`illustrationScenes/${sceneId}`));
     assert(!db.values.has("illustrationJobInputs/job"));
     assert.equal(objects.size, 0);
-    assert(db.events.some(event => event.startsWith(`delete-object:users/owner/books/book/scenes/${sceneId}.claim-`)));
   });
 });
 test("regeneration lease rejects a second worker and completed target retries never charge twice", async () => {
-  await fixture(async ({ db, objects, calls, request, generate }) => {
+  await fixture(async ({ db, objects, image, calls, request, generate }) => {
     seedScene(db);
-    objects.set(oldImageObject, Buffer.from("old"));
-    objects.set(oldThumbnailObject, Buffer.from("old thumbnail"));
-    db.values.set("worldReferences/scene", { referenceObject: oldImageObject });
+    objects.set(oldImageObject, image);
+    objects.set(oldThumbnailObject, image);
+    db.values.set("worldReferences/scene", { schemaVersion: 2, uid: "owner", bookId: "book",
+      entityIds: ["traveler"], chapterOrdinal: 0, paragraphOrdinal: 0, referenceObject: oldImageObject });
     let entered!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
     let release!: () => void;
@@ -206,7 +258,7 @@ test("regeneration lease rejects a second worker and completed target retries ne
     generate(async () => {
       entered();
       await hold;
-      return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+      return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
     });
     const first = request("/scenes/scene/regenerate", { targetGeneration: 2, taskId: "regen-scene-2" });
     await started;
@@ -231,10 +283,13 @@ test("regeneration lease rejects a second worker and completed target retries ne
   });
 });
 test("regeneration failure refunds credits, clears the lease and keeps previous assets", async () => {
-  await fixture(async ({ db, objects, request, generate }) => {
+  await fixture(async ({ db, objects, image, request, generate }) => {
     seedScene(db);
-    objects.set(oldImageObject, Buffer.from("old"));
-    objects.set(oldThumbnailObject, Buffer.from("old thumbnail"));
+    db.values.get("illustrationScenes/scene")!.regenerationGenerationSpec = {
+      ...generationSpec, style: "New ink style", imageConfig: snapshotImageGenerationConfig("qwen", {}),
+    };
+    objects.set(oldImageObject, image);
+    objects.set(oldThumbnailObject, image);
     generate(async () => { throw new Error("local provider failure"); });
     assert.equal((await request("/scenes/scene/regenerate", { targetGeneration: 2, taskId: "regen-scene-2" })).status, 500);
     assert.equal(db.values.get(reservationPath("scene:generation:2"))!.state, "refunded");
@@ -244,6 +299,11 @@ test("regeneration failure refunds credits, clears the lease and keeps previous 
     assert.equal(scene.status, "unlocked");
     assert.equal(scene.failureCategory, "regeneration_failed");
     assert.equal(scene.generationVersion, 1);
+    assert.deepEqual(scene.generationSpec, generationSpec);
+    assert.equal(scene.imageObject, oldImageObject);
+    assert.equal(scene.thumbnailObject, oldThumbnailObject);
+    for (const field of ["regenerationGenerationSpec", "regenerationPreviousStatus", "regenerationTarget",
+      "regenerationRefresh", "regenerationTaskId", "regenerationToken"]) assert(!(field in scene));
     assert(!("regenerationLeaseUntil" in scene));
     assert.deepEqual([...objects.keys()], [oldImageObject, oldThumbnailObject]);
   });
@@ -288,7 +348,7 @@ for (const deletion of ["book", "account"] as const) {
       const gate = barrier();
       generate(async () => {
         await gate.wait();
-        return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+        return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
       });
       const pending = request("/jobs/job");
       await gate.entered;
@@ -314,15 +374,16 @@ for (const deletion of ["book", "account"] as const) {
 
 for (const deletion of ["scene", "book", "account"] as const) {
   test(`late regeneration cannot publish after ${deletion} deletion`, async () => {
-    await fixture(async ({ db, objects, request, generate }) => {
+    await fixture(async ({ db, objects, image, request, generate }) => {
       seedScene(db);
-      objects.set(oldImageObject, Buffer.from("old"));
-      objects.set(oldThumbnailObject, Buffer.from("old thumbnail"));
-      db.values.set("worldReferences/scene", { uid: "owner", bookId: "book", referenceObject: oldImageObject });
+      objects.set(oldImageObject, image);
+      objects.set(oldThumbnailObject, image);
+      db.values.set("worldReferences/scene", { schemaVersion: 2, uid: "owner", bookId: "book",
+        entityIds: ["traveler"], chapterOrdinal: 0, paragraphOrdinal: 0, referenceObject: oldImageObject });
       const gate = barrier();
       generate(async () => {
         await gate.wait();
-        return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+        return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
       });
       const pending = request("/scenes/scene/regenerate", { targetGeneration: 2, taskId: "regen-scene-2" });
       await gate.entered;
@@ -366,17 +427,20 @@ test("scene deletion during an object save cleans late objects without recreatin
   });
 });
 
-for (const failure of [false, true]) {
-  test(`stale regeneration ${failure ? "failure" : "success"} cannot publish, refund or delete a newer claim's work`, async () => {
+for (const providerId of ["openai", "flux"] as const) for (const failure of [false, true]) {
+  test(`${providerId} stale regeneration ${failure ? "failure" : "success"} cannot publish, refund or delete a newer claim's work`, async () => {
     await fixture(async ({ db, objects, calls, request, generate }) => {
       seedScene(db);
+      db.values.get("illustrationScenes/scene")!.regenerationGenerationSpec = {
+        ...generationSpec, imageConfig: snapshotImageGenerationConfig(providerId, {}),
+      };
       const gate = barrier();
       generate(async () => {
         if (calls.images === 1) {
           await gate.wait();
           if (failure) throw new Error("Late first provider failure");
         }
-        return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+        return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
       });
       const first = request("/scenes/scene/regenerate", { targetGeneration: 2, taskId: "regen-scene-2" });
       await gate.entered;
@@ -392,7 +456,7 @@ for (const failure of [false, true]) {
       assert.equal(scene.status, "ready_locked");
       assert(objects.has(String(scene.imageObject)));
       assert(objects.has(String(scene.thumbnailObject)));
-      assert.equal(objects.size, 2);
+      assert.equal(objects.size, providerId === "flux" ? 1 : 2);
       assert.equal(db.values.get(reservationPath("scene:generation:2"))!.state, "committed");
       assert.equal(db.values.get("users/owner")!.creditsRemaining, 1);
       assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
@@ -401,23 +465,28 @@ for (const failure of [false, true]) {
 }
 
 test("new chapter lease resumes the prose-free plan and fences a delayed old provider", async () => {
-  await fixture(async ({ db, objects, calls, request, generate }) => {
+  await fixture(async ({ db, objects, calls, request, generate, generations }) => {
     seedJob(db);
     const gate = barrier();
     generate(async () => {
       if (calls.images === 1) await gate.wait();
-      return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+      return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
     });
     const first = request("/jobs/job");
     await gate.entered;
     try {
       assert(!db.values.has("illustrationJobInputs/job"));
+      db.values.get("users/owner/books/book")!.profile = { ...profile, providerId: "flux", style: "Changed", revision: 2 };
+      process.env.OPENAI_IMAGE_MODEL = "new-live-model";
+      process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL = "new-live-orchestrator";
       db.values.get("illustrationJobs/job")!.leaseUntil = Timestamp.fromMillis(0);
       assert.equal((await request("/jobs/job")).status, 204);
     } finally { gate.release(); }
     assert.equal((await first).status, 204);
     assert.equal(calls.analysis, 1);
     assert.equal(calls.images, 2);
+    assert.deepEqual(generations.map(item => item.config), [imageConfig, imageConfig]);
+    assert.equal((db.values.get(`illustrationScenes/${sceneId}`)!.generationSpec as SceneGenerationSpec).style, "Painted");
     assert.equal(db.values.get("users/owner/books/book")!.worldVersion, 1);
     assert.equal(db.values.get("users/owner")!.creditsRemaining, 1);
     assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
@@ -429,9 +498,12 @@ test("new chapter lease resumes the prose-free plan and fences a delayed old pro
 });
 
 test("paid regeneration enqueue failure is repaired with the same intent and one credit", async () => {
-  await fixture(async ({ db, objects, calls, request, enqueue }) => {
+  await fixture(async ({ db, objects, calls, request, enqueue, generations }) => {
     seedScene(db);
     db.values.get("illustrationScenes/scene")!.status = "unlocked";
+    db.values.get("users/owner/books/book")!.profile = { ...profile, providerId: "qwen", style: "Ink", revision: 2 };
+    const originalAnchor = db.values.get("illustrationScenes/scene")!.anchor;
+    const pendingSpec = { ...generationSpec, style: "Ink", imageConfig: snapshotImageGenerationConfig("qwen", {}) };
     const submitted: Array<{ path: string; body: Data; id: string }> = [];
     enqueue(async (path, body, id) => {
       submitted.push({ path, body, id });
@@ -440,11 +512,22 @@ test("paid regeneration enqueue failure is repaired with the same intent and one
     assert.equal((await request("/v1/scenes/scene/regenerate")).status, 500);
     assert.equal(db.values.get("illustrationScenes/scene")!.status, "regenerating");
     assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
+    assert.deepEqual(db.values.get("illustrationScenes/scene")!.regenerationGenerationSpec, pendingSpec);
+    db.values.get("users/owner/books/book")!.profile = { ...profile, providerId: "flux", style: "Changed again", revision: 3 };
+    process.env.OPENAI_IMAGE_MODEL = "changed-after-admission";
     assert.equal((await request("/v1/scenes/scene/regenerate")).status, 202);
     assert.deepEqual(submitted[1], submitted[0]);
+    assert.deepEqual(db.values.get("illustrationScenes/scene")!.regenerationGenerationSpec, pendingSpec);
     assert.equal((await request("/scenes/scene/regenerate", submitted[1]!.body)).status, 204);
     assert.equal((await request("/scenes/scene/regenerate", submitted[1]!.body)).status, 204);
     assert.equal(calls.images, 1);
+    const published = db.values.get("illustrationScenes/scene")!;
+    assert.deepEqual(published.generationSpec, pendingSpec);
+    assert.deepEqual(published.anchor, originalAnchor);
+    assert.deepEqual(generations.map(item => item.config), [pendingSpec.imageConfig]);
+    assert(generations[0]!.prompt.includes("Ink"));
+    for (const field of ["regenerationGenerationSpec", "regenerationPreviousStatus", "regenerationTarget",
+      "regenerationRefresh", "regenerationTaskId", "regenerationToken", "regenerationLeaseUntil"]) assert(!(field in published));
     assert.equal(db.values.get("users/owner")!.creditsRemaining, 1);
     assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
     assert.equal(objects.size, 2);
@@ -452,9 +535,11 @@ test("paid regeneration enqueue failure is repaired with the same intent and one
 });
 
 test("unlock repairs failed free-refresh enqueue without changing billing intent", async () => {
-  await fixture(async ({ db, request, enqueue }) => {
+  await fixture(async ({ db, request, enqueue, generations }) => {
     seedScene(db);
     db.values.get("illustrationScenes/scene")!.status = "unlocked";
+    db.values.get("users/owner/books/book")!.profile = { ...profile, providerId: "flux", style: "Charcoal", revision: 2 };
+    process.env.OPENAI_IMAGE_MODEL = "changed-model-before-free-refresh";
     const submitted: Array<{ body: Data; id: string }> = [];
     enqueue(async (_path, body, id) => {
       submitted.push({ body, id });
@@ -464,7 +549,10 @@ test("unlock repairs failed free-refresh enqueue without changing billing intent
     assert.equal((await request("/v1/scenes/scene/regenerate")).status, 202);
     assert.deepEqual(submitted[1], submitted[0]);
     assert.equal(submitted[1]!.body.refresh, true);
+    assert.deepEqual(db.values.get("illustrationScenes/scene")!.regenerationGenerationSpec, generationSpec);
     assert.equal((await request("/scenes/scene/regenerate", { ...submitted[1]!.body, refresh: false })).status, 204);
+    assert.deepEqual(generations.map(item => item.config), [imageConfig]);
+    assert.deepEqual(db.values.get("illustrationScenes/scene")!.generationSpec, generationSpec);
     assert.equal(db.values.get("users/owner")!.creditsRemaining, 2);
     assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
     assert(!db.values.has(reservationPath("scene:generation:2")));
@@ -486,7 +574,7 @@ test("a failed paid generation can be requested again with a new task identity a
     assert.equal(submitted[1]!.body.targetGeneration, submitted[0]!.body.targetGeneration);
     assert.equal((await request("/scenes/scene/regenerate", submitted[0]!.body)).status, 204);
     assert.equal(calls.images, 1, "An old task cannot claim the newer regeneration intent");
-    generate(async () => sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer());
+    generate(async () => sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer());
     assert.equal((await request("/scenes/scene/regenerate", submitted[1]!.body)).status, 204);
     assert.equal(calls.images, 2);
     assert.equal(db.values.get("users/owner")!.creditsRemaining, 1);
@@ -502,7 +590,7 @@ for (const kind of ["chapter", "regeneration"] as const) {
       generate(async () => {
         if (calls.images === 1) { await firstGate.wait(); throw new Error("Stale provider failure"); }
         await secondGate.wait();
-        return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+        return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
       });
       const path = kind === "chapter" ? "/jobs/job" : "/scenes/scene/regenerate";
       const body = kind === "chapter" ? {} : { targetGeneration: 2, taskId: "regen-scene-2" };
@@ -553,7 +641,7 @@ for (const kind of ["chapter", "regeneration"] as const) {
       const gate = barrier();
       generate(async () => {
         if (calls.images === 1) await gate.wait();
-        return sharp({ create: { width: 2, height: 2, channels: 3, background: "#336699" } }).webp().toBuffer();
+        return sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
       });
       const path = kind === "chapter" ? "/jobs/job" : "/scenes/scene/regenerate";
       const body = kind === "chapter" ? {} : { targetGeneration: 2, taskId: "regen-scene-2" };
@@ -572,6 +660,330 @@ for (const kind of ["chapter", "regeneration"] as const) {
       if (kind === "chapter") {
         assert.equal(calls.analysis, 1);
         assert.equal(db.values.get("users/owner/books/book")!.worldVersion, 1);
+      }
+    });
+  });
+}
+
+for (const [providerId, format, mimeType, extension] of [
+  ["openai", "webp", "image/webp", "webp"],
+  ["google", "png", "image/png", "png"],
+  ["seedream", "jpeg", "image/jpeg", "jpg"],
+  ["qwen", "png", "image/png", "png"],
+  ["xai", "jpeg", "image/jpeg", "jpg"],
+  ["flux", "jpeg", "image/jpeg", "jpg"],
+] as const) {
+  test(`${providerId} publication preserves native ${mimeType} bytes and distinct preview ownership`, async () => {
+    await fixture(async ({ db, objects, contentTypes, moderatedImages, request, generate, generations }) => {
+      seedJob(db);
+      const config = snapshotImageGenerationConfig(providerId, {});
+      const job = db.values.get("illustrationJobs/job")!;
+      job.profile = { ...profile, providerId };
+      job.imageConfig = config;
+      const original = await sharp({ create: { width: 1500, height: 1000, channels: 3, background: "#334455" } })
+        .withMetadata({ exif: { IFD0: { Copyright: "Provider-original provenance" } } }).toFormat(format).toBuffer();
+      generate(async () => original);
+      assert.equal((await request("/jobs/job")).status, 204);
+      const scene = db.values.get(`illustrationScenes/${sceneId}`)!;
+      const imageObject = String(scene.imageObject), thumbnailObject = String(scene.thumbnailObject);
+      assert.deepEqual(generations[0]!.config, config);
+      assert.equal(scene.imageMimeType, mimeType);
+      assert(imageObject.endsWith(`.${extension}`));
+      assert.deepEqual(objects.get(imageObject), original);
+      assert.equal(contentTypes.get(imageObject), mimeType);
+      assert.deepEqual(moderatedImages, [{ bytes: original, mimeType }]);
+      assert.equal(scene.thumbnailUsesOriginal, providerId === "flux");
+      if (providerId === "flux") {
+        assert.equal(imageObject, thumbnailObject);
+        assert.equal(scene.thumbnailMimeType, mimeType);
+        assert.equal(objects.size, 1);
+        assert.equal(db.events.filter(event => event === `save:${imageObject}`).length, 1);
+      } else {
+        assert.notEqual(imageObject, thumbnailObject);
+        assert.equal(scene.thumbnailMimeType, "image/webp");
+        assert.equal(contentTypes.get(thumbnailObject), "image/webp");
+        const thumbnail = await sharp(objects.get(thumbnailObject)!).metadata();
+        assert.equal(thumbnail.format, "webp");
+        assert.equal(thumbnail.width, 640);
+        assert.equal(objects.size, 2);
+      }
+      const unlocked = await request(`/v1/scenes/${sceneId}/unlock`);
+      assert.equal(unlocked.status, 200);
+      const body = await unlocked.json() as Data;
+      assert.equal(body.imageMimeType, mimeType);
+      assert.equal(body.thumbnailMimeType, scene.thumbnailMimeType);
+      assert.equal(body.thumbnailUsesOriginal, providerId === "flux");
+      assert.equal(body.generationVersion, 1);
+      if (providerId === "flux") {
+        assert.equal(body.imageUrl, body.thumbnailUrl);
+        assert.equal(db.events.filter(event => event === `sign:${imageObject}`).length, 1);
+      }
+      assert.equal((await request(`/v1/scenes/${sceneId}`, {}, "DELETE")).status, 204);
+      assert.equal(objects.size, 0);
+      assert.equal(db.events.filter(event => event === `delete-object:${imageObject}`).length, 1);
+      assert(!db.values.has(`worldReferences/${sceneId}`));
+      assert.equal(db.values.get("users/owner")!.creditsRemaining, 1, "Deleting committed art does not refund spending");
+    });
+  });
+}
+
+test("diagnostic source publishes the rendered prompt through the normal pipeline and settles one credit", async () => {
+  await fixture(async ({ db, objects, generations, request, generate }) => {
+    seedJob(db);
+    const job = db.values.get("illustrationJobs/job")!;
+    job.profile = { ...profile, providerId: "diagnostic" };
+    job.imageConfig = snapshotImageGenerationConfig("diagnostic", {});
+    generate(async (_config, sentPrompt, references) => renderPromptImage(sentPrompt, references.length));
+    assert.equal((await request("/jobs/job")).status, 204);
+    const scene = db.values.get(`illustrationScenes/${sceneId}`)!;
+    const published = objects.get(String(scene.imageObject))!;
+    assert.deepEqual(published, await renderPromptImage(generations[0]!.prompt, generations[0]!.references.length));
+    assert.equal((await sharp(published).metadata()).width, 1536);
+    assert.equal(scene.imageMimeType, "image/png");
+    assert.equal(db.values.get("users/owner")!.creditsRemaining, 1);
+    assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
+    const unlocked = await (await request(`/v1/scenes/${sceneId}/unlock`)).json() as Data;
+    assert.equal(unlocked.imageMimeType, "image/png");
+  });
+});
+
+for (const kind of ["chapter", "regeneration"] as const) {
+  test(`${kind} validates frozen credentials before reserving any credit`, async () => {
+    await fixture(async ({ db, request, credentials, calls }) => {
+      if (kind === "chapter") seedJob(db); else seedScene(db);
+      let credentialChecks = 0;
+      credentials(config => {
+        credentialChecks++;
+        assert.deepEqual(config, imageConfig);
+        assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
+        assert(![...db.values.keys()].some(path => path.startsWith("creditReservations/")));
+        throw new Error("Selected source is not configured");
+      });
+      const response = await request(kind === "chapter" ? "/jobs/job" : "/scenes/scene/regenerate",
+        kind === "chapter" ? {} : { targetGeneration: 2, taskId: "regen-scene-2" });
+      assert.equal(response.status, 500);
+      assert.equal(credentialChecks, 1);
+      assert.equal(calls.images, 0);
+      assert.equal(db.values.get("users/owner")!.creditsRemaining, 2);
+      assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
+      assert(![...db.values.keys()].some(path => path.startsWith("creditReservations/")));
+      if (kind === "regeneration") {
+        const scene = db.values.get("illustrationScenes/scene")!;
+        assert.equal(scene.status, "unlocked");
+        assert.deepEqual(scene.generationSpec, generationSpec);
+        assert.equal(scene.failureCategory, "regeneration_failed");
+        assert(!("regenerationGenerationSpec" in scene));
+      }
+    });
+  });
+}
+
+test("unavailable paid source rejects admission without changing recipe, assets, credits or task intent", async () => {
+  await fixture(async ({ db, request, enqueue }) => {
+    seedScene(db);
+    db.values.get("illustrationScenes/scene")!.status = "unlocked";
+    db.values.get("users/owner/books/book")!.profile = { ...profile, providerId: "google", style: "Ink", revision: 2 };
+    process.env.IMAGE_PROVIDERS = "openai";
+    enqueue(async () => { assert.fail("Unavailable sources cannot enqueue"); });
+    const before = [...db.values].map(([path, value]) => [path, { ...value }]);
+    const response = await request("/v1/scenes/scene/regenerate");
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "The selected illustration source is unavailable." });
+    assert.deepEqual([...db.values], before);
+  });
+});
+
+for (const kind of ["chapter", "regeneration"] as const) {
+  for (const invalid of ["missing", "missing_schema", "old_operation", "old_book"] as const) {
+    test(`${kind} ${invalid} task is acknowledged without claiming, accounting or generation`, async () => {
+      await fixture(async ({ db, request, calls, credentials }) => {
+        if (kind === "chapter") seedJob(db); else seedScene(db);
+        const operationPath = kind === "chapter" ? "illustrationJobs/job" : "illustrationScenes/scene";
+        if (invalid === "missing") db.values.delete(operationPath);
+        else if (invalid === "missing_schema") delete db.values.get(operationPath)!.schemaVersion;
+        else if (invalid === "old_operation") db.values.get(operationPath)!.schemaVersion = 1;
+        else db.values.get("users/owner/books/book")!.schemaVersion = 1;
+        credentials(() => { assert.fail("Old tasks must not validate credentials"); });
+        const before = [...db.values].map(([path, value]) => [path, { ...value }]);
+        assert.equal((await request(kind === "chapter" ? "/jobs/job" : "/scenes/scene/regenerate",
+          kind === "chapter" ? {} : { targetGeneration: 2, taskId: "regen-scene-2" })).status, 204);
+        assert.deepEqual([...db.values], before);
+        assert.deepEqual(calls, { analysis: 0, images: 0 });
+        assert.equal(db.events.length, 0);
+      });
+    });
+  }
+}
+
+test("FLUX paid replacement saves one original, settles its recipe, then deletes the previous alias once", async () => {
+  await fixture(async ({ db, objects, request, generate, enqueue, generations }) => {
+    seedScene(db);
+    const originalObject = "users/owner/books/book/scenes/scene.v1.jpg";
+    const publishedSpec = { ...generationSpec, imageConfig: snapshotImageGenerationConfig("flux", {}) };
+    const initial = db.values.get("illustrationScenes/scene")!;
+    Object.assign(initial, { status: "unlocked", generationSpec: publishedSpec,
+      imageObject: originalObject, thumbnailObject: originalObject, thumbnailUsesOriginal: true,
+      imageMimeType: "image/jpeg", thumbnailMimeType: "image/jpeg" });
+    db.values.get("users/owner/books/book")!.profile = { ...profile, providerId: "flux", style: "Ink", revision: 2 };
+    const oldBytes = await sharp({ create: { width: 150, height: 100, channels: 3, background: "#223344" } }).jpeg().toBuffer();
+    objects.set(originalObject, oldBytes);
+    db.values.set("worldReferences/scene", { schemaVersion: 2, uid: "owner", bookId: "book", entityIds: ["traveler"],
+      chapterOrdinal: 0, paragraphOrdinal: 0, referenceObject: originalObject });
+    let submitted!: Data;
+    enqueue(async (_path, body) => { submitted = body; });
+    const replacement = await sharp({ create: { width: 150, height: 100, channels: 3, background: "#556677" } })
+      .withMetadata({ exif: { IFD0: { Copyright: "Untouched FLUX provenance" } } }).png().toBuffer();
+    generate(async () => replacement);
+    assert.equal((await request("/v1/scenes/scene/regenerate")).status, 202);
+    assert.deepEqual(db.values.get("illustrationScenes/scene")!.generationSpec, publishedSpec);
+    assert.equal((await request("/scenes/scene/regenerate", submitted)).status, 204);
+    const scene = db.values.get("illustrationScenes/scene")!;
+    const object = String(scene.imageObject);
+    assert.equal(scene.thumbnailObject, object);
+    assert.equal(scene.imageMimeType, "image/png");
+    assert.equal(scene.thumbnailMimeType, "image/png");
+    assert.equal(scene.thumbnailUsesOriginal, true);
+    assert.equal(scene.generationVersion, 2);
+    assert.deepEqual(scene.generationSpec, { ...publishedSpec, style: "Ink" });
+    assert.deepEqual(generations[0]!.config, publishedSpec.imageConfig);
+    assert.deepEqual(objects.get(object), replacement);
+    assert.equal(objects.size, 1);
+    assert.equal(db.events.filter(event => event === `save:${object}`).length, 1);
+    assert.equal(db.events.filter(event => event === `delete-object:${originalObject}`).length, 1);
+    assert(db.events.indexOf("write:illustrationScenes/scene:ready_locked") < db.events.indexOf(`delete-object:${originalObject}`));
+    assert.equal(db.values.get("worldReferences/scene")!.referenceObject, object);
+    assert.equal(db.values.get(reservationPath("scene:generation:2"))!.state, "committed");
+    assert.equal(db.values.get("users/owner")!.creditsRemaining, 1);
+    assert.equal((await request("/scenes/scene/regenerate", submitted)).status, 204);
+    assert.equal(db.events.filter(event => event === `save:${object}`).length, 1);
+    assert.equal((await request("/v1/scenes/scene", {}, "DELETE")).status, 204);
+    assert.equal(db.events.filter(event => event === `delete-object:${object}`).length, 1);
+    assert.equal(objects.size, 0);
+  });
+});
+
+test("failed FLUX alias save refunds only its owned reservation and retains the prior committed art and recipe", async () => {
+  await fixture(async ({ db, objects, image, request, save }) => {
+    seedScene(db);
+    const scene = db.values.get("illustrationScenes/scene")!;
+    scene.thumbnailObject = oldImageObject;
+    scene.regenerationPreviousStatus = "ready_locked";
+    scene.regenerationGenerationSpec = { ...generationSpec, style: "Changed", imageConfig: snapshotImageGenerationConfig("flux", {}) };
+    const oldBytes = image;
+    objects.set(oldImageObject, oldBytes);
+    let attemptedObject = "";
+    save(async path => {
+      attemptedObject = path;
+      objects.set(path, Buffer.from("Late partial upload"));
+      throw new Error("Storage save failed");
+    });
+    assert.equal((await request("/scenes/scene/regenerate", { targetGeneration: 2, taskId: "regen-scene-2" })).status, 500);
+    const retained = db.values.get("illustrationScenes/scene")!;
+    assert.equal(retained.status, "ready_locked");
+    assert.equal(retained.generationVersion, 1);
+    assert.equal(retained.failureCategory, "regeneration_failed");
+    assert.deepEqual(retained.generationSpec, generationSpec);
+    assert.deepEqual(objects.get(oldImageObject), oldBytes);
+    assert.deepEqual([...objects.keys()], [oldImageObject]);
+    assert.equal(db.events.filter(event => event === `delete-object:${attemptedObject}`).length, 1);
+    assert(!db.events.includes(`delete-object:${oldImageObject}`));
+    assert.equal(db.values.get(reservationPath("scene:generation:2"))!.state, "refunded");
+    assert.equal(db.values.get("users/owner")!.creditsRemaining, 2);
+    assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
+    assert(!("regenerationGenerationSpec" in retained));
+  });
+});
+
+for (const deletion of ["scene", "book", "account"] as const) {
+  test(`FLUX aliased save cannot publish after ${deletion} deletion`, async () => {
+    await fixture(async ({ db, objects, request, save }) => {
+      seedScene(db);
+      db.values.get("illustrationScenes/scene")!.regenerationGenerationSpec = {
+        ...generationSpec, imageConfig: snapshotImageGenerationConfig("flux", {}),
+      };
+      const gate = barrier();
+      save(async () => { await gate.wait(); });
+      const pending = request("/scenes/scene/regenerate", { targetGeneration: 2, taskId: "regen-scene-2" });
+      await gate.entered;
+      try {
+        const path = deletion === "scene" ? "/v1/scenes/scene" : deletion === "book" ? "/v1/books/book" : "/v1/account";
+        assert.equal((await request(path, {}, "DELETE")).status, 204);
+      } finally { gate.release(); }
+      assert.equal((await pending).status, 204);
+      assert.equal(objects.size, 0);
+      const newDeletes = db.events.filter(event => event.startsWith("delete-object:") && event.includes(".v2.claim-"));
+      assert.equal(newDeletes.length, 1);
+      if (deletion === "account") assert(!db.values.has("users/owner"));
+      else {
+        assert.equal(db.values.get("users/owner")!.creditsRemaining, 2);
+        assert.equal(db.values.get("users/owner")!.creditsReserved, 0);
+      }
+    });
+  });
+}
+
+test("reference loading detects native MIME, de-duplicates past art and excludes future artwork", async () => {
+  await fixture(async ({ db, objects, request, generations, analyze }) => {
+    seedJob(db);
+    db.values.get("illustrationJobs/job")!.chapterOrdinal = 1;
+    const entities = ["traveler", "courtyard", "second"];
+    for (const entityId of entities) db.values.set(`worldRevisions/${entityId}`, {
+      schemaVersion: 2, uid: "owner", bookId: "book", entityId, kind: "character",
+      chapterOrdinal: 0, paragraphOrdinal: 0, paragraphId: "past", name: entityId, aliases: [],
+      summary: entityId, visualDescription: "Known past appearance", stateFacts: [], analysisVersion: 1,
+    });
+    const firstObject = "users/owner/books/book/scenes/first.webp";
+    const secondObject = "users/owner/books/book/scenes/second.png";
+    const futureObject = "users/owner/books/book/scenes/future.jpg";
+    const png = await sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).png().toBuffer();
+    const jpeg = await sharp({ create: { width: 150, height: 100, channels: 3, background: "#669933" } }).jpeg().toBuffer();
+    objects.set(firstObject, png);
+    objects.set(secondObject, jpeg);
+    objects.set(futureObject, jpeg);
+    for (const [id, entityIds, chapterOrdinal, referenceObject] of [
+      ["first", ["traveler"], 0, firstObject],
+      ["second", ["courtyard", "second"], 0, secondObject],
+      ["future", entities, 2, futureObject],
+    ] as const) db.values.set(`worldReferences/${id}`, {
+      schemaVersion: 2, uid: "owner", bookId: "book", entityIds, chapterOrdinal, paragraphOrdinal: 0, referenceObject,
+    });
+    analyze(async () => ({ ...analysis, scenes: [{ ...analysis.scenes[0]!, entityRefs: entities }] }));
+    assert.equal((await request("/jobs/job")).status, 204);
+    assert.deepEqual(generations[0]!.references, [{ bytes: png, mimeType: "image/png" }, { bytes: jpeg, mimeType: "image/jpeg" }]);
+    assert.equal(db.events.filter(event => event === `read-object:${firstObject}`).length, 1);
+    assert.equal(db.events.filter(event => event === `read-object:${secondObject}`).length, 1);
+    assert(!db.events.includes(`read-object:${futureObject}`));
+  });
+});
+
+for (const unavailable of ["missing", "corrupt", "oversized"] as const) {
+  test(`${unavailable} reference is unavailable without losing frozen text continuity`, async () => {
+    await fixture(async ({ db, objects, request, generations, referenceStream }) => {
+      seedScene(db);
+      const object = "users/owner/books/book/scenes/reference.png";
+      db.values.get("illustrationScenes/scene")!.regenerationGenerationSpec = {
+        ...generationSpec, world: [{ entityId: "traveler", kind: "character", name: "Traveler", aliases: [],
+          summary: "A traveler", visualDescription: "A distinctive violet coat", stateFacts: [], referenceObject: object }],
+      };
+      let chunksRead = 0, finalized = false;
+      let oversizedStream: Readable | undefined;
+      if (unavailable === "corrupt") objects.set(object, Buffer.from("Not an image"));
+      if (unavailable === "oversized") referenceStream(() => {
+        oversizedStream = Readable.from((async function* () {
+          try {
+            const chunk = Buffer.alloc(64 * 1024);
+            while (chunksRead < 10000) { chunksRead++; yield chunk; }
+          } finally { finalized = true; }
+        })());
+        return oversizedStream;
+      });
+      assert.equal((await request("/scenes/scene/regenerate", { targetGeneration: 2, taskId: "regen-scene-2" })).status, 204);
+      assert.deepEqual(generations[0]!.references, []);
+      assert(generations[0]!.prompt.includes("distinctive violet coat"));
+      if (unavailable === "oversized") {
+        assert(oversizedStream!.destroyed);
+        assert(finalized);
+        assert(chunksRead <= MAX_REFERENCE_BYTES / (64 * 1024) + 2, "Streaming stops near the byte cap, not after the whole object");
       }
     });
   });

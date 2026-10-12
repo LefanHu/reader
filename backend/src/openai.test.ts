@@ -9,7 +9,7 @@ import type { ChapterInput, WorldRevision } from "./types.js";
 
 const chapter: ChapterInput = {
   href: "one.xhtml",
-  styleVersion: 1,
+  profileRevision: 1,
   analysisVersion: 2,
   density: 3,
   paragraphs: [
@@ -54,12 +54,14 @@ test("narrative validation rejects invented entities and reversed scene ranges",
 test("world snapshots exclude revisions established after the scene anchor", () => {
   const revisions: WorldRevision[] = [
     {
+      schemaVersion: 2,
       uid: "u", bookId: "book", entityId: "hero", kind: "character",
       chapterOrdinal: 0, paragraphOrdinal: 0, paragraphId: "a",
       name: "The traveler", aliases: [], summary: "An unknown traveler",
       visualDescription: "Dark hair", stateFacts: ["Wears a grey cloak"], analysisVersion: 2,
     },
     {
+      schemaVersion: 2,
       uid: "u", bookId: "book", entityId: "hero", kind: "character",
       chapterOrdinal: 2, paragraphOrdinal: 4, paragraphId: "later",
       name: "Emperor Jian", aliases: ["The traveler"], summary: "The hidden emperor",

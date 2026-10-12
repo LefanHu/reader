@@ -33,12 +33,15 @@ module "runtime" {
   openai_image_model              = var.openai_image_model
   openai_image_orchestrator_model = var.openai_image_orchestrator_model
 
-  illustrations_bucket   = data.terraform_remote_state.illustrations.outputs.illustrations_bucket
-  api_service_account    = data.terraform_remote_state.illustrations.outputs.api_service_account
-  worker_service_account = data.terraform_remote_state.illustrations.outputs.worker_service_account
-  task_service_account   = data.terraform_remote_state.illustrations.outputs.task_service_account
-  task_queue             = data.terraform_remote_state.illustrations.outputs.task_queue
-  openai_secret_id       = data.terraform_remote_state.illustrations.outputs.openai_secret_id
-  fingerprint_secret_id  = data.terraform_remote_state.illustrations.outputs.fingerprint_secret_id
-  notification_channel   = data.terraform_remote_state.foundation.outputs.notification_channel
+  illustrations_bucket            = data.terraform_remote_state.illustrations.outputs.illustrations_bucket
+  api_service_account             = data.terraform_remote_state.illustrations.outputs.api_service_account
+  worker_service_account          = data.terraform_remote_state.illustrations.outputs.worker_service_account
+  task_service_account            = data.terraform_remote_state.illustrations.outputs.task_service_account
+  task_queue                      = data.terraform_remote_state.illustrations.outputs.task_queue
+  openai_secret_id                = data.terraform_remote_state.illustrations.outputs.openai_secret_id
+  image_provider_secret_ids       = var.image_provider_secret_ids
+  google_image_generation_enabled = var.google_image_generation_enabled
+  image_test_provider_enabled     = var.image_test_provider_enabled
+  fingerprint_secret_id           = data.terraform_remote_state.illustrations.outputs.fingerprint_secret_id
+  notification_channel            = data.terraform_remote_state.foundation.outputs.notification_channel
 }

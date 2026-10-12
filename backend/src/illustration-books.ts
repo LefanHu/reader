@@ -4,6 +4,7 @@ import type { Storage } from "@google-cloud/storage";
 import { asyncRoute, HttpError, requireString, routeParam } from "./http.js";
 import { bookReference, readBookFence } from "./fences.js";
 import { refundReservation } from "./illustration-credits.js";
+import { getIllustrationConfiguration, requireIllustrationProfile, requireIllustrationSchema } from "./illustration-configuration.js";
 
 function stylesFor(title: string): string[] {
   const normalized = title.toLowerCase();
@@ -24,12 +25,17 @@ export function illustrationBookRegistration(dependencies: { db: Firestore; pilo
   const { db, pilotCredits } = dependencies;
   return asyncRoute(async (req, res) => {
     const uid = req.uid!;
+    requireIllustrationSchema(req.body.schemaVersion);
+    const configuration = getIllustrationConfiguration();
+    if (!configuration.enabled || !configuration.providers.some(provider => provider.available)) {
+      throw new HttpError(503, "Illustrations are currently unavailable.");
+    }
     const fingerprint = requireString(req.body.fingerprint, "fingerprint", 128);
     const title = requireString(req.body.title, "title", 500);
     const chapterCount = Math.max(1, Math.min(10000, Number(req.body.chapterCount) || 1));
-    const bookId = createHash("sha256").update(`${uid}:${fingerprint}`).digest("hex").slice(0, 40);
+    const bookId = createHash("sha256").update(`${uid}:${fingerprint}:illustrations-v2`).digest("hex").slice(0, 40);
     const styles = stylesFor(title);
-    await db.runTransaction(async (transaction) => {
+    const profile = await db.runTransaction(async (transaction) => {
       const userRef = db.collection("users").doc(uid);
       const bookRef = bookReference(db, "books", uid, bookId);
       const [user, fence] = await Promise.all([
@@ -39,6 +45,7 @@ export function illustrationBookRegistration(dependencies: { db: Firestore; pilo
       if (fence.accountDeleted) throw new HttpError(410, "Account was deleted.");
       if (fence.book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
       transaction.set(bookRef, {
+        schemaVersion: 2,
         uid,
         fingerprint,
         title,
@@ -54,9 +61,13 @@ export function illustrationBookRegistration(dependencies: { db: Firestore; pilo
           updatedAt: FieldValue.serverTimestamp(),
         }, { merge: true });
       }
+      return fence.book.data()?.profile ? requireIllustrationProfile(fence.book.data()?.profile) : undefined;
     });
     res.json({
       id: bookId,
+      schemaVersion: 2,
+      configuration,
+      ...(profile ? { currentProfile: profile } : {}),
       suggestedStyle: styles[0],
       alternativeStyles: styles.slice(1),
       estimatedCredits: chapterCount * 3,

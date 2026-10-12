@@ -58,6 +58,24 @@ variable "openai_image_model" {
   default     = "gpt-image-2.5-flare"
 }
 
+variable "image_provider_secret_ids" {
+  description = "Provider key (seedream, qwen, xai, flux) -> Secret Manager container that already has an enabled version; tool/deploy_backend discovers this. Contains no key values."
+  type        = map(string)
+  default     = {}
+}
+
+variable "google_image_generation_enabled" {
+  description = "Advertise the Google (Vertex AI) source. Requires verified Google Cloud eligibility and billing; the API is enabled by the illustrations stack either way."
+  type        = bool
+  default     = false
+}
+
+variable "image_test_provider_enabled" {
+  description = "Dev-only pipeline-test image service (prompt rendered as text). Rejected outside dev."
+  type        = bool
+  default     = false
+}
+
 # The remaining declarations are foundation-only values intentionally accepted
 # here so a single environment tfvars file can configure all environment stacks.
 variable "project_name" {

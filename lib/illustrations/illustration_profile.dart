@@ -2,12 +2,15 @@
 // ignore_for_file: public_member_api_docs
 
 /// Reader-confirmed illustration settings for one publication.
+/// Unknown provider IDs remain readable; availability must be checked before
+/// admitting generation. Legacy profiles are deliberately not inferred.
 class IllustrationProfile {
   const IllustrationProfile({
     required this.enabled,
     required this.style,
     required this.density,
-    required this.styleVersion,
+    required this.providerId,
+    required this.revision,
     required this.cloudBookId,
     this.analysisVersion = 2,
   });
@@ -15,30 +18,40 @@ class IllustrationProfile {
   final bool enabled;
   final String style;
   final int density;
-  final int styleVersion;
+
+  /// Saved source for future admissions, never retroactive ready-artwork state.
+  final String providerId;
+
+  /// Server-owned settings revision; 0 denotes an unsaved proposal.
+  final int revision;
 
   /// Structured world-model schema used by newly scheduled chapter jobs.
   final int analysisVersion;
   final String cloudBookId;
 
   Map<String, dynamic> toJson() => {
+    'schemaVersion': 2,
     'enabled': enabled,
     'style': style,
     'density': density,
-    'styleVersion': styleVersion,
+    'providerId': providerId,
+    'revision': revision,
     'analysisVersion': analysisVersion,
     'cloudBookId': cloudBookId,
   };
 
-  factory IllustrationProfile.fromJson(Map<String, dynamic> json) =>
-      IllustrationProfile(
-        enabled: json['enabled'] as bool? ?? false,
-        style: json['style'] as String? ?? '',
-        density: (json['density'] as num?)?.round().clamp(1, 3) ?? 2,
-        styleVersion: (json['styleVersion'] as num?)?.round() ?? 1,
-        // Existing profiles adopt the current analyzer for newly scheduled
-        // chapters; already-created job IDs remain untouched and idempotent.
-        analysisVersion: (json['analysisVersion'] as num?)?.round() ?? 2,
-        cloudBookId: json['cloudBookId'] as String? ?? '',
-      );
+  factory IllustrationProfile.fromJson(Map<String, dynamic> json) {
+    if (json['schemaVersion'] != 2) {
+      throw const FormatException('Unsupported illustration profile.');
+    }
+    return IllustrationProfile(
+      enabled: json['enabled'] as bool,
+      style: json['style'] as String,
+      density: json['density'] as int,
+      providerId: json['providerId'] as String,
+      revision: json['revision'] as int,
+      analysisVersion: json['analysisVersion'] as int,
+      cloudBookId: json['cloudBookId'] as String,
+    );
+  }
 }

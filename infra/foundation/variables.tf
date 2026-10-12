@@ -112,6 +112,12 @@ variable "illustrations_enabled" {
   default     = false
 }
 
+variable "image_test_provider_enabled" {
+  description = "Dev-only pipeline-test image service consumed by the runtime stack; accepted for the shared environment tfvars file."
+  type        = bool
+  default     = false
+}
+
 variable "apple_macos_bundle_id" {
   description = "Separate macOS Firebase app in the same environment project and Auth service."
   type        = string

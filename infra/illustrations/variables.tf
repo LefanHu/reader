@@ -82,6 +82,12 @@ variable "illustrations_enabled" {
   default     = false
 }
 
+variable "image_test_provider_enabled" {
+  description = "Dev-only pipeline-test image service consumed by the runtime stack; accepted for the shared environment tfvars file."
+  type        = bool
+  default     = false
+}
+
 variable "narration_enabled" {
   description = "Independent narration rollout; remains off until signed-device and listening checks pass."
   type        = bool

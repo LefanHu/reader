@@ -4,6 +4,8 @@ import '../catalog/catalog_book.dart';
 import '../cloud_deletion_outbox.dart';
 import '../cloud_deletion_queue.dart';
 import '../identity/cloud_identity.dart';
+import '../identity/cloud_identity_exception.dart';
+import '../identity/cloud_service_exception.dart';
 import '../text/text_position.dart';
 import 'api.dart';
 import 'book_text_index.dart';
@@ -12,6 +14,7 @@ import 'illustration_exception.dart';
 import 'illustration_manifest.dart';
 import 'illustration_profile.dart';
 import 'illustration_scene.dart';
+import 'illustration_selection.dart';
 import 'illustration_setup.dart';
 import 'indexer.dart';
 import 'store.dart';
@@ -63,7 +66,7 @@ class IllustrationCoordinator {
   /// Authoritative loaded and lazily created book manifests.
   final Map<String, IllustrationManifest> manifests = {};
 
-  /// Whether consent setup is currently active.
+  /// Whether setup, consent confirmation, or a settings save is active.
   bool busy = false;
 
   /// Latest auxiliary illustration failure presented to the reader.
@@ -76,6 +79,18 @@ class IllustrationCoordinator {
   final Map<String, BookTextIndex> _textIndexes = {};
   final Set<String> _advancingIllustrations = {};
   final Map<String, DateTime> _lastIllustrationRefresh = {};
+
+  // A future ID remains readable in the manifest, but this client cannot admit
+  // generation for a source it does not support. Existing art/jobs still load.
+  static const _supportedProviderIds = {
+    'openai',
+    'google',
+    'seedream',
+    'qwen',
+    'xai',
+    'flux',
+    'diagnostic',
+  };
 
   /// Restores book sidecars without publishing a startup notification.
   Future<void> loadManifests(List<CatalogBook> books) async {
@@ -111,11 +126,12 @@ class IllustrationCoordinator {
   /// Deletes local scenes and disables manifests while retaining books/indexes.
   Future<void> clearLocalAccountData(List<CatalogBook> books) async {
     for (final book in books) {
-      for (final scene in manifestFor(book).scenes) {
-        await store.deleteSceneFiles(book, scene.id);
-      }
+      final scenes = manifestFor(book).scenes;
       final manifest = IllustrationManifest(bookHash: book.hash);
       manifests[book.hash] = manifest;
+      for (final scene in scenes) {
+        await store.deleteSceneFiles(book, scene.id);
+      }
       await store.saveManifest(book, manifest);
     }
   }
@@ -129,15 +145,20 @@ class IllustrationCoordinator {
     () => IllustrationManifest(bookHash: book.hash),
   );
 
-  /// Builds the local index and registers metadata before showing consent.
+  /// Signs in explicitly and drains deletions before read-only availability.
   ///
-  /// No chapter prose is uploaded until [confirm] is called.
+  /// Registration happens only when rollout and a source are available. No
+  /// chapter prose is uploaded until [confirm] is called.
   Future<IllustrationSetup> beginSetup(CatalogBook book) async {
+    if (busy) {
+      throw const IllustrationException(
+        'Illustration setup is already in progress.',
+      );
+    }
     busy = true;
     error = null;
     _changed();
     try {
-      final index = await _indexFor(book);
       await identity.signIn();
       await _refreshCloudAccount();
       await drainDeletions();
@@ -148,10 +169,24 @@ class IllustrationCoordinator {
           'Cloud cleanup is pending. Try enabling illustrations again when connected.',
         );
       }
+      final configuration = await api.getConfiguration();
+      if (!configuration.enabled || !configuration.hasAvailableProvider) {
+        final current = manifestFor(book).profile;
+        return IllustrationSetup(
+          cloudBookId: null,
+          suggestedStyle: current?.style ?? 'Cinematic storybook realism',
+          alternativeStyles: const [],
+          estimatedCredits: 0,
+          configuration: configuration,
+          currentProfile: current,
+        );
+      }
+      final index = await _indexFor(book);
       return await api.registerBook(book, chapterCount: index.chapters.length);
     } on Object catch (failure) {
-      error = failure.toString();
-      rethrow;
+      final safe = _safeFailure(failure);
+      error = safe.toString();
+      throw safe;
     } finally {
       busy = false;
       _changed();
@@ -162,26 +197,147 @@ class IllustrationCoordinator {
   Future<void> confirm(
     CatalogBook book, {
     required IllustrationSetup setup,
-    required String style,
+    required IllustrationSelection selection,
     int density = 3,
   }) async {
-    final profile = IllustrationProfile(
-      enabled: true,
-      style: style,
-      density: density,
-      styleVersion: 1,
-      cloudBookId: setup.cloudBookId,
-    );
-    await api.confirmProfile(profile);
-    final manifest = manifestFor(book).copyWith(profile: profile);
-    manifests[book.hash] = manifest;
-    await store.saveManifest(book, manifest);
+    if (busy) return;
+    busy = true;
+    error = null;
     _changed();
-    await _scheduleAhead(
-      book,
-      manifest,
-      await _indexFor(book),
-      book.lastPosition,
+    try {
+      _requireSelection(setup, selection);
+      final profile = await api.confirmProfile(
+        IllustrationProfile(
+          enabled: true,
+          style: selection.style,
+          density: density,
+          providerId: selection.providerId,
+          revision: setup.currentProfile?.revision ?? 0,
+          analysisVersion: setup.currentProfile?.analysisVersion ?? 2,
+          cloudBookId: setup.cloudBookId!,
+        ),
+      );
+      final manifest = manifestFor(book).copyWith(profile: profile);
+      await store.saveManifest(book, manifest);
+      manifests[book.hash] = manifest;
+      _changed();
+      await _scheduleAhead(
+        book,
+        manifest,
+        await _indexFor(book),
+        book.lastPosition,
+      );
+    } on Object catch (failure) {
+      final safe = _safeFailure(failure);
+      error = safe.toString();
+      throw safe;
+    } finally {
+      busy = false;
+      _changed();
+    }
+  }
+
+  /// Saves per-book settings without replacing admitted jobs, scenes or files.
+  ///
+  /// The setup's authoritative revision fences stale edits. A matching server
+  /// response performs no local save or scheduling; retries after a lost
+  /// response still recover its authoritative revision.
+  Future<void> updateSettings(
+    CatalogBook book, {
+    required IllustrationSetup setup,
+    required IllustrationSelection selection,
+  }) async {
+    if (busy) return;
+    busy = true;
+    error = null;
+    _changed();
+    try {
+      _requireSelection(setup, selection);
+      final current = manifestFor(book).profile;
+      if (current == null || current.cloudBookId != setup.cloudBookId) {
+        throw const IllustrationException(
+          'Reopen Illustration settings before saving changes.',
+        );
+      }
+      final response = await api.confirmProfile(
+        IllustrationProfile(
+          enabled: current.enabled,
+          style: selection.style,
+          density: current.density,
+          providerId: selection.providerId,
+          revision: setup.currentProfile?.revision ?? 0,
+          analysisVersion: current.analysisVersion,
+          cloudBookId: current.cloudBookId,
+        ),
+      );
+      final saved = IllustrationProfile(
+        enabled: current.enabled,
+        style: response.style,
+        density: response.density,
+        providerId: response.providerId,
+        revision: response.revision,
+        analysisVersion: response.analysisVersion,
+        cloudBookId: current.cloudBookId,
+      );
+      if (_sameProfile(current, saved)) return;
+      final manifest = manifestFor(book).copyWith(profile: saved);
+      await store.saveManifest(book, manifest);
+      manifests[book.hash] = manifest;
+      _changed();
+      await _scheduleAhead(
+        book,
+        manifest,
+        await _indexFor(book),
+        book.lastPosition,
+      );
+    } on Object catch (failure) {
+      final safe = _safeFailure(failure);
+      error = safe.toString();
+      throw safe;
+    } finally {
+      busy = false;
+      _changed();
+    }
+  }
+
+  void _requireSelection(
+    IllustrationSetup setup,
+    IllustrationSelection selection,
+  ) {
+    if (setup.cloudBookId == null ||
+        !setup.configuration.enabled ||
+        !_supportedProviderIds.contains(selection.providerId) ||
+        !setup.configuration.providers.any(
+          (option) => option.id == selection.providerId && option.available,
+        )) {
+      throw const IllustrationException(
+        'This illustration source is unavailable. Reopen Illustration settings to choose an available source.',
+      );
+    }
+  }
+
+  bool _sameProfile(IllustrationProfile first, IllustrationProfile second) =>
+      first.enabled == second.enabled &&
+      first.cloudBookId == second.cloudBookId &&
+      first.providerId == second.providerId &&
+      first.style == second.style &&
+      first.density == second.density &&
+      first.analysisVersion == second.analysisVersion &&
+      first.revision == second.revision;
+
+  Object _safeFailure(Object failure) {
+    if (failure is CloudServiceException && failure.statusCode == 409) {
+      return const IllustrationException(
+        'Illustration settings changed on another device. Reopen Illustration settings and try again.',
+      );
+    }
+    if (failure is IllustrationException ||
+        failure is CloudIdentityException ||
+        failure is CloudServiceException) {
+      return failure;
+    }
+    return const IllustrationException(
+      'Illustrations could not be updated. Check your connection and try again.',
     );
   }
 
@@ -213,17 +369,40 @@ class IllustrationCoordinator {
 
   /// Requests a one-credit replacement while retaining the current image.
   Future<void> regenerate(CatalogBook book, IllustrationScene scene) async {
-    await api.regenerateScene(scene.id);
-    await _updateScene(
-      book,
-      scene.copyWith(state: IllustrationSceneState.generating),
-    );
-    _lastIllustrationRefresh.remove(book.hash);
-    _changed();
+    try {
+      final profile = manifestFor(book).profile;
+      if (profile == null ||
+          !profile.enabled ||
+          !_supportedProviderIds.contains(profile.providerId)) {
+        throw const IllustrationException(
+          'Choose an available source in Illustration settings before generating new artwork.',
+        );
+      }
+      await api.regenerateScene(scene.id);
+      await _updateScene(
+        book,
+        (manifestFor(book).scenes.firstWhere(
+          (item) => item.id == scene.id,
+          orElse: () => scene,
+        )).copyWith(
+          regenerating: true,
+          pendingGenerationVersion: null,
+          failureCategory: null,
+        ),
+      );
+      _lastIllustrationRefresh.remove(book.hash);
+      _changed();
+    } on Object catch (failure) {
+      final safe = _safeFailure(failure);
+      error = safe.toString();
+      _changed();
+      throw safe;
+    }
   }
 
   /// Polls auxiliary work while the reader is idle on a stable text position.
   Future<void> refresh(CatalogBook book) async {
+    if (busy || _narrationOwnsPosition(book)) return;
     final current = _currentBook(book);
     final raw = current?.lastPosition ?? book.lastPosition;
     if (raw == null) return;
@@ -232,18 +411,21 @@ class IllustrationCoordinator {
 
   /// Removes one local and cloud scene without modifying the source book.
   Future<void> deleteScene(CatalogBook book, IllustrationScene scene) async {
+    // Local privacy owns removal immediately, before any cloud or file await.
+    final remaining = manifestFor(book).copyWith(
+      scenes: manifestFor(book).scenes
+          .where((item) => item.id != scene.id)
+          .toList(),
+    );
+    manifests[book.hash] = remaining;
+    _changed();
     try {
       await api.deleteScene(scene.id);
     } on Object {
       // Local privacy remains available when cloud deletion cannot connect.
     }
     await store.deleteSceneFiles(book, scene.id);
-    final manifest = manifestFor(book).copyWith(
-      scenes: manifestFor(book).scenes
-          .where((item) => item.id != scene.id)
-          .toList(),
-    );
-    manifests[book.hash] = manifest;
+    final manifest = manifestFor(book);
     await store.saveManifest(book, manifest);
     _changed();
   }
@@ -275,7 +457,11 @@ class IllustrationCoordinator {
     TextPosition? position,
   ) async {
     final profile = manifest.profile;
-    if (profile == null || !profile.enabled) return;
+    if (profile == null ||
+        !profile.enabled ||
+        !_supportedProviderIds.contains(profile.providerId)) {
+      return;
+    }
     final href = position?.sectionId;
     final current = href == null
         ? index.chapters.first
@@ -292,8 +478,8 @@ class IllustrationCoordinator {
       );
       jobs[ordinal] = id;
       final updated = manifestFor(book).copyWith(chapterJobs: jobs);
-      manifests[book.hash] = updated;
       await store.saveManifest(book, updated);
+      manifests[book.hash] = updated;
     }
     _changed();
   }
@@ -309,7 +495,9 @@ class IllustrationCoordinator {
     _advancingIllustrations.add(book.hash);
     try {
       final index = await _indexFor(book);
-      await _scheduleAhead(book, manifestFor(book), index, position);
+      if (!busy) {
+        await _scheduleAhead(book, manifestFor(book), index, position);
+      }
       final lastRefresh = _lastIllustrationRefresh[book.hash];
       if (lastRefresh == null ||
           DateTime.now().difference(lastRefresh) >
@@ -318,7 +506,8 @@ class IllustrationCoordinator {
         _lastIllustrationRefresh[book.hash] = DateTime.now();
       }
       for (final scene in List.of(manifestFor(book).scenes)) {
-        if (scene.state != IllustrationSceneState.readyLocked ||
+        if ((scene.state != IllustrationSceneState.readyLocked &&
+                scene.pendingGenerationVersion == null) ||
             !gate.hasPassed(
               anchor: scene.anchor,
               index: index,
@@ -327,51 +516,271 @@ class IllustrationCoordinator {
           continue;
         }
         final released = await api.unlockScene(scene.id);
-        final imagePath = await store.saveImage(book, scene.id, released.image);
-        final thumbnailPath = await store.saveImage(
+        if (released.generationVersion < scene.generationVersion ||
+            (scene.localImagePath != null &&
+                released.generationVersion == scene.generationVersion) ||
+            (scene.pendingGenerationVersion != null &&
+                released.generationVersion < scene.pendingGenerationVersion!)) {
+          throw const IllustrationException(
+            'The replacement illustration is not ready. Try again when connected.',
+          );
+        }
+        if (_replacementScene(book, scene, released.generationVersion) ==
+            null) {
+          await _discardUncommittedVersion(
+            book,
+            scene.id,
+            released.generationVersion,
+          );
+          continue;
+        }
+        final imagePath = await store.saveImage(
           book,
           scene.id,
-          released.thumbnail,
-          thumbnail: true,
+          released.image,
+          mimeType: released.imageMimeType,
+          generationVersion: released.generationVersion,
         );
-        await _updateScene(
+        final thumbnailPath = released.thumbnailUsesOriginal
+            ? imagePath
+            : await store.saveImage(
+                book,
+                scene.id,
+                released.thumbnail,
+                mimeType: released.thumbnailMimeType,
+                generationVersion: released.generationVersion,
+                thumbnail: true,
+              );
+        final latest = _replacementScene(
           book,
-          scene.copyWith(
-            state: IllustrationSceneState.unlocked,
+          scene,
+          released.generationVersion,
+        );
+        if (latest == null) {
+          await _discardUncommittedVersion(
+            book,
+            scene.id,
+            released.generationVersion,
+          );
+          continue;
+        }
+        final committed = await _commitReplacement(
+          book,
+          scene,
+          latest.copyWith(
+            state: latest.available
+                ? latest.state
+                : IllustrationSceneState.unlocked,
             localImagePath: imagePath,
             localThumbnailPath: thumbnailPath,
             altText: released.altText,
             caption: released.caption,
             generationVersion: released.generationVersion,
+            regenerating: false,
+            pendingGenerationVersion: null,
+            failureCategory: null,
           ),
         );
+        if (!committed) {
+          await _discardUncommittedVersion(
+            book,
+            scene.id,
+            released.generationVersion,
+          );
+          continue;
+        }
+        // Only a committed manifest transfers ownership away from old files.
+        if (scene.localImagePath != null &&
+            scene.generationVersion != released.generationVersion) {
+          await store.deleteSceneFiles(
+            book,
+            scene.id,
+            generationVersion: scene.generationVersion,
+          );
+        }
       }
     } on Object catch (failure) {
       // Illustration failures are auxiliary and must never interrupt reading.
-      error = failure.toString();
+      error = _safeFailure(failure).toString();
       _changed();
     } finally {
       _advancingIllustrations.remove(book.hash);
     }
   }
 
-  Future<void> _refreshIllustrationJobs(CatalogBook book) async {
-    final scenes = List<IllustrationScene>.of(manifestFor(book).scenes);
-    for (final jobId in manifestFor(book).chapterJobs.values) {
-      final result = await api.getJob(jobId);
-      for (final incoming in result.scenes) {
-        final index = scenes.indexWhere((scene) => scene.id == incoming.id);
-        if (index < 0) {
-          scenes.add(incoming);
-        } else if (!scenes[index].available) {
-          scenes[index] = incoming;
+  IllustrationScene? _replacementScene(
+    CatalogBook book,
+    IllustrationScene original,
+    int targetVersion,
+  ) {
+    final manifest = manifests[book.hash];
+    if (_currentBook(book) == null || manifest?.enabled != true) return null;
+    final latest = manifest!.scenes
+        .where((scene) => scene.id == original.id)
+        .firstOrNull;
+    if (latest == null ||
+        latest.jobId != original.jobId ||
+        latest.anchor.href != original.anchor.href ||
+        latest.anchor.spineOrdinal != original.anchor.spineOrdinal ||
+        latest.anchor.paragraphId != original.anchor.paragraphId ||
+        latest.generationVersion > targetVersion ||
+        (latest.localImagePath != null &&
+            latest.generationVersion == targetVersion) ||
+        (latest.pendingGenerationVersion ?? 0) > targetVersion) {
+      return null;
+    }
+    return latest;
+  }
+
+  Future<bool> _commitReplacement(
+    CatalogBook book,
+    IllustrationScene original,
+    IllustrationScene replacement,
+  ) async {
+    var wroteCandidate = false;
+    while (true) {
+      final latest = _replacementScene(
+        book,
+        original,
+        replacement.generationVersion,
+      );
+      final snapshot = manifests[book.hash];
+      if (latest == null || snapshot == null) {
+        // If deletion/disable won while writing, restore its authoritative record.
+        if (wroteCandidate && snapshot != null && _currentBook(book) != null) {
+          await store.saveManifest(book, snapshot);
         }
+        return false;
+      }
+      final updated = replacement.copyWith(
+        state: latest.available
+            ? latest.state
+            : IllustrationSceneState.unlocked,
+        automaticRevealDismissed: latest.automaticRevealDismissed,
+      );
+      final manifest = snapshot.copyWith(
+        scenes: snapshot.scenes
+            .map((scene) => scene.id == updated.id ? updated : scene)
+            .toList(),
+      );
+      await store.saveManifest(book, manifest);
+      wroteCandidate = true;
+      if (!identical(manifests[book.hash], snapshot) ||
+          _currentBook(book) == null) {
+        continue;
+      }
+      manifests[book.hash] = manifest;
+      _changed();
+      return true;
+    }
+  }
+
+  Future<void> _discardUncommittedVersion(
+    CatalogBook book,
+    String sceneId,
+    int generationVersion,
+  ) async {
+    final current = manifests[book.hash]?.scenes
+        .where((scene) => scene.id == sceneId)
+        .firstOrNull;
+    // A competing local commit owns these files even if this completion is stale.
+    if (current?.localImagePath != null &&
+        current!.generationVersion == generationVersion) {
+      return;
+    }
+    await store.deleteSceneFiles(
+      book,
+      sceneId,
+      generationVersion: generationVersion,
+    );
+  }
+
+  Future<void> _refreshIllustrationJobs(CatalogBook book) async {
+    final beforePolling = manifests[book.hash];
+    if (beforePolling?.enabled != true || _currentBook(book) == null) return;
+    final incomingScenes = <IllustrationScene>[];
+    for (final jobId in beforePolling!.chapterJobs.values) {
+      final result = await api.getJob(jobId);
+      incomingScenes.addAll(result.scenes);
+    }
+    // Polling awaits network IO; merge into the newest local reveal/path state.
+    final current = manifests[book.hash];
+    if (current?.enabled != true || _currentBook(book) == null) return;
+    final scenes = List<IllustrationScene>.of(current!.scenes);
+    for (final incoming in incomingScenes) {
+      final index = scenes.indexWhere((scene) => scene.id == incoming.id);
+      if (index < 0) {
+        if (beforePolling.scenes.any((scene) => scene.id == incoming.id)) {
+          continue; // Removed locally while this poll was awaiting network IO.
+        }
+        scenes.add(incoming);
+      } else {
+        scenes[index] = _mergeScene(scenes[index], incoming);
       }
     }
-    final manifest = manifestFor(book).copyWith(scenes: scenes);
-    manifests[book.hash] = manifest;
+    final manifest = current.copyWith(scenes: scenes);
     await store.saveManifest(book, manifest);
+    manifests[book.hash] = manifest;
     _changed();
+  }
+
+  IllustrationScene _mergeScene(
+    IllustrationScene committed,
+    IllustrationScene incoming,
+  ) {
+    if (incoming.generationVersion < committed.generationVersion) {
+      return committed;
+    }
+    final generating =
+        incoming.regenerating ||
+        incoming.state == IllustrationSceneState.generating ||
+        incoming.state == IllustrationSceneState.queued;
+    final ready = incoming.state == IllustrationSceneState.readyLocked;
+    if (committed.localImagePath == null) {
+      return committed.copyWith(
+        state: incoming.state,
+        generationVersion: incoming.generationVersion,
+        regenerating: generating,
+        pendingGenerationVersion: null,
+        failureCategory: incoming.failureCategory,
+      );
+    }
+    if (generating) {
+      return committed.copyWith(
+        regenerating: true,
+        pendingGenerationVersion: null,
+        failureCategory: null,
+      );
+    }
+    if (ready && incoming.generationVersion > committed.generationVersion) {
+      return committed.copyWith(
+        regenerating: false,
+        pendingGenerationVersion:
+            (committed.pendingGenerationVersion ?? 0) >
+                incoming.generationVersion
+            ? committed.pendingGenerationVersion
+            : incoming.generationVersion,
+        failureCategory: null,
+      );
+    }
+    final failed =
+        incoming.failureCategory != null ||
+        incoming.state == IllustrationSceneState.failed ||
+        incoming.state == IllustrationSceneState.skippedSafety;
+    if (failed) {
+      error =
+          'The replacement illustration could not be completed. '
+          'Your previous artwork is still available.';
+    }
+    if (!failed && ready && committed.pendingGenerationVersion != null) {
+      // An older ready poll cannot discard a replacement already seen locally.
+      return committed.copyWith(regenerating: false, failureCategory: null);
+    }
+    return committed.copyWith(
+      regenerating: false,
+      pendingGenerationVersion: null,
+      failureCategory: incoming.failureCategory,
+    );
   }
 
   Future<void> _updateScene(CatalogBook book, IllustrationScene updated) async {
@@ -383,8 +792,8 @@ class IllustrationCoordinator {
       scenes[index] = updated;
     }
     final manifest = manifestFor(book).copyWith(scenes: scenes);
-    manifests[book.hash] = manifest;
     await store.saveManifest(book, manifest);
+    manifests[book.hash] = manifest;
     _changed();
   }
 }

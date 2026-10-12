@@ -3,6 +3,7 @@ import 'package:integration_test/integration_test.dart';
 
 import 'scenarios/controls.dart';
 import 'scenarios/library.dart';
+import 'scenarios/illustrations.dart';
 import 'scenarios/page_flip.dart';
 import 'scenarios/reading.dart';
 import 'scenarios/narration.dart';
@@ -16,6 +17,7 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   group('Library', registerLibraryTests);
   group('Reading', registerReadingTests);
+  group('Illustrations', registerIllustrationTests);
   group('Reader controls', registerControlTests);
   group('Page flip', registerPageFlipTests);
   group('Narration', registerNarrationTests);

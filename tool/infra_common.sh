@@ -166,6 +166,59 @@ ensure_openai_secret() {
   unset openai_key
 }
 
+# provider:container:environment-variable for direct image providers. Container
+# IDs mirror infra/modules/illustrations; Google uses the worker identity, so it
+# has no key. Values never appear in argv, tfvars, state, plans or output.
+IMAGE_PROVIDER_KEYS="seedream:reader-byteplus-api-key:BYTEPLUS_API_KEY qwen:reader-qwen-api-key:QWEN_API_KEY xai:reader-xai-api-key:XAI_API_KEY flux:reader-bfl-api-key:BFL_API_KEY"
+
+# Read-only. Writes $WORK_DIR/image-providers.tfvars.json naming only providers
+# whose container has an ENABLED version (an existing version always wins). A
+# container that does not exist yet is simply absent; permission, API and other
+# failures stop the run rather than silently dropping a configured provider.
+discover_image_provider_secrets() {
+  providers_file="$WORK_DIR/image-providers.tfvars.json"
+  printf '{"image_provider_secret_ids":{}}\n' >"$providers_file"
+  for entry in $IMAGE_PROVIDER_KEYS; do
+    provider=${entry%%:*}
+    rest=${entry#*:}
+    container=${rest%%:*}
+    if ! enabled=$(gcloud secrets versions list "$container" \
+      --project="$PROJECT_ID" --filter='state=ENABLED' --limit=1 --format='value(name)' \
+      2>"$WORK_DIR/secret-error"); then
+      if grep -Eqi 'NOT_FOUND|was not found|not found' "$WORK_DIR/secret-error"; then
+        continue
+      fi
+      cat "$WORK_DIR/secret-error" >&2
+      die "cannot inspect Secret Manager container $container"
+    fi
+    [ -n "$enabled" ] || continue
+    jq -c --arg provider "$provider" --arg container "$container" \
+      '.image_provider_secret_ids[$provider] = $container' "$providers_file" >"$providers_file.next"
+    mv "$providers_file.next" "$providers_file"
+  done
+  export IMAGE_PROVIDER_VARS="$providers_file"
+}
+
+# Deploy only, after the illustrations stack created the containers. Each key is
+# optional: an absent variable is omitted without prompting or failing, and an
+# existing enabled version is never replaced.
+provision_image_provider_secrets() {
+  for entry in $IMAGE_PROVIDER_KEYS; do
+    rest=${entry#*:}
+    container=${rest%%:*}
+    variable=${rest#*:}
+    value=$(printenv "$variable" || true)
+    [ -n "$value" ] || continue
+    enabled=$(gcloud secrets versions list "$container" \
+      --project="$PROJECT_ID" --filter='state=ENABLED' --limit=1 --format='value(name)')
+    if [ -z "$enabled" ]; then
+      printf '%s' "$value" | gcloud secrets versions add "$container" \
+        --project="$PROJECT_ID" --data-file=- >/dev/null
+    fi
+    unset value
+  done
+}
+
 # Core configuration generation works before an illustration endpoint exists.
 generate_dart_defines() {
   api_url=${1:-}

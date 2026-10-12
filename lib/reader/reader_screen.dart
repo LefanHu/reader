@@ -8,6 +8,7 @@ import '../app/layout.dart';
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
 import '../illustrations/illustration_scene.dart';
+import '../illustrations/illustration_selection.dart';
 import '../illustrations/illustration_setup.dart';
 import '../narration/narration_sheet.dart';
 import '../narration/status_indicator.dart';
@@ -62,6 +63,8 @@ class _ReaderScreenState extends State<ReaderScreen>
   bool revealingIllustration = false;
   String? chapterTitle;
   Timer? revealTimer;
+  Timer? pollTimer;
+  bool resumed = true;
   late final _narration = ReaderNarrationBinding(
     controller: widget.controller,
     book: widget.book,
@@ -77,13 +80,29 @@ class _ReaderScreenState extends State<ReaderScreen>
     widget.controller.addListener(_controllerChanged);
     WidgetsBinding.instance.addObserver(this);
     _narration.attach();
+    // Generation finishes while the reader rests on one anchor; polling uses
+    // the committed position only and never writes to the viewport.
+    pollTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _pollIllustrations(),
+    );
   }
 
   Future<text.TextDocument> _open() => store.load(widget.book.path);
 
+  void _pollIllustrations() {
+    if (!mounted || closed || !resumed) return;
+    if (!widget.controller.illustrations.manifestFor(widget.book).enabled) {
+      return;
+    }
+    // Advance records auxiliary failures itself; polling never interrupts reading.
+    widget.controller.illustrations.refresh(widget.book);
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _narration.visible = state == AppLifecycleState.resumed;
+    resumed = state == AppLifecycleState.resumed;
+    _narration.visible = resumed;
     _controllerChanged();
   }
 
@@ -124,7 +143,14 @@ class _ReaderScreenState extends State<ReaderScreen>
     if (action == IllustrationRevealAction.hide) {
       await widget.controller.illustrations.hide(widget.book, scene);
     } else if (action == IllustrationRevealAction.regenerate) {
-      await widget.controller.illustrations.regenerate(widget.book, scene);
+      try {
+        await widget.controller.illustrations.regenerate(widget.book, scene);
+      } on Object catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(error.toString())));
+        }
+      }
     }
     revealingIllustration = false;
   }
@@ -222,16 +248,16 @@ class _ReaderScreenState extends State<ReaderScreen>
       return;
     }
     if (!mounted) return;
-    final style = await showDialog<String>(
+    final selection = await showDialog<IllustrationSelection>(
       context: context,
       builder: (context) => IllustrationConsentDialog(setup: setup),
     );
-    if (style == null || !mounted) return;
+    if (selection == null || !mounted) return;
     try {
       await widget.controller.illustrations.confirm(
         widget.book,
         setup: setup,
-        style: style,
+        selection: selection,
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -271,6 +297,7 @@ class _ReaderScreenState extends State<ReaderScreen>
   @override
   void dispose() {
     revealTimer?.cancel();
+    pollTimer?.cancel();
     widget.controller.removeListener(_controllerChanged);
     _narration.dispose();
     WidgetsBinding.instance.removeObserver(this);

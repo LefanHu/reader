@@ -4,7 +4,10 @@ import 'package:flutter/material.dart';
 
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
+import '../illustrations/illustration_exception.dart';
 import '../illustrations/illustration_scene.dart';
+import '../illustrations/illustration_selection.dart';
+import 'illustration_consent_dialog.dart';
 import 'illustration_scene_dialog.dart';
 
 /// Unlocked-only gallery; queued and locked scenes have no revealing UI.
@@ -44,6 +47,13 @@ class IllustrationGallery extends StatelessWidget {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+              ),
+              TextButton.icon(
+                onPressed: controller.illustrations.busy
+                    ? null
+                    : () => _showSettings(context),
+                icon: const Icon(Icons.tune),
+                label: const Text('Illustration settings'),
               ),
               Expanded(
                 child: scenes.isEmpty
@@ -90,6 +100,12 @@ class IllustrationGallery extends StatelessWidget {
                                             child: Image.file(
                                               File(path),
                                               fit: BoxFit.cover,
+                                              cacheWidth:
+                                                  (360 *
+                                                          MediaQuery.devicePixelRatioOf(
+                                                            context,
+                                                          ))
+                                                      .ceil(),
                                             ),
                                           )
                                         : const Center(
@@ -127,10 +143,45 @@ class IllustrationGallery extends StatelessWidget {
       context: context,
       builder: (context) => IllustrationSceneDialog(scene: scene),
     );
-    if (action == IllustrationSceneAction.delete) {
-      await controller.illustrations.deleteScene(book, scene);
-    } else if (action == IllustrationSceneAction.regenerate) {
-      await controller.illustrations.regenerate(book, scene);
+    try {
+      if (action == IllustrationSceneAction.delete) {
+        await controller.illustrations.deleteScene(book, scene);
+      } else if (action == IllustrationSceneAction.regenerate) {
+        await controller.illustrations.regenerate(book, scene);
+      }
+    } on Object catch (error) {
+      if (context.mounted) _showError(context, error);
     }
+  }
+
+  Future<void> _showSettings(BuildContext context) async {
+    try {
+      final setup = await controller.illustrations.beginSetup(book);
+      if (!context.mounted) return;
+      final selection = await showDialog<IllustrationSelection>(
+        context: context,
+        builder: (_) => IllustrationSettingsDialog(setup: setup),
+      );
+      if (selection == null || !context.mounted) return;
+      await controller.illustrations.updateSettings(
+        book,
+        setup: setup,
+        selection: selection,
+      );
+    } on Object catch (error) {
+      if (context.mounted) _showError(context, error);
+    }
+  }
+
+  void _showError(BuildContext context, Object error) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error is IllustrationException
+              ? error.message
+              : 'Illustrations could not be updated. Try again when connected.',
+        ),
+      ),
+    );
   }
 }

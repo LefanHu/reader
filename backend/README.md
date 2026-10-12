@@ -25,8 +25,13 @@ docker build --platform linux/amd64 -t reader-backend-dev backend
   (scene delivery, regeneration, cleanup), `illustration-worker.ts` (claims,
   planning, settlement, moderation, guarded publication),
   `illustration-credits.ts`, `fences.ts` (deletion-fence lookups).
-- `src/openai.ts`, `narration.ts`, `narration-provider.ts`, `account.ts`:
-  provider calls, narration lifecycle, account routes.
+- `src/image-provider-registry.ts`: exact snapshot dispatch and centralized native
+  validation (`image-generation.ts`); `image-provider-http.ts`: operation deadlines,
+  bounded streams and DNS-pinned provider assets; `image-providers/`: six direct
+  generation transports. `openai.ts` retains narrative analysis and moderation,
+  independent of the selected image source.
+- `src/narration.ts`, `narration-provider.ts`, `account.ts`: narration lifecycle
+  and account routes.
 - `src/illustration-worker.test.ts` runs lifecycle regressions over local HTTP
   with isolated storage and deterministic provider barriers.
 
@@ -37,6 +42,13 @@ Required: `OPENAI_API_KEY`, `FINGERPRINT_SECRET`, `GOOGLE_CLOUD_PROJECT`,
 `WORKER_URL`, `SERVICE_ROLE`. `ILLUSTRATIONS_ENABLED=true` opens the
 illustration flag (default off). Optional: `OPENAI_SCENE_MODEL`,
 `OPENAI_IMAGE_MODEL`, `OPENAI_IMAGE_ORCHESTRATOR_MODEL`, `PILOT_CREDITS`.
+`IMAGE_PROVIDERS` is the comma-separated deployment availability list (OpenAI
+remains the initial default). Worker-only optional keys are `BYTEPLUS_API_KEY`,
+`QWEN_API_KEY`, `XAI_API_KEY`, and `BFL_API_KEY`; Google uses worker ADC and
+Vertex AI access, not a client API key. API availability never reads these keys.
+The selected source never falls back to another provider. Operator commercial
+accounts, funded billing and applicable terms remain prerequisites; Cloud
+hosting is not a claim of unrestricted user eligibility.
 The mobile build supplies Firebase/API values with `--dart-define`.
 
 - The OpenAI organization behind the key must have funded API usage; a ChatGPT
@@ -48,6 +60,51 @@ The mobile build supplies Firebase/API values with `--dart-define`.
 - Bucket lifecycle deletes `users/**/scenes/**` after 30 days. Scenes carry
   `assetExpiresAt`; `/unlock` queues an uncharged refresh within 24 hours of
   expiry. Storage stays private: clients get only ten-minute signed URLs.
+
+The immutable `reader-landscape-v1` preset requests one landscape image and at
+most two private inline continuity references:
+
+| ID | Server-owned model / hosting | Preset |
+| --- | --- | --- |
+| `openai` | `gpt-image-2.5-flare`, Responses orchestrator `gpt-5.5` (environment overrides snapshotted) | high, 1536×1024, opaque WebP, automatic safety, `store:false` |
+| `google` | `gemini-nano-banana-2.1`, Google Cloud Vertex global endpoint / ADC | 2K, 3:2, one candidate, no grounding/tools |
+| `seedream` | `seedream-4-0-250828`, direct BytePlus Singapore | 1536×1024, inline base64, no sequential generation |
+| `qwen` | `qwen-image-3.0`, direct Model Studio Singapore | 1536×1024, one image, no prompt extension |
+| `xai` | `grok-imagine-image-2.0`, direct xAI | 1.5k, 3:2, multi-reference edit when needed |
+| `flux` | `flux-3-image`, direct BFL | 1.5k, 3:2, no grounding, safety tolerance 2 |
+| `diagnostic` | `text-image-diagnostic-v1`, private Cloud Run service (dev only), no external key | 1536×1024 PNG listing the exact prompt as text; pipeline testing only |
+
+### Pipeline test source
+
+`diagnostic` ("Pipeline test (prompt as text)") proves the whole illustration
+pipeline without a paid provider. A separately deployed Cloud Run service
+(`node dist/image-test-provider-server.js`, same image; `POST /v1/render`) returns a
+white 3:2 PNG showing the exact prompt the worker sent (art direction, world
+state, scene facts, source scene), `references: N`, and a truncation notice for
+prompts beyond 36 wrapped lines. Terraform creates it only when
+`image_test_provider_enabled = true` and only in `dev`; only the worker identity
+holds `roles/run.invoker`, and the worker sends a Google ID token for the service
+origin (`IMAGE_TEST_PROVIDER_URL`, must be `https://*.run.app`). Select it per
+book in Illustration settings and read past a scene. Scene analysis and image
+moderation still use OpenAI, and each published image still spends one credit.
+Run locally with `npm run image-test-provider`.
+
+All generation operations have a 120-second deadline, including polling and
+download. Connection establishment is bounded to ten seconds; synchronous
+generation gets the remaining deadline rather than an artificial 30-second
+response timeout. JSON is limited to 32 MiB, originals to 16 MiB and 16,777,216
+pixels, references to 7 MiB each. Decoder verification requires a single
+PNG/JPEG/WebP frame and oriented 3:2 within 2%. Returned asset URLs are restricted
+to documented HTTPS provider hosts with public DNS pinned, no redirects or
+forwarded provider credentials. A new upstream host fails closed.
+
+Provider contracts: [Google Cloud](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/image-generation),
+[BytePlus](https://docs.byteplus.com/en/docs/modelark/image-generation-api),
+[Qwen](https://www.alibabacloud.com/help/en/model-studio/qwen-image-generation-and-editing-api-reference),
+[xAI](https://docs.x.ai/developers/rest-api-reference/inference/images),
+[BFL](https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3.md).
+[BFL terms §6(i)](https://bfl.ai/legal/developer-terms-of-service) require preserving
+Content Credentials. No quality ranking is inferred from model documentation.
 
 ## Deployment
 
@@ -63,6 +120,13 @@ requires core to exist already; omitting scope runs both. Existing foundation
 state must migrate before either path is applied. See
 [`../infra/README.md`](../infra/README.md) for state bootstrap, migration
 safeguards, secrets and drift review.
+
+### Schema-2 cutover reset
+
+`npm run reset:illustrations -- --project P --bucket B` reports obsolete
+illustration records (dry run). `--apply --maintenance` deletes them while keeping
+users, tombstones, `narrationBooks`, `narrationAccountTombstones` and
+`users/{uid}/narration/`. See [`../infra/README.md`](../infra/README.md).
 
 ## Illustration privacy and lifecycle guarantees
 
@@ -87,8 +151,9 @@ safeguards, secrets and drift review.
 - Job documents temporarily hold a `plan` (bounded anchors, paraphrased facts,
   specs/world snapshots). Raw chapter text lives only in the 24-hour-TTL input
   until the guarded analysis commit deletes it. Terminal states remove the plan.
-- Regeneration persists `regenerationTarget`, `regenerationRefresh` and
-  `regenerationTaskId` before enqueue; retries (including `/unlock`) resubmit the
+- Regeneration persists `regenerationTarget`, `regenerationRefresh`,
+  `regenerationTaskId` and `regenerationGenerationSpec` before enqueue; retries
+  (including `/unlock`) resubmit the
   same identity, cannot change paid/free intent or double-charge, and stale task
   identities cannot claim newer requests.
 - Deletion: scene delete fences, refunds, removes assets, leaves a `deleted`
@@ -102,6 +167,25 @@ safeguards, secrets and drift review.
 - The first illustration registration initializes pilot credits; later
   registrations keep balances. Deleted account/book fences reject registration
   with 410.
+- Schema 2 registers salted book/job identities and rejects legacy mutation
+  payloads before writes. `GET /v1/illustrations/config` requires Auth/App Check,
+  stays readable with rollout off, returns all six sources and `no-store`.
+- The saved book profile has a server-owned revision. No-op saves retain it;
+  stale differing updates return 409. Chapter admission snapshots style,
+  density, provider, exact model and immutable `reader-landscape-v1` preset.
+  Queued work never rereads live preferences or model environment overrides.
+- Settings apply to unscheduled chapters and paid explicit regeneration.
+  Free expiry refresh retains the published recipe. Pending replacements keep
+  prior assets and spoiler/reveal state until new downloads and manifest commit.
+  Local `generationVersion` and paths remain committed artwork;
+  `regenerating` is independent progress and `pendingGenerationVersion` denotes
+  a newer ready replacement. Server `unlocked` does not bypass the device's
+  ending-paragraph gate. Terminal failure clears pending progress, not artwork;
+  replacing a hidden/dismissed scene never repeats automatic reveal.
+- Original PNG/JPEG/WebP bytes are published unchanged with verified MIME.
+  FLUX uses its original as the preview to avoid altering Content Credentials;
+  other sources have a derived WebP preview, with no provenance-survival claim
+  for transformed previews. Each distinct private object has one owner.
 
 ## AI narration (disabled by default)
 
@@ -180,12 +264,13 @@ exists. Both rollout flags must be on for the full recipe.
 | `GET /health` | 200 `{"ok":true}`, no auth (Cloud Run reserves some `z`-suffixed paths). |
 | `GET /v1/account/usage` | 200, `no-store`; flags true, nonnegative narration allowance; fresh illustration credits null. Keep as baseline. |
 | `GET /v1/fingerprint-key` | 200, base64 `key`; derive the account-scoped HMAC-SHA256 fingerprint of a disposable book identifier. |
-| `POST /v1/books` | `{"fingerprint":"<64-hex>","title":"The Lantern Courtyard","authors":["Dev smoke"],"language":"en","chapterCount":1}` → 200, 40-hex `id`, suggested style, two alternatives, `estimatedCredits:3`. |
-| `PUT /v1/books/:bookId/profile` | `{"style":"<suggestedStyle>","density":1,"styleVersion":1,"analysisVersion":2}` → 204. |
+| `GET /v1/illustrations/config` | 200, `schemaVersion:2`, all six sources, availability, OpenAI default, `no-store`; readable with rollout off. |
+| `POST /v1/books` | `{"schemaVersion":2,"fingerprint":"<64-hex>","title":"The Lantern Courtyard","authors":["Dev smoke"],"language":"en","chapterCount":1}` → 200, salted 40-hex `id`, configuration/current profile, suggested style, two alternatives, `estimatedCredits:3`. |
+| `PUT /v1/books/:bookId/profile` | `{"schemaVersion":2,"providerId":"openai","style":"<suggestedStyle>","density":1,"expectedRevision":0,"analysisVersion":2}` → 200, saved profile with `revision:1`. |
 | `POST /v1/books/:bookId/chapters/0/jobs` | Chapter body below → 202, 40-hex job `id`; exact repeat returns same ID, no second charge. |
 | `GET /v1/jobs/:jobId` | Poll `queued`/`analyzing` → `complete` with at least one `ready_locked` scene (scene-less `complete` is not success). Anchor `href`, paragraph ID, selector, progression match the submission. |
-| `POST /v1/scenes/:sceneId/unlock` | 200, signed image/thumbnail URLs, alt text, caption, `generationVersion:1`. Private fetch: valid WebP, landscape original, thumbnail width ≤ 640; bare object URLs inaccessible. |
-| `POST /v1/scenes/:sceneId/regenerate` | 202; poll to `ready_locked`; unlock → 200, `generationVersion:2`, valid new WebP. |
+| `POST /v1/scenes/:sceneId/unlock` | 200, signed URLs, verified image/thumbnail MIME, alias flag, alt text, caption, `generationVersion:1`. Decode the landscape original and preview using returned MIME; aliased FLUX preview is byte-identical to its original. Bare object URLs are inaccessible. |
+| `POST /v1/scenes/:sceneId/regenerate` | 202; poll to ready; unlock → 200, `generationVersion:2`, decodable new native-format image. |
 | `GET /v1/account/usage` | Initial + paid regeneration spend exactly two credits; reserved returns to 0. Re-registering the book or registering another fingerprint grants/resets nothing. |
 | `GET /v1/narration/config` | 200, `enabled:true`, model `gpt-realtime-2.1-mini`, voices `marin`/`cedar`, limits, allowance. |
 | `POST /v1/narration/books` | `{"fingerprint":"<64-hex>"}` → 200, 64-hex `id`, matching `account`; illustration balances unchanged. |
@@ -202,9 +287,9 @@ Chapter body (omits optional metadata to exercise strict Firestore serialization
 ```json
 {
   "href": "smoke.xhtml",
-  "styleVersion": 1,
+  "schemaVersion": 2,
+  "profileRevision": 1,
   "analysisVersion": 2,
-  "density": 1,
   "paragraphs": [
     {
       "id": "p0",
@@ -254,3 +339,13 @@ Additional checks:
   config and privacy deletion still work; generation endpoints → 503.
 - Terminal jobs have no raw prose; account deletion must not refund shared daily
   charges.
+
+For each newly configured generator, opt-in billed smoke must generate one
+scene and one continuation with two story-safe references, plus an OpenAI
+regression. Inspect composition, exact scene fidelity and character continuity;
+record actual model, dimensions, native MIME, latency and provider charge without
+logging prose, reference bytes, keys or signed URLs. Check original/preview
+ownership, moderation, one-credit publication and FLUX byte preservation.
+Protocol fixtures establish transport/lifecycle behavior, not live model access,
+acoustic/image quality, provenance authenticity or provider billing. Do not
+declare a source production-ready before its own live smoke succeeds.

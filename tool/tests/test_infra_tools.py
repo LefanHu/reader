@@ -218,6 +218,9 @@ name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 with open(os.environ['CALL_LOG'],'a') as log: log.write(json.dumps([name,*args])+'\n')
 if name=='terraform':
+    for a in args:
+        if a.startswith('-var-file=') and os.path.exists(a[10:]):
+            with open(os.environ['VARFILE_LOG'],'a') as vf: vf.write(open(a[10:]).read())
     if args==['version','-json']: print('{"terraform_version":"1.14.8"}')
     if 'pull' in args:
         if os.environ.get('LEGACY_STATE')=='1':
@@ -238,9 +241,19 @@ elif name=='gcloud':
     if args[:2]==['auth','list']: print('test@example.test')
     if args[:2]==['storage','ls'] and os.environ.get('RUNTIME_EXISTS')!='1': sys.exit(1)
     if args[:3]==['storage','buckets','describe'] and os.environ.get('MISSING_STATE_BUCKET')=='1': sys.exit(1)
-    if args[:3]==['secrets','versions','list'] and os.environ.get('MISSING_OPENAI_VERSION')!='1': print('1')
+    if args[:3]==['secrets','versions','list']:
+        container=args[3]
+        added=pathlib.Path(os.environ['SECRET_INPUT_DIGEST']+'.added')
+        if os.environ.get('SECRET_ERROR')==container:
+            print('ERROR: PERMISSION_DENIED on '+container,file=sys.stderr); sys.exit(1)
+        if os.environ.get('MISSING_SECRET')==container:
+            print('ERROR: NOT_FOUND: Secret ['+container+'] not found',file=sys.stderr); sys.exit(1)
+        if container=='openai':
+            if os.environ.get('MISSING_OPENAI_VERSION')!='1': print('1')
+        elif container in os.environ.get('ENABLED_SECRETS','').split(',') or (added.exists() and container in added.read_text().split()): print('1')
     if args[:3]==['secrets','versions','add']:
         pathlib.Path(os.environ['SECRET_INPUT_DIGEST']).write_text(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())
+        with open(os.environ['SECRET_INPUT_DIGEST']+'.added','a') as added: added.write(args[3]+'\n')
     if args[:3]==['artifacts','docker','images']: print('sha256:'+'a'*64)
 elif name=='curl' and '--write-out' in args: print('403',end='')
 elif name=='git': print('abc123')
@@ -265,7 +278,9 @@ class DeploymentTests(unittest.TestCase):
         self.log = self.root / "calls.jsonl"
         self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "CALL_LOG": str(self.log),
                     "SECRET_INPUT_DIGEST": str(self.root / "secret-input.sha256"), "OPENAI_API_KEY": "",
-                    "TF_VAR_google_client_id": "client", "TF_VAR_google_client_secret": "secret"}
+                    "TF_VAR_google_client_id": "client", "TF_VAR_google_client_secret": "secret",
+                    "VARFILE_LOG": str(self.root / "varfiles.log"),
+                    **{name: "" for name in ("BYTEPLUS_API_KEY", "QWEN_API_KEY", "XAI_API_KEY", "BFL_API_KEY")}}
 
     def execute(self, script, *args, **env):
         result = subprocess.run([str(self.root / "tool" / script), "dev", *args], env={**self.env, **env}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
@@ -368,6 +383,63 @@ class DeploymentTests(unittest.TestCase):
                          (self.root / "secret-input.sha256").read_text())
         self.assertNotIn(key, result.stdout + result.stderr + self.log.read_text())
         self.assertNotIn("OpenAI API key (", result.stderr)
+
+    def provider_ids(self):
+        """Provider keys named by the last runtime var-file written for Terraform."""
+        last = (self.root / "varfiles.log").read_text().splitlines()[-1]
+        return json.loads(last)["image_provider_secret_ids"]
+
+    def test_absent_provider_keys_are_omitted_without_prompt_or_failure(self):
+        result, calls = self.execute("deploy_backend", "--scope", "illustrations")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({}, self.provider_ids())
+        self.assertFalse(any(c[:4] == ["gcloud", "secrets", "versions", "add"] for c in calls))
+        self.assertNotIn("API key", result.stderr)
+
+    def test_provider_key_creates_only_its_missing_version_over_stdin(self):
+        import hashlib
+        key = "private-seedream-key"
+        result, calls = self.execute("deploy_backend", "--scope", "illustrations", BYTEPLUS_API_KEY=key,
+                                     QWEN_API_KEY="unused-qwen", ENABLED_SECRETS="reader-qwen-api-key")
+        self.assertEqual(0, result.returncode, result.stderr)
+        additions = [c for c in calls if c[:4] == ["gcloud", "secrets", "versions", "add"]]
+        self.assertEqual([["gcloud", "secrets", "versions", "add", "reader-byteplus-api-key"]],
+                         [c[:5] for c in additions])
+        self.assertIn("--data-file=-", additions[0])
+        self.assertEqual(hashlib.sha256(key.encode()).hexdigest(),
+                         (self.root / "secret-input.sha256").read_text())
+        self.assertEqual({"seedream": "reader-byteplus-api-key", "qwen": "reader-qwen-api-key"}, self.provider_ids())
+        everything = result.stdout + result.stderr + self.log.read_text() + (self.root / "varfiles.log").read_text()
+        self.assertNotIn(key, everything)
+        self.assertNotIn("unused-qwen", everything)
+
+    def test_existing_provider_versions_are_discovered_and_referenced(self):
+        result, _ = self.execute("deploy_backend", "--scope", "illustrations",
+                                 ENABLED_SECRETS="reader-bfl-api-key,reader-xai-api-key")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"flux": "reader-bfl-api-key", "xai": "reader-xai-api-key"}, self.provider_ids())
+
+    def test_provider_permission_errors_stop_before_runtime_apply(self):
+        result, calls = self.execute("deploy_backend", "--scope", "illustrations", SECRET_ERROR="reader-qwen-api-key")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("PERMISSION_DENIED", result.stderr)
+        self.assertFalse(any(c[:3] == ["gcloud", "builds", "submit"] for c in calls))
+        self.assertFalse(any("apply" in c and "/runtime" in c[1] for c in calls if c[0] == "terraform"))
+
+    def test_not_yet_created_provider_container_is_simply_unavailable(self):
+        result, _ = self.execute("deploy_backend", "--scope", "illustrations", MISSING_SECRET="reader-qwen-api-key",
+                                 ENABLED_SECRETS="reader-xai-api-key")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"xai": "reader-xai-api-key"}, self.provider_ids())
+
+    def test_plan_discovers_providers_read_only_even_with_private_keys(self):
+        result, calls = self.execute("plan_infra", "--scope", "illustrations", RUNTIME_EXISTS="1",
+                                     XAI_API_KEY="plan-only-key", ENABLED_SECRETS="reader-bfl-api-key")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"flux": "reader-bfl-api-key"}, self.provider_ids())
+        self.assertFalse(any(c[:4] == ["gcloud", "secrets", "versions", "add"] for c in calls))
+        self.assertFalse(any("apply" in c for c in calls))
+        self.assertNotIn("plan-only-key", result.stdout + result.stderr + self.log.read_text())
 
     def test_existing_openai_version_reused_even_with_private_environment_key(self):
         key = "unused-private-test-key"

@@ -12,9 +12,10 @@ class IllustrationManifest {
     this.chapterJobs = const {},
     this.scenes = const [],
     this.visualBibleVersion = 0,
-    this.version = 1,
+    this.version = 2,
   });
 
+  /// Illustration-only cutover discriminator; old consent/artwork is discarded.
   final int version;
   final String bookHash;
   final IllustrationProfile? profile;
@@ -53,7 +54,7 @@ class IllustrationManifest {
 
   factory IllustrationManifest.fromJson(Map<String, dynamic> json) =>
       IllustrationManifest(
-        version: (json['version'] as num?)?.round() ?? 1,
+        version: json['version'] as int,
         bookHash: json['bookHash'] as String,
         profile: json['profile'] == null
             ? null

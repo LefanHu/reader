@@ -11,6 +11,7 @@ import 'package:reader/illustrations/gate.dart';
 import 'package:reader/illustrations/illustration_job_result.dart';
 import 'package:reader/illustrations/illustration_manifest.dart';
 import 'package:reader/illustrations/illustration_scene.dart';
+import 'package:reader/illustrations/illustration_selection.dart';
 import 'package:reader/illustrations/illustration_setup.dart';
 import 'package:reader/illustrations/indexed_paragraph.dart';
 
@@ -231,7 +232,13 @@ void main() {
       ..createSync(recursive: true);
 
     await expectLater(
-      store.saveImage(book, '../escape', Uint8List.fromList([1])),
+      store.saveImage(
+        book,
+        '../escape',
+        Uint8List.fromList([1]),
+        mimeType: 'image/png',
+        generationVersion: 1,
+      ),
       throwsFormatException,
     );
     expect(
@@ -280,7 +287,7 @@ void main() {
         status: 'complete',
         scenes: const [
           IllustrationScene(
-            id: 'scene-0',
+            id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             jobId: 'job-0',
             state: IllustrationSceneState.readyLocked,
             anchor: SceneAnchor(
@@ -308,8 +315,12 @@ void main() {
           suggestedStyle: 'Cinematic ink',
           alternativeStyles: [],
           estimatedCredits: 6,
+          configuration: FakeIllustrationApi.configuration,
         ),
-        style: 'Cinematic ink',
+        selection: const IllustrationSelection(
+          style: 'Cinematic ink',
+          providerId: 'openai',
+        ),
       );
       expect(api.createdChapterOrdinals, [0, 1]);
 
@@ -328,7 +339,10 @@ void main() {
         .2,
       );
       await _waitUntil(() => api.unlockedSceneIds.isNotEmpty);
-      expect(controller.illustrations.pendingRevealFor(book)?.id, 'scene-0');
+      expect(
+        controller.illustrations.pendingRevealFor(book)?.id,
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      );
       await controller.savePosition(
         book,
         const TextPosition(sectionId: 's1', blockId: 'c1-p0'),

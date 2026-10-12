@@ -12,6 +12,7 @@ import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/identity/cloud_identity.dart';
+import 'package:reader/illustrations/api.dart';
 import 'package:reader/illustrations/document_text_indexer.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
 import 'package:reader/importing/import_candidate.dart';
@@ -47,12 +48,16 @@ class NativeTestApp {
   final FileCatalogStore store;
 
   /// Controller owned by ReaderApp after mounting and by this fixture beforehand.
-  late final ReaderController controller;
+  late ReaderController controller;
 
   /// Real Apple source only for explicitly local acceptance scenarios.
   AppleNarrationSource? localNarrationSource;
   ReaderController? _ownedController;
   NarrationPlayer? _initializingPlayer;
+  IllustrationApi? _illustrationApi;
+  CloudIdentity? _cloudIdentity;
+  AccountApi? _accountApi;
+  bool _hasNarration = false;
   final _screenshotKey = GlobalKey();
   bool _mounted = false;
 
@@ -66,6 +71,7 @@ class NativeTestApp {
     bool localNarration = false,
     CloudIdentity? cloudIdentity,
     AccountApi? accountApi,
+    IllustrationApi? illustrationApi,
     Uint8List? textBytes,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
@@ -73,6 +79,10 @@ class NativeTestApp {
     addTearDown(app._dispose);
     final hasNarration = narration || localNarration;
     final api = hasNarration ? FakeNarrationApi() : null;
+    app._illustrationApi = illustrationApi;
+    app._cloudIdentity = cloudIdentity;
+    app._accountApi = accountApi;
+    app._hasNarration = hasNarration;
     if (localNarration) {
       app.localNarrationSource = await AppleNarrationSource.create(root: root);
     }
@@ -109,6 +119,7 @@ class NativeTestApp {
       ],
       illustrationStore: FileIllustrationStore(root),
       textIndexer: DocumentTextIndexer(),
+      illustrationApi: illustrationApi,
       wordCounter: FileBookWordCounter(),
       cloudIdentity: cloudIdentity,
       accountApi: accountApi,
@@ -133,6 +144,42 @@ class NativeTestApp {
     if (importBooks) await app.controller.catalog.pickAndImport();
     await tester.pumpAndSettle();
     return app;
+  }
+
+  /// Reopens persisted catalog/visuals through a fresh illustration-only app.
+  /// Native narration players are not reusable after their owning app disposes.
+  Future<void> restart() async {
+    if (_hasNarration) {
+      throw StateError('Restart requires an illustration-only native fixture.');
+    }
+    final previous = _ownedController!;
+    if (_mounted) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      _mounted = false;
+    }
+    await runWithFrames(previous.flush);
+    _ownedController = null;
+    controller = await testController(
+      initialize: false,
+      catalogStore: store,
+      root: root,
+      illustrationStore: FileIllustrationStore(root),
+      illustrationApi: _illustrationApi,
+      textIndexer: DocumentTextIndexer(),
+      wordCounter: FileBookWordCounter(),
+      cloudIdentity: _cloudIdentity,
+      accountApi: _accountApi,
+    );
+    _ownedController = controller;
+    await controller.initialize();
+    _mounted = true;
+    await tester.pumpWidget(
+      RepaintBoundary(
+        key: _screenshotKey,
+        child: ReaderApp(controller: controller),
+      ),
+    );
+    await tester.pumpAndSettle();
   }
 
   /// Current viewport rather than a widget snapshot from an earlier theme/mode.

@@ -1,3 +1,25 @@
+/** Stable server-owned choices; clients select IDs, never models or endpoints. */
+export type ImageProviderId = "openai" | "google" | "seedream" | "qwen" | "xai" | "flux" | "diagnostic";
+
+/** Immutable operation identity. Changing render options requires a new preset. */
+export type ImageGenerationConfig = {
+  schemaVersion: 2;
+  providerId: ImageProviderId;
+  model: string;
+  orchestratorModel?: string;
+  renderPreset: "reader-landscape-v1";
+};
+
+/** Authoritative book settings; revision advances only for effective changes. */
+export type IllustrationBookProfile = {
+  schemaVersion: 2;
+  providerId: ImageProviderId;
+  style: string;
+  density: number;
+  revision: number;
+  analysisVersion: number;
+};
+
 export type Paragraph = {
   id: string;
   text: string;
@@ -11,7 +33,8 @@ export type ChapterInput = {
   href: string;
   title?: string;
   language?: string;
-  styleVersion: number;
+  /** Admission's immutable profile revision; density is snapshotted server-side. */
+  profileRevision: number;
   analysisVersion: number;
   density: number;
   paragraphs: Paragraph[];
@@ -62,6 +85,8 @@ export type NarrativeAnalysis = {
 
 /** Immutable server-side history used to resolve the world at any scene anchor. */
 export type WorldRevision = {
+  /** Top-level cutover discriminator; legacy histories cannot enter new plans. */
+  schemaVersion: 2;
   uid: string;
   bookId: string;
   entityId: string;
@@ -79,6 +104,8 @@ export type WorldRevision = {
 
 /** Generated artwork that may be reused only after its own story anchor. */
 export type WorldReference = {
+  /** Top-level cutover discriminator for reference ownership. */
+  schemaVersion: 2;
   entityIds: string[];
   chapterOrdinal: number;
   paragraphOrdinal: number;
@@ -87,6 +114,8 @@ export type WorldReference = {
 
 /** Persisted recipe makes regeneration deterministic with respect to story time. */
 export type SceneGenerationSpec = {
+  /** Exact provider/model/preset admitted for this operation, never live settings. */
+  imageConfig: ImageGenerationConfig;
   style: string;
   facts: string[];
   world: WorldSnapshot[];

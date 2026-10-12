@@ -38,6 +38,11 @@ output "openai_secret_id" {
   value       = google_secret_manager_secret.openai.secret_id
 }
 
+output "image_provider_secret_ids" {
+  description = "Provider key -> Secret Manager container ID (no values); only the worker may read them."
+  value       = { for provider, secret in google_secret_manager_secret.image_provider : provider => secret.secret_id }
+}
+
 output "fingerprint_secret_id" {
   description = "Secret Manager container ID referenced by the API; contains no secret value."
   value       = google_secret_manager_secret.fingerprint.secret_id

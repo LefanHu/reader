@@ -9,7 +9,6 @@ import { getFirestore } from "firebase-admin/firestore";
 import {
   analyzeNarrative,
   composeImagePrompt,
-  imageGenerationProvider,
   moderateImage,
   moderateText,
 } from "./openai.js";
@@ -22,6 +21,8 @@ import { illustrationWorkerRouter } from "./illustration-worker.js";
 import { illustrationBookDeletion, illustrationBookRegistration } from "./illustration-books.js";
 import { illustrationSceneRouter } from "./illustration-scenes.js";
 import { illustrationJobRouter } from "./illustration-jobs.js";
+import { illustrationConfiguration } from "./illustration-configuration.js";
+import { createImageProviderRegistry } from "./image-provider-registry.js";
 
 if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
 const db = getFirestore();
@@ -92,6 +93,7 @@ app.get("/v1/fingerprint-key", asyncRoute(async (req, res) => {
   res.json({ key });
 }));
 
+app.get("/v1/illustrations/config", illustrationConfiguration);
 app.post("/v1/books", requireFeature, illustrationBookRegistration({ db, pilotCredits }));
 
 app.use("/v1", illustrationJobRouter({ db, requireFeature, enqueue }));
@@ -124,7 +126,7 @@ app.use("/internal", (_req, res, next) => {
 
 app.use("/internal", illustrationWorkerRouter({
   db, storage, bucket: bucketName, assetRetentionMilliseconds,
-  analyzeNarrative, composeImagePrompt, imageGenerationProvider, moderateImage, moderateText,
+  analyzeNarrative, composeImagePrompt, imageGenerationProvider: createImageProviderRegistry(), moderateImage, moderateText,
 }));
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

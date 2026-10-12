@@ -39,4 +39,6 @@ if [ -z "$image" ]; then
   image=$(terraform -chdir="$INFRA_DIR/runtime" output -raw image)
 fi
 [ -n "$image" ] || die "runtime has no deployed image; set IMAGE to an immutable Artifact Registry digest"
-plan_infrastructure runtime -var="image=$image"
+# Read-only discovery: planning never creates secret versions.
+discover_image_provider_secrets
+plan_infrastructure runtime -var="image=$image" -var-file="$IMAGE_PROVIDER_VARS"

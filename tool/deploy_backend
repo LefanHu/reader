@@ -104,6 +104,8 @@ fi
 terraform_init illustrations "reader/$ENVIRONMENT/illustrations"
 plan_apply_infrastructure illustrations
 ensure_openai_secret
+provision_image_provider_secrets
+discover_image_provider_secrets
 
 commit=$(git -C "$READER_ROOT" rev-parse --short=12 HEAD)
 repository="$REGION-docker.pkg.dev/$PROJECT_ID/reader-backend/backend"
@@ -121,7 +123,7 @@ digest=$(gcloud artifacts docker images describe "$tagged_image" \
 immutable_image="$repository@$digest"
 
 terraform_init runtime "reader/$ENVIRONMENT/runtime"
-plan_apply_infrastructure runtime -var="image=$immutable_image"
+plan_apply_infrastructure runtime -var="image=$immutable_image" -var-file="$IMAGE_PROVIDER_VARS"
 
 api_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw api_url)
 worker_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw worker_url)

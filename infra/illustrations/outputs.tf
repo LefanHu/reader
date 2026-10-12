@@ -38,6 +38,11 @@ output "openai_secret_id" {
   value       = module.illustrations.openai_secret_id
 }
 
+output "image_provider_secret_ids" {
+  description = "Provider key -> Secret Manager container ID (no values); only the worker may read them."
+  value       = module.illustrations.image_provider_secret_ids
+}
+
 output "fingerprint_secret_id" {
   description = "Secret Manager container ID referenced by the API; contains no secret value."
   value       = module.illustrations.fingerprint_secret_id

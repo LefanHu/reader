@@ -21,6 +21,13 @@ locals {
     OPENAI_SCENE_MODEL              = var.openai_scene_model
     OPENAI_IMAGE_ORCHESTRATOR_MODEL = var.openai_image_orchestrator_model
     OPENAI_IMAGE_MODEL              = var.openai_image_model
+    IMAGE_PROVIDERS                 = join(",", concat(["openai"], var.google_image_generation_enabled ? ["google"] : [], sort(keys(var.image_provider_secret_ids)), var.image_test_provider_enabled ? ["diagnostic"] : []))
+  }
+  image_provider_key_names = {
+    seedream = "BYTEPLUS_API_KEY"
+    qwen     = "QWEN_API_KEY"
+    xai      = "XAI_API_KEY"
+    flux     = "BFL_API_KEY"
   }
 }
 
@@ -62,7 +69,7 @@ resource "google_cloud_run_v2_service" "worker" {
         for_each = merge(local.common_environment, {
           SERVICE_ROLE = "worker"
           WORKER_URL   = ""
-        })
+        }, var.image_test_provider_enabled ? { IMAGE_TEST_PROVIDER_URL = google_cloud_run_v2_service.image_test_provider[0].uri } : {})
         content {
           name  = env.key
           value = env.value
@@ -75,6 +82,21 @@ resource "google_cloud_run_v2_service" "worker" {
           secret_key_ref {
             secret  = var.openai_secret_id
             version = "latest"
+          }
+        }
+      }
+
+      # Only providers whose key was provisioned are referenced; absent keys are
+      # omitted rather than failing the revision. The API never receives them.
+      dynamic "env" {
+        for_each = var.image_provider_secret_ids
+        content {
+          name = local.image_provider_key_names[env.key]
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
           }
         }
       }
@@ -103,6 +125,81 @@ resource "google_cloud_run_v2_service_iam_policy" "worker" {
   location    = google_cloud_run_v2_service.worker.location
   name        = google_cloud_run_v2_service.worker.name
   policy_data = data.google_iam_policy.worker.policy_data
+}
+
+# Dev-only pipeline-test provider: renders the prompt as an image so the whole
+# illustration pipeline can be exercised without a paid provider. It holds no
+# secrets and no roles; the worker alone may invoke it.
+resource "google_service_account" "image_test_provider" {
+  count        = var.image_test_provider_enabled ? 1 : 0
+  project      = var.project_id
+  account_id   = "reader-${var.environment}-imgtest"
+  display_name = "Reader ${var.environment} pipeline-test image provider"
+}
+
+resource "google_cloud_run_v2_service" "image_test_provider" {
+  count               = var.image_test_provider_enabled ? 1 : 0
+  project             = var.project_id
+  name                = "reader-${var.environment}-image-test"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
+  deletion_protection = false
+  labels              = local.labels
+
+  template {
+    service_account                  = google_service_account.image_test_provider[0].email
+    timeout                          = "60s"
+    max_instance_request_concurrency = 4
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 2
+    }
+
+    containers {
+      image   = var.image
+      command = ["node", "dist/image-test-provider-server.js"]
+
+      resources {
+        cpu_idle = true
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+      }
+
+      ports {
+        container_port = 8080
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.environment == "dev"
+      error_message = "The pipeline-test provider may only run in dev."
+    }
+    precondition {
+      condition     = can(regex("@sha256:[0-9a-f]{64}$", var.image))
+      error_message = "Cloud Run deployments must use an immutable image digest."
+    }
+  }
+}
+
+data "google_iam_policy" "image_test_provider" {
+  count = var.image_test_provider_enabled ? 1 : 0
+  binding {
+    role    = "roles/run.invoker"
+    members = ["serviceAccount:${var.worker_service_account}"]
+  }
+}
+
+resource "google_cloud_run_v2_service_iam_policy" "image_test_provider" {
+  count       = var.image_test_provider_enabled ? 1 : 0
+  project     = var.project_id
+  location    = google_cloud_run_v2_service.image_test_provider[0].location
+  name        = google_cloud_run_v2_service.image_test_provider[0].name
+  policy_data = data.google_iam_policy.image_test_provider[0].policy_data
 }
 
 resource "google_cloud_run_v2_service" "api" {

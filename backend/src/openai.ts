@@ -1,3 +1,4 @@
+import type { ImageMimeType } from "./image-generation.js";
 import type {
   ChapterInput,
   EntityDelta,
@@ -7,12 +8,12 @@ import type {
   WorldSnapshot,
 } from "./types.js";
 
-const apiKey = process.env.OPENAI_API_KEY ?? "";
 const responsesUrl = "https://api.openai.com/v1/responses";
 const moderationsUrl = "https://api.openai.com/v1/moderations";
 const entityKinds = new Set(["character", "location", "group", "event", "lore"]);
 
 async function createResponse(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const apiKey = process.env.OPENAI_API_KEY ?? "";
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
   const startedAt = Date.now();
   const response = await fetch(responsesUrl, {
@@ -260,50 +261,9 @@ export function composeImagePrompt(args: {
   ].join("\n");
 }
 
-export interface ImageGenerationProvider {
-  generate(prompt: string, referenceImages?: Buffer[]): Promise<Buffer>;
-}
-
-/** OpenAI image adapter behind the provider boundary used by the worker. */
-export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
-  async generate(prompt: string, referenceImages: Buffer[] = []): Promise<Buffer> {
-    const content: Array<Record<string, unknown>> = [
-      { type: "input_text", text: prompt },
-      ...referenceImages.map((image) => ({
-        type: "input_image",
-        image_url: `data:image/webp;base64,${image.toString("base64")}`,
-      })),
-    ];
-    const response = await createResponse({
-      model: process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL ?? "gpt-5.5",
-      input: [{ role: "user", content }],
-      tools: [{
-        type: "image_generation",
-        model: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2.5-flare",
-        action: referenceImages.length > 0 ? "auto" : "generate",
-        size: "1536x1024",
-        quality: "high",
-        output_format: "webp",
-        background: "opaque",
-        moderation: "auto",
-      }],
-      tool_choice: { type: "image_generation" },
-    });
-    const output = Array.isArray(response.output) ? response.output : [];
-    for (const item of output) {
-      if (item && typeof item === "object" &&
-        (item as { type?: unknown }).type === "image_generation_call" &&
-        typeof (item as { result?: unknown }).result === "string") {
-        return Buffer.from((item as { result: string }).result, "base64");
-      }
-    }
-    throw new Error("OpenAI response did not contain an image");
-  }
-}
-
-export const imageGenerationProvider: ImageGenerationProvider = new OpenAIImageGenerationProvider();
 
 async function moderationFlagged(input: unknown): Promise<boolean> {
+  const apiKey = process.env.OPENAI_API_KEY ?? "";
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
   const response = await fetch(moderationsUrl, {
     method: "POST",
@@ -319,9 +279,9 @@ export function moderateText(text: string): Promise<boolean> {
   return moderationFlagged([{ type: "text", text }]);
 }
 
-export function moderateImage(image: Buffer): Promise<boolean> {
+export function moderateImage(image: Buffer, mimeType: ImageMimeType): Promise<boolean> {
   return moderationFlagged([{
     type: "image_url",
-    image_url: { url: `data:image/webp;base64,${image.toString("base64")}` },
+    image_url: { url: `data:${mimeType};base64,${image.toString("base64")}` },
   }]);
 }

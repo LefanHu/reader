@@ -26,6 +26,8 @@ class IllustrationScene {
     this.altText,
     this.caption,
     this.generationVersion = 1,
+    this.regenerating = false,
+    this.pendingGenerationVersion,
     this.failureCategory,
     this.automaticRevealDismissed = false,
   });
@@ -38,7 +40,16 @@ class IllustrationScene {
   final String? localThumbnailPath;
   final String? altText;
   final String? caption;
+
+  /// Last locally committed image version, not the newest server recipe.
   final int generationVersion;
+
+  /// Remote generation progress, independent of committed spoiler/reveal state.
+  final bool regenerating;
+
+  /// Newer ready server version awaiting a passed gate and atomic local commit.
+  /// Null means no replacement is awaiting download; it never owns local paths.
+  final int? pendingGenerationVersion;
   final String? failureCategory;
   final bool automaticRevealDismissed;
 
@@ -46,26 +57,42 @@ class IllustrationScene {
       state == IllustrationSceneState.unlocked ||
       state == IllustrationSceneState.hidden;
 
+  static const _unchanged = Object();
+
+  /// Omitted nullable fields retain their values; explicit null clears them.
+  /// Replacements preserve committed paths/version/reveal until manifest commit.
   IllustrationScene copyWith({
     IllustrationSceneState? state,
-    String? localImagePath,
-    String? localThumbnailPath,
-    String? altText,
-    String? caption,
+    Object? localImagePath = _unchanged,
+    Object? localThumbnailPath = _unchanged,
+    Object? altText = _unchanged,
+    Object? caption = _unchanged,
     int? generationVersion,
-    String? failureCategory,
+    bool? regenerating,
+    Object? pendingGenerationVersion = _unchanged,
+    Object? failureCategory = _unchanged,
     bool? automaticRevealDismissed,
   }) => IllustrationScene(
     id: id,
     jobId: jobId,
     anchor: anchor,
     state: state ?? this.state,
-    localImagePath: localImagePath ?? this.localImagePath,
-    localThumbnailPath: localThumbnailPath ?? this.localThumbnailPath,
-    altText: altText ?? this.altText,
-    caption: caption ?? this.caption,
+    localImagePath: identical(localImagePath, _unchanged)
+        ? this.localImagePath
+        : localImagePath as String?,
+    localThumbnailPath: identical(localThumbnailPath, _unchanged)
+        ? this.localThumbnailPath
+        : localThumbnailPath as String?,
+    altText: identical(altText, _unchanged) ? this.altText : altText as String?,
+    caption: identical(caption, _unchanged) ? this.caption : caption as String?,
     generationVersion: generationVersion ?? this.generationVersion,
-    failureCategory: failureCategory ?? this.failureCategory,
+    regenerating: regenerating ?? this.regenerating,
+    pendingGenerationVersion: identical(pendingGenerationVersion, _unchanged)
+        ? this.pendingGenerationVersion
+        : pendingGenerationVersion as int?,
+    failureCategory: identical(failureCategory, _unchanged)
+        ? this.failureCategory
+        : failureCategory as String?,
     automaticRevealDismissed:
         automaticRevealDismissed ?? this.automaticRevealDismissed,
   );
@@ -80,6 +107,9 @@ class IllustrationScene {
     if (altText != null) 'altText': altText,
     if (caption != null) 'caption': caption,
     'generationVersion': generationVersion,
+    'regenerating': regenerating,
+    if (pendingGenerationVersion != null)
+      'pendingGenerationVersion': pendingGenerationVersion,
     if (failureCategory != null) 'failureCategory': failureCategory,
     'automaticRevealDismissed': automaticRevealDismissed,
   };
@@ -99,6 +129,8 @@ class IllustrationScene {
         altText: json['altText'] as String?,
         caption: json['caption'] as String?,
         generationVersion: (json['generationVersion'] as num?)?.round() ?? 1,
+        regenerating: json['regenerating'] as bool? ?? false,
+        pendingGenerationVersion: json['pendingGenerationVersion'] as int?,
         failureCategory: json['failureCategory'] as String?,
         automaticRevealDismissed:
             json['automaticRevealDismissed'] as bool? ?? false,

@@ -4,6 +4,15 @@ import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore"
 import { asyncRoute, HttpError, requireString, routeParam } from "./http.js";
 import { bookReference, readBookFence } from "./fences.js";
 import type { ChapterInput, Paragraph } from "./types.js";
+import { requireAvailableImageProvider, requireIllustrationProfile, requireIllustrationSchema, snapshotImageGenerationConfig } from "./illustration-configuration.js";
+import type { IllustrationBookProfile } from "./types.js";
+
+function requireInteger(value: unknown, name: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new HttpError(400, `${name} is invalid.`);
+  }
+  return value;
+}
 
 /**
  * Book profile, chapter job creation and job polling, mounted under `/v1`.
@@ -21,30 +30,35 @@ export function illustrationJobRouter(deps: {
     const uid = req.uid!;
     const bookId = routeParam(req, "bookId");
     const reference = bookReference(db, "books", uid, bookId);
+    requireIllustrationSchema(req.body.schemaVersion);
+    const providerId = requireAvailableImageProvider(req.body.providerId);
     const style = requireString(req.body.style, "style", 300);
-    const density = Math.max(1, Math.min(3, Number(req.body.density) || 3));
-    await db.runTransaction(async (transaction) => {
+    const density = requireInteger(req.body.density, "density", 1, 3);
+    const analysisVersion = requireInteger(req.body.analysisVersion, "analysisVersion", 1);
+    const expectedRevision = requireInteger(req.body.expectedRevision, "expectedRevision", 0);
+    const profile = await db.runTransaction(async (transaction) => {
       const fence = await readBookFence(transaction, db, "books", uid, bookId);
       if (!fence.book.exists) throw new HttpError(404, "Book not found.");
       if (!fence.live) throw new HttpError(410, "Book was deleted.");
-      transaction.update(reference, {
-        profile: {
-          style, density, styleVersion: Number(req.body.styleVersion) || 1,
-          analysisVersion: Math.max(1, Number(req.body.analysisVersion) || 2),
-        },
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+      if (fence.book.data()?.schemaVersion !== 2) throw new HttpError(409, "Book registration must be renewed.");
+      const current = fence.book.data()?.profile ? requireIllustrationProfile(fence.book.data()?.profile) : undefined;
+      if (current && current.providerId === providerId && current.style === style &&
+          current.density === density && current.analysisVersion === analysisVersion) return current;
+      if ((current?.revision ?? 0) !== expectedRevision) throw new HttpError(409, "Illustration settings have changed. Reopen settings.");
+      const saved: IllustrationBookProfile = { schemaVersion: 2, providerId, style, density, analysisVersion, revision: (current?.revision ?? 0) + 1 };
+      transaction.update(reference, { profile: saved, updatedAt: FieldValue.serverTimestamp() });
+      return saved;
     });
-    res.status(204).end();
+    res.json(profile);
   }));
 
   router.post("/books/:bookId/chapters/:ordinal/jobs", requireFeature, asyncRoute(async (req, res) => {
     const uid = req.uid!;
     const bookId = routeParam(req, "bookId");
-    const book = await bookReference(db, "books", uid, bookId).get();
-    if (!book.exists) throw new HttpError(404, "Book not found.");
-    if (book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
-    const ordinal = Number.parseInt(routeParam(req, "ordinal"), 10);
+    requireIllustrationSchema(req.body.schemaVersion);
+    const profileRevision = requireInteger(req.body.profileRevision, "profileRevision", 1);
+    const analysisVersion = requireInteger(req.body.analysisVersion, "analysisVersion", 1);
+    const ordinal = Number(routeParam(req, "ordinal"));
     if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= 10000) {
       throw new HttpError(400, "Chapter ordinal is invalid.");
     }
@@ -76,17 +90,14 @@ export function illustrationJobRouter(deps: {
       };
     });
     if (totalCharacters > 400000) throw new HttpError(413, "Chapter text is too large.");
-    const input: ChapterInput = {
+    const inputMetadata = {
       href: requireString(req.body.href, "href", 2000),
       ...(typeof req.body.title === "string" ? { title: req.body.title.slice(0, 500) } : {}),
       ...(typeof req.body.language === "string" ? { language: req.body.language.slice(0, 100) } : {}),
-      styleVersion: Number(req.body.styleVersion) || 1,
-      analysisVersion: Math.max(1, Number(req.body.analysisVersion) || 2),
-      density: Math.max(1, Math.min(3, Number(req.body.density) || 3)),
-      paragraphs,
+      profileRevision, analysisVersion, paragraphs,
     };
     const idempotency = createHash("sha256")
-      .update(`${uid}:${bookId}:${ordinal}:${input.styleVersion}:${input.analysisVersion}:prompt-v2`)
+      .update(`${uid}:${bookId}:${ordinal}:${profileRevision}:${analysisVersion}:illustrations-v2:prompt-v2`)
       .digest("hex");
     const jobId = idempotency.slice(0, 40);
     const jobRef = db.collection("illustrationJobs").doc(jobId);
@@ -97,13 +108,29 @@ export function illustrationJobRouter(deps: {
       ]);
       if (!fence.book.exists) throw new HttpError(404, "Book not found.");
       if (!fence.live) throw new HttpError(410, "Book was deleted.");
-      if (existing.exists) return;
+      if (fence.book.data()?.schemaVersion !== 2) throw new HttpError(409, "Book registration must be renewed.");
+      // Retry admitted intent before consulting changed preferences or model environment.
+      if (existing.exists) {
+        if (existing.data()?.schemaVersion !== 2 || existing.data()?.uid !== uid || existing.data()?.bookId !== bookId) {
+          throw new HttpError(409, "Illustration operation is invalid.");
+        }
+        return;
+      }
+      const profile = requireIllustrationProfile(fence.book.data()?.profile);
+      if (profile.revision !== profileRevision || profile.analysisVersion !== analysisVersion) {
+        throw new HttpError(409, "Illustration settings have changed. Reopen settings.");
+      }
+      requireAvailableImageProvider(profile.providerId);
+      const imageConfig = snapshotImageGenerationConfig(profile.providerId);
+      const input: ChapterInput = { ...inputMetadata, density: profile.density };
+      // Durable prose-free intent survives expiring input and worker lease recovery.
       transaction.create(jobRef, {
-        uid, bookId, chapterOrdinal: ordinal, status: "queued",
+        schemaVersion: 2, uid, bookId, chapterOrdinal: ordinal, status: "queued",
+        profile, imageConfig,
         createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
       });
       transaction.create(inputRef, {
-        uid, bookId, chapterOrdinal: ordinal, input,
+        schemaVersion: 2, uid, bookId, chapterOrdinal: ordinal, input,
         expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60 * 1000),
       });
     });
@@ -113,18 +140,21 @@ export function illustrationJobRouter(deps: {
 
   router.get("/jobs/:jobId", asyncRoute(async (req, res) => {
     const job = await db.collection("illustrationJobs").doc(routeParam(req, "jobId")).get();
-    if (!job.exists || job.data()?.uid !== req.uid) throw new HttpError(404, "Job not found.");
+    if (!job.exists || job.data()?.uid !== req.uid || job.data()?.schemaVersion !== 2) throw new HttpError(404, "Job not found.");
     const scenes = await db.collection("illustrationScenes")
       .where("jobId", "==", job.id).get();
     res.json({
       id: job.id,
       status: job.data()?.status,
       failureCategory: job.data()?.failureCategory,
-      scenes: scenes.docs.filter((scene) => !scene.data().deleted).map((scene) => ({
+      scenes: scenes.docs.filter((scene) => scene.data().schemaVersion === 2 && !scene.data().deleted).map((scene) => ({
         id: scene.id,
         status: scene.data().status,
         anchor: scene.data().anchor,
         failureCategory: scene.data().failureCategory,
+        generationVersion: scene.data().generationVersion ?? 0,
+        regenerating: scene.data().status === "regenerating",
+        pendingGenerationVersion: scene.data().regenerationTarget ?? null,
       })),
     });
   }));

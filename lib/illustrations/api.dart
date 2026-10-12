@@ -3,6 +3,7 @@
 
 import '../catalog/catalog_book.dart';
 import 'chapter_text_index.dart';
+import 'illustration_configuration.dart';
 import 'illustration_job_result.dart';
 import 'illustration_profile.dart';
 import 'illustration_setup.dart';
@@ -11,11 +12,12 @@ import 'unlocked_illustration.dart';
 /// Authenticated API used by the reader; implementations never receive EPUBs.
 abstract interface class IllustrationApi {
   bool get configured;
+  Future<IllustrationConfiguration> getConfiguration();
   Future<IllustrationSetup> registerBook(
     CatalogBook book, {
     required int chapterCount,
   });
-  Future<void> confirmProfile(IllustrationProfile profile);
+  Future<IllustrationProfile> confirmProfile(IllustrationProfile profile);
   Future<String> createChapterJob({
     required IllustrationProfile profile,
     required ChapterTextIndex chapter,

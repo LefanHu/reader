@@ -10,11 +10,29 @@ class MemoryIllustrationStore implements IllustrationStore {
   final Map<String, IllustrationManifest> manifests = {};
   final Map<String, BookTextIndex> indexes = {};
   final Map<String, Uint8List> images = {};
+  static final _sceneId = RegExp(r'^[a-f0-9]{40}$');
 
   @override
-  Future<void> deleteSceneFiles(CatalogBook book, String sceneId) async {
-    images.remove('$sceneId:image');
-    images.remove('$sceneId:thumbnail');
+  Future<void> deleteSceneFiles(
+    CatalogBook book,
+    String sceneId, {
+    int? generationVersion,
+  }) async {
+    if (!_sceneId.hasMatch(sceneId)) return;
+    if (generationVersion != null && generationVersion < 1) {
+      throw const FormatException('Invalid illustration generation version.');
+    }
+    final ownedName = RegExp(
+      '^$sceneId\\.v([1-9][0-9]*)\\.(?:png|jpg|webp|thumb\\.webp)\$',
+    );
+    final prefix = '/memory/${book.hash}/';
+    images.removeWhere((path, _) {
+      if (!path.startsWith(prefix)) return false;
+      final match = ownedName.firstMatch(path.substring(prefix.length));
+      return match != null &&
+          (generationVersion == null ||
+              match.group(1) == generationVersion.toString());
+    });
   }
 
   @override
@@ -35,11 +53,28 @@ class MemoryIllustrationStore implements IllustrationStore {
     CatalogBook book,
     String sceneId,
     Uint8List bytes, {
+    required String mimeType,
+    required int generationVersion,
     bool thumbnail = false,
   }) async {
-    final key = '$sceneId:${thumbnail ? 'thumbnail' : 'image'}';
-    images[key] = bytes;
-    return '/memory/$key.webp';
+    if (!_sceneId.hasMatch(sceneId) || generationVersion < 1) {
+      throw const FormatException('Invalid illustration asset identity.');
+    }
+    final extension = switch (mimeType) {
+      'image/png' => 'png',
+      'image/jpeg' => 'jpg',
+      'image/webp' => 'webp',
+      _ => throw const FormatException('Invalid illustration image MIME.'),
+    };
+    if (thumbnail && mimeType != 'image/webp') {
+      throw const FormatException(
+        'Derived illustration thumbnails must be WebP.',
+      );
+    }
+    final suffix = thumbnail ? 'thumb.webp' : extension;
+    final path = '/memory/${book.hash}/$sceneId.v$generationVersion.$suffix';
+    images[path] = bytes;
+    return path;
   }
 
   @override

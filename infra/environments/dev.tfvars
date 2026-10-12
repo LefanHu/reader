@@ -12,9 +12,10 @@ budget_currency      = "CAD"
 alert_email          = "lefanhu1@gmail.com"
 state_bucket         = "reader-iac-35ca1-tfstate"
 # Dev-only generation smoke testing; native rollout checks remain required for production.
-illustrations_enabled   = true
-narration_enabled       = true
-enable_existing_imports = true
+illustrations_enabled       = true
+narration_enabled           = true
+enable_existing_imports     = true
+image_test_provider_enabled = true
 
 # Supply the Google web OAuth client privately through TF_VAR_google_client_id
 # and TF_VAR_google_client_secret. Interactive deployment hides secret input;

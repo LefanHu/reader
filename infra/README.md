@@ -150,6 +150,59 @@ currency (`budget_amount_usd` is in that currency despite its name); Google reje
 mismatches. OpenAI usage is outside Google billing: configure a separate budget and
 notification in the OpenAI platform.
 
+## Illustration image providers
+
+OpenAI stays the default source. Five more are optional and individually
+available only when configured:
+
+| Source | Credential | Terraform-owned container |
+| --- | --- | --- |
+| `google` | Worker service account (Vertex AI, `roles/aiplatform.user`; `aiplatform.googleapis.com` enabled by the illustrations stack) | none |
+| `seedream` | `BYTEPLUS_API_KEY` | `reader-byteplus-api-key` |
+| `qwen` | `QWEN_API_KEY` | `reader-qwen-api-key` |
+| `xai` | `XAI_API_KEY` | `reader-xai-api-key` |
+| `flux` | `BFL_API_KEY` | `reader-bfl-api-key` |
+
+The illustrations stack creates the four protected, deletion-guarded containers
+(worker-only accessors, none for the API) but never a value. `tool/deploy_backend`
+creates a version over stdin from the matching private environment variable only
+when the container has no enabled version; an absent variable is omitted without a
+prompt or failure, and values never reach argv, tfvars, state, plans or logs.
+Both tools then discover which containers hold an enabled version and pass only
+those to the runtime stack (`image_provider_secret_ids`); `tool/plan_infra` is
+read-only. Permission and API errors stop the run; a container that does not yet
+exist is simply unavailable. `IMAGE_PROVIDERS` (API and worker) advertises OpenAI,
+Google when `google_image_generation_enabled = true`, and each provisioned source.
+The Google source is enabled in tfvars only after confirming the project's
+Vertex AI eligibility and billing; neither is verified by this repository.
+`--scope core` never touches these resources.
+
+`image_test_provider_enabled = true` (set in `environments/dev.tfvars`) deploys a
+private pipeline-test image service (`reader-<env>-image-test`, dedicated
+no-role service account, no secrets) and appends `diagnostic` to the worker's
+`IMAGE_PROVIDERS`. A precondition rejects any environment other than `dev`; only
+the worker identity receives `roles/run.invoker` (authoritative policy), and only
+the worker receives `IMAGE_TEST_PROVIDER_URL`. Setting the flag false removes the
+service (`deletion_protection = false`).
+
+## Illustration schema-2 cutover
+
+Records written before this release lack `schemaVersion: 2` and are discarded;
+accounts, books, narration and tombstones are preserved. Schedule maintenance (stop
+illustration traffic, keep rollout off), then from `backend/`:
+
+```sh
+npm run reset:illustrations -- --project <id> --bucket <bucket>            # dry run
+npm run reset:illustrations -- --project <id> --bucket <bucket> --apply --maintenance
+```
+
+Apply refuses to run if any schema-2 admissions exist or an old lease is unexpired,
+revokes old claim tokens and regeneration intent, refunds each reserved hold once,
+purges only illustration records and `users/{uid}/books/{bookId}/` objects, and is
+restartable. Deploy the schema-2 services before reopening rollout. Devices drop
+their own old sidecars the next time each book is opened. This repository's
+validation never applies the reset to a real project.
+
 ## Adding an environment
 
 Copy `environments/dev.tfvars`, choose a globally unique project ID and bucket, update

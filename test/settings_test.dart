@@ -371,7 +371,8 @@ void main() {
             enabled: true,
             style: 'Ink',
             density: 2,
-            styleVersion: 1,
+            providerId: 'openai',
+            revision: 1,
             cloudBookId: 'illustration-book',
           ),
         );

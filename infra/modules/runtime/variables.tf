@@ -83,6 +83,29 @@ variable "openai_image_model" {
   type        = string
 }
 
+variable "image_provider_secret_ids" {
+  description = "Provider key (seedream, qwen, xai, flux) -> Secret Manager container with an enabled version. Worker-only; absent providers stay unavailable."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for provider in keys(var.image_provider_secret_ids) : contains(["seedream", "qwen", "xai", "flux"], provider)])
+    error_message = "Only seedream, qwen, xai and flux use Secret Manager keys."
+  }
+}
+
+variable "google_image_generation_enabled" {
+  description = "Whether the worker identity may use Vertex AI image generation; advertises the Google source. Eligibility and billing are verified out of band."
+  type        = bool
+  default     = false
+}
+
+variable "image_test_provider_enabled" {
+  description = "Deploys the private pipeline-test image service and advertises the diagnostic source. Dev only; any other environment fails its precondition."
+  type        = bool
+  default     = false
+}
+
 
 variable "narration_enabled" {
   description = "Independent narration rollout; remains off until signed-device and listening checks pass."
