@@ -25,7 +25,6 @@ import 'package:reader/narration/apple_narration_source.dart';
 import 'package:reader/narration/player.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/document_store.dart';
-import 'package:reader/text/file_book_word_counter.dart';
 import 'package:reader/text/viewport.dart';
 
 import '../../test/fixtures/epub.dart';
@@ -127,7 +126,6 @@ class NativeTestApp {
       illustrationStore: FileIllustrationStore(root),
       textIndexer: DocumentTextIndexer(),
       illustrationApi: illustrationApi,
-      wordCounter: FileBookWordCounter(),
       cloudIdentity: cloudIdentity,
       accountApi: accountApi,
       analysisServices: analysisServicesFactory?.call(root) ?? analysisServices,
@@ -174,7 +172,6 @@ class NativeTestApp {
       illustrationStore: FileIllustrationStore(root),
       illustrationApi: _illustrationApi,
       textIndexer: DocumentTextIndexer(),
-      wordCounter: FileBookWordCounter(),
       cloudIdentity: _cloudIdentity,
       accountApi: _accountApi,
       analysisServices:

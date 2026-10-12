@@ -39,13 +39,15 @@ interactive prompts. Downloaded OAuth JSON belongs in Git-ignored `.credentials/
 with owner-only permissions; never put the secret in Flutter defines. The web client
 needs redirect URI `https://reader-35ca1.firebaseapp.com/__/auth/handler`; configure
 branding as Reader Development, External/Testing audience, basic identity scopes.
-Native OAuth clients must match the existing iOS/macOS bundle IDs; adopt matching
-clients instead of duplicating them.
+Native OAuth clients must match the iOS/macOS bundle IDs.
+Generated Firebase configurations must include `CLIENT_ID` and
+`REVERSED_CLIENT_ID` for each supplied native platform; missing OAuth fields fail
+configuration generation.
 
 Feature deployments (`illustrations` or `all`) also need npm and curl and run local
 `npm ci`, backend build, tests, and production audit before any bootstrap, apply,
 secret creation, or image build; a failed preflight leaves cloud unchanged.
-Core-only deployments skip it. Ownership/migration guards always run before apply.
+Core-only deployments skip it. Deploy guards reject unsafe infrastructure plans.
 
 An OpenAI key is needed only when Secret Manager has no enabled version (an existing
 enabled version is reused). Supply `OPENAI_API_KEY` privately in the process
@@ -75,52 +77,13 @@ all-scope plan needs core to exist first.
 State bucket `reader-iac-35ca1-tfstate`, prefixes `reader/bootstrap`,
 `reader/dev/foundation`, `reader/dev/illustrations`, `reader/dev/runtime`.
 
-## Migrating an existing foundation state
+## Development project
 
-Before using the split deployment with existing infrastructure:
+`reader-35ca1` is managed by the checked-in stacks. Deploy guards reject deletion
+or replacement of protected projects, databases, buckets, and secrets; Cloud Run
+keeps its deletion protection. No `-target` workflow or forced state pushes are used.
 
-```sh
-tool/migrate_backend_state dev             # preview ownership moves only
-tool/migrate_backend_state dev --apply     # explicitly transfer state ownership
-tool/plan_infra dev --scope core
-tool/deploy_backend dev --scope core       # refresh core outputs
-tool/plan_infra dev --scope illustrations
-```
-
-Stop all concurrent Terraform/deployment operations first: Terraform cannot
-atomically lock two backends, so a maintenance window is required. Preview and
-migration do not change cloud resources (init may update local backend metadata).
-
-The checked-in manifest moves only managed illustration instances, including the
-generated fingerprint password and secret version, as complete records. Missing
-resources are skipped; destination conflicts abort. Edits run in a backend-free
-temporary directory so legacy local-state flags cannot touch a remote backend.
-
-The destination state is pushed and verified before source ownership is removed. If
-the second push fails, do not deploy either stack: rerun the migration. Matching
-duplicate ownership is removed on retry; differing records need manual
-investigation. Prior snapshots survive in the versioned bucket; local working files
-are removed on exit. Never copy or log state contents: they contain secrets.
-
-Deployment and planning refuse legacy illustration ownership. Review the first plans
-after migration: they must not delete or replace migrated resources. Deploy guards
-reject deletion or replacement of protected projects, databases, buckets, and
-secrets; Cloud Run keeps its deletion protection. No `-target` workflow or forced
-state pushes are used.
-
-## Existing development project
-
-`reader-35ca1` predates Terraform. Conditional imports in `foundation/imports.tf`
-adopt the project, Firebase activation, default Firestore database, and current
-rules release; `illustrations/imports.tf` adopts the three existing illustration
-indexes. The first saved plans must not replace the project/database or delete a
-bucket (`tool/deploy_backend` rejects such plans). After both applies succeed, set
-`enable_existing_imports = false` in `dev.tfvars` (currently `true`); imported
-resources stay in state.
-
-The default `reader-35ca1.firebasestorage.app` bucket is unmanaged, unused legacy
-infrastructure; Terraform neither imports nor deletes it. Generated assets use
-`reader-35ca1-illustrations` exclusively.
+Generated assets use `reader-35ca1-illustrations` exclusively.
 
 Do not run `firebase deploy` for Firestore indexes or Security Rules. Terraform reads
 `backend/firestore.indexes.json`, `backend/firestore.rules`, and
@@ -130,15 +93,10 @@ Do not run `firebase deploy` for Firestore indexes or Security Rules. Terraform 
 
 The Google OAuth client secret is retained in protected remote state; rotate it with
 `TF_VAR_google_client_secret` and restrict access to the state project and bucket.
-Neither it nor Apple retirement credentials enter generated app configuration.
-Existing protected Apple provider state is retired in two applies: recover its
-credentials privately from state, disable the provider and persist deletion policy
-DELETE, then remove only that provider. Interrupted transitions are restartable;
-Firebase users and data are preserved. `tool/plan_infra` shows the transition first
-when needed. Historical versioned state can still contain retired Apple secrets and
-must remain private. The OpenAI key is never a Terraform input; Cloud Run references
-the secret rather than receiving plaintext. The fingerprint secret is generated once
-and retained in protected state.
+The secret never enters generated app configuration. Remote state contains secrets
+and must remain private. The OpenAI key is never a Terraform input; Cloud Run
+references the secret rather than receiving plaintext. The fingerprint secret is
+generated once and retained in protected state.
 
 The environment project, Firestore database, illustration bucket, Secret Manager
 containers, and state project/bucket are protected against ordinary destruction.
@@ -146,9 +104,9 @@ Removing them requires an explicit configuration/state change, not `terraform de
 
 Budget notifications are informational and do not cap spending. Dev threshold:
 $25 CAD per month at 50%, 80%, 100%. Set `budget_currency` to the billing account's
-currency (`budget_amount_usd` is in that currency despite its name); Google rejects
-mismatches. OpenAI usage is outside Google billing: configure a separate budget and
-notification in the OpenAI platform.
+currency and `budget_amount` to the monthly amount in that currency; Google rejects
+currency mismatches. OpenAI usage is outside Google billing: configure a separate
+budget and notification in the OpenAI platform.
 
 ## Illustration image providers
 
@@ -185,31 +143,13 @@ the worker identity receives `roles/run.invoker` (authoritative policy), and onl
 the worker receives `IMAGE_TEST_PROVIDER_URL`. Setting the flag false removes the
 service (`deletion_protection = false`).
 
-## Illustration schema-2 cutover
-
-Records written before this release lack `schemaVersion: 2` and are discarded;
-accounts, books, narration and tombstones are preserved. Schedule maintenance (stop
-illustration traffic, keep rollout off), then from `backend/`:
-
-```sh
-npm run reset:illustrations -- --project <id> --bucket <bucket>            # dry run
-npm run reset:illustrations -- --project <id> --bucket <bucket> --apply --maintenance
-```
-
-Apply refuses to run if any schema-2 admissions exist or an old lease is unexpired,
-revokes old claim tokens and regeneration intent, refunds each reserved hold once,
-purges only illustration records and `users/{uid}/books/{bookId}/` objects, and is
-restartable. Deploy the schema-2 services before reopening rollout. Devices drop
-their own old sidecars the next time each book is opened. This repository's
-validation never applies the reset to a real project.
-
 ## Adding an environment
 
-Copy `environments/dev.tfvars`, choose a globally unique project ID and bucket, update
-environment-specific values, and set `enable_existing_imports = false` (project
-creation, billing, and Firebase activation are automatic). Configure Google OAuth and
-provide its credentials, then run the same deploy command. The OpenAI key is
-requested only when the new project's secret has no enabled version.
+Copy `environments/dev.tfvars`, choose a globally unique project ID and bucket, and
+update environment-specific values (project creation, billing, and Firebase
+activation are automatic). Configure Google OAuth and provide its credentials,
+then run the same deploy command. The OpenAI key is requested only when the new
+project's secret has no enabled version.
 
 Keep `illustrations_enabled = false` until an authenticated mobile request has
 succeeded; enabling is an explicit tfvars change plus a normal deployment.
@@ -242,6 +182,6 @@ terraform -chdir=infra/modules/narration test
 terraform -chdir=infra/modules/runtime init -backend=false
 terraform -chdir=infra/modules/runtime test
 terraform -chdir=infra/runtime test
-shellcheck tool/deploy_backend tool/plan_infra tool/infra_common.sh tool/migrate_backend_state
+shellcheck tool/deploy_backend tool/plan_infra tool/infra_common.sh
 python3 -m unittest discover -s tool/tests -v
 ```

@@ -3,7 +3,7 @@ import 'text_contents_entry.dart';
 import 'text_position.dart';
 import 'text_section.dart';
 
-/// Versioned document manifest; prose is loaded one bounded section at a time.
+/// Document manifest; prose is loaded one bounded section at a time.
 class TextDocument {
   /// Metadata is immutable after the staged import commits.
   const TextDocument({
@@ -13,11 +13,7 @@ class TextDocument {
     required this.contents,
     this.language,
     this.identifier,
-    this.version = textDocumentVersion,
   });
-
-  /// Normalization version required by saved positions.
-  final int version;
 
   /// Publication title or TXT filename fallback.
   final String title;
@@ -60,7 +56,6 @@ class TextDocument {
 
   /// Serializable manifest containing no chapter prose.
   Map<String, dynamic> toJson() => {
-    'version': version,
     'title': title,
     'authors': authors,
     if (language != null) 'language': language,
@@ -69,11 +64,8 @@ class TextDocument {
     'contents': contents.map((item) => item.toJson()).toList(),
   };
 
-  /// Rejects unknown document versions instead of misinterpreting positions.
+  /// Restores a manifest written by [toJson].
   factory TextDocument.fromJson(Map<String, dynamic> json) {
-    if (json['version'] != textDocumentVersion) {
-      throw const FormatException('Unsupported text document version.');
-    }
     final document = TextDocument(
       title: json['title'] as String,
       authors: (json['authors'] as List).cast<String>(),

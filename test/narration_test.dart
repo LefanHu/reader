@@ -268,7 +268,7 @@ void main() {
       expect(player.loadedOffset, Duration.zero);
     });
 
-    test('global preferences override legacy book values and mismatched voice offsets', () async {
+    test('global preferences override saved sidecar values and mismatched voice offsets', () async {
       await session.detach(book);
       cache.manifests[book.hash] = NarrationManifest(
         account: 'account',
@@ -289,7 +289,7 @@ void main() {
     });
 
     test(
-      'matching global voice retains legacy offset while global speed wins',
+      'matching global voice retains saved offset while global speed wins',
       () async {
         await session.detach(book);
         cache.manifests[book.hash] = NarrationManifest(
@@ -385,6 +385,7 @@ void main() {
           path: '/Second.txt',
           title: 'Second',
           authors: const [],
+          wordCount: 0,
           addedAt: DateTime.utc(2026),
         );
         cache.manifests[second.hash] = const NarrationManifest(
@@ -418,6 +419,7 @@ void main() {
         path: '/Other.txt',
         title: 'Other',
         authors: const [],
+        wordCount: 0,
         addedAt: DateTime.utc(2026),
       );
       cache.manifests[other.hash] = NarrationManifest(
@@ -661,7 +663,7 @@ void main() {
       ),
     ];
     bool isRegistration(DevApiExchange exchange) =>
-        exchange.method == 'POST' && exchange.path == '/v1/narration/books';
+        exchange.method == 'POST' && exchange.path == '/api/narration/books';
 
     setUpAll(() async => identity = await DevApiIdentity.shared());
     setUp(() async {
@@ -705,6 +707,7 @@ void main() {
         path: '/tmp/other.txt',
         title: 'Other',
         authors: const [],
+        wordCount: 0,
         addedAt: DateTime.utc(2026),
       );
       await refreshing;
@@ -728,7 +731,7 @@ void main() {
       final hold = client.hold(
         (request) =>
             request.method == 'POST' &&
-            request.url.path == '/v1/narration/books',
+            request.url.path == '/api/narration/books',
       );
       final registering = session.register(book);
       await hold.started;
@@ -742,7 +745,7 @@ void main() {
               as String;
       final deletion = client.exchanges.last;
       expect(deletion.method, 'DELETE');
-      expect(deletion.path, '/v1/narration/books/$abandoned');
+      expect(deletion.path, '/api/narration/books/$abandoned');
       expect(deletion.status, 204);
       expect(session.book, isNull);
       expect(cache.manifests[book.hash]!.cloudBookId, isNull);

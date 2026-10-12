@@ -6,10 +6,10 @@ import 'package:crypto/crypto.dart';
 import '../atomic_json_file.dart';
 import '../catalog/book_storage.dart';
 import '../catalog/catalog_book.dart';
-import '../text/text_position.dart';
 import 'analysis_protocol.dart';
 import 'analysis_result.dart';
-import 'analysis_versions.dart';
+import 'analysis_limits.dart';
+import 'analysis_model.dart';
 import 'book_analysis_state.dart';
 import 'store.dart';
 
@@ -60,8 +60,9 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
     String pageId,
   ) {
     _identity(generationId);
-    if (!_pageId.hasMatch(pageId))
+    if (!_pageId.hasMatch(pageId)) {
       throw const FormatException('Invalid analysis page identity.');
+    }
     final pages = Directory('${_directory(book).path}/pages');
     final generation = Directory('${pages.path}/$generationId');
     _regularDirectory(pages);
@@ -84,21 +85,6 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
     CatalogBook book,
     AtomicJsonFile file,
   ) async {
-    // A future generation anywhere in the recovery set must not be downgraded
-    // merely because an older supported backup also happens to be readable.
-    for (final suffix in ['', '.tmp', '.bak']) {
-      final json = await _raw(File('${file.file.path}$suffix'));
-      if (json != null && json['bookHash'] == book.hash && _future(json)) {
-        return BookAnalysisState(
-          bookHash: book.hash,
-          bookPath: book.path,
-          addedAt: book.addedAt,
-          status: BookAnalysisStatus.waitingService,
-          failureCategory: 'unsupported_schema',
-          unavailable: true,
-        );
-      }
-    }
     final stored = await file.read((json) {
       final state = BookAnalysisState.fromJson(json);
       _validateState(book, state);
@@ -117,9 +103,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
     final file = _stateFile(book);
     return _track(
       file.update(() async {
-        final current = await _readState(book, file);
-        if (current?.unavailable == true || !_canState(book, state))
-          return null;
+        if (!_canState(book, state)) return null;
         if (snapshot.finalized != null) {
           for (final descriptor in snapshot.finalized!.pages) {
             final page = await _readPage(
@@ -169,7 +153,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
       stateFile.update(() async {
         final state = await _readState(book, stateFile);
         if (!_canPage(book, generationId)) return null;
-        if (state == null || state.unavailable) {
+        if (state == null) {
           throw const FormatException(
             'Analysis page requires a supported durable owner receipt.',
           );
@@ -185,7 +169,6 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
           );
         }
         final envelope = {
-          'schemaVersion': analysisSchemaVersion,
           'bookHash': book.hash,
           'bookPath': book.path,
           'addedAt': book.addedAt.toUtc().toIso8601String(),
@@ -202,11 +185,6 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
             final existing = await _raw(File('${pageFile.file.path}$suffix'));
             if (!_canPage(book, generationId)) return null;
             if (existing == null) continue;
-            if (_futurePage(existing)) {
-              throw const FormatException(
-                'Unsupported future analysis result page.',
-              );
-            }
             // Immutable means even a different owner's page at the same path is
             // never adopted or overwritten; account cleanup removes owned data.
             if (existing['pageJson'] != payload ||
@@ -241,7 +219,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
   ) async {
     try {
       final state = await _readState(book, _stateFile(book));
-      if (state == null || state.unavailable) return null;
+      if (state == null) return null;
       final descriptor = _descriptor(state, generationId, pageId);
       if (descriptor == null) return null;
       return await _readPage(book, generationId, pageId, state, descriptor);
@@ -258,20 +236,18 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
     AnalysisResultPageDescriptor descriptor,
   ) async {
     final file = _pageFile(book, generationId, pageId);
-    for (final suffix in ['', '.tmp', '.bak']) {
-      final json = await _raw(File('${file.file.path}$suffix'));
-      if (json != null && _futurePage(json)) return null;
-    }
     final stored = await file.read((json) {
       if (!_sameOwner(json, book, state.accountKey) ||
           json['generationId'] != generationId ||
           json['pageId'] != pageId ||
           json['checksum'] != descriptor.checksum ||
-          json['byteLength'] != descriptor.byteLength)
+          json['byteLength'] != descriptor.byteLength) {
         return null;
+      }
       final page = _decodeEnvelope(json);
-      if (page.kind != descriptor.kind || page.ordinal != descriptor.ordinal)
+      if (page.kind != descriptor.kind || page.ordinal != descriptor.ordinal) {
         return null;
+      }
       return page;
     });
     return stored?.value;
@@ -319,7 +295,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
     }
     await file.update(() async {
       final state = await _readState(book, file);
-      if (state == null || state.unavailable) return null;
+      if (state == null) return null;
       final pages = Directory('${_directory(book).path}/pages');
       if (FileSystemEntity.typeSync(pages.path, followLinks: false) ==
           FileSystemEntityType.directory) {
@@ -329,8 +305,9 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
                 generation.uri.pathSegments.where((s) => s.isNotEmpty).last,
               ) ||
               FileSystemEntity.typeSync(generation.path, followLinks: false) !=
-                  FileSystemEntityType.directory)
+                  FileSystemEntityType.directory) {
             continue;
+          }
           final generationId = generation.uri.pathSegments
               .where((s) => s.isNotEmpty)
               .last;
@@ -342,10 +319,10 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
             final json = await _raw(File(entry.path));
             if (json == null ||
                 !_sameImport(json, book) ||
-                _futurePage(json) ||
                 json['generationId'] != generationId ||
-                json['pageId'] != match.group(1))
+                json['pageId'] != match.group(1)) {
               continue;
+            }
             try {
               _identity(json['accountKey'] as String);
               _decodeEnvelope(json);
@@ -365,7 +342,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
       for (final suffix in ['', '.tmp', '.bak']) {
         final candidate = File('${file.file.path}$suffix');
         final json = await _raw(candidate);
-        if (json == null || _future(json)) continue;
+        if (json == null) continue;
         try {
           _validateState(book, BookAnalysisState.fromJson(json));
           if (FileSystemEntity.typeSync(candidate.path, followLinks: false) ==
@@ -393,7 +370,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
       (_) {
         _pending.remove(operation);
       },
-      onError: (Object _, StackTrace __) {
+      onError: (Object _, StackTrace _) {
         _pending.remove(operation);
       },
     );
@@ -411,8 +388,9 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
   }
 
   bool _canPage(CatalogBook book, String generationId) {
-    if (_pageEligible != null && !_pageEligible!(book, generationId))
+    if (_pageEligible != null && !_pageEligible!(book, generationId)) {
       return false;
+    }
     try {
       _stateFile(book);
       _regularDirectory(Directory('${_directory(book).path}/pages'));
@@ -427,15 +405,9 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
 
   void _validateState(CatalogBook book, BookAnalysisState state) {
     if (!state.matchesBook(book) ||
-        state.unavailable ||
-        state.schemaVersion != analysisSchemaVersion ||
-        state.analysisVersion != bookAnalysisVersion ||
-        state.promptVersion != analysisPromptVersion ||
         state.model != analysisModel ||
-        state.manifestPagesUploaded < 0 ||
-        (state.documentVersion != null &&
-            state.documentVersion != textDocumentVersion)) {
-      throw const FormatException('Invalid analysis state import or version.');
+        state.manifestPagesUploaded < 0) {
+      throw const FormatException('Invalid analysis state import.');
     }
     if (state.accountKey != null) _identity(state.accountKey!);
     if (state.documentDigest != null) _identity(state.documentDigest!);
@@ -455,7 +427,6 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
           progress.bookId != state.cloudBookId ||
           progress.generationId != state.receipt?.generationId ||
           progress.documentDigest != state.documentDigest ||
-          progress.documentVersion != state.documentVersion ||
           progress.processedChunks < 0 ||
           progress.processedChunks > progress.requiredChunks ||
           progress.processedUnits < 0 ||
@@ -464,8 +435,9 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
           'Analysis progress does not belong to this state.',
         );
       }
-      if (progress.finalizedRevision != null)
+      if (progress.finalizedRevision != null) {
         _identity(progress.finalizedRevision!);
+      }
       if (progress.status == AnalysisGenerationStatus.complete &&
           (progress.processedChunks != progress.requiredChunks ||
               progress.processedUnits != progress.requiredUnits ||
@@ -481,10 +453,9 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
       _identity(finalized.generationId);
       _identity(finalized.revision);
       _identity(finalized.documentDigest);
-      if (finalized.accountKey != state.accountKey ||
-          finalized.documentVersion != textDocumentVersion) {
+      if (finalized.accountKey != state.accountKey) {
         throw const FormatException(
-          'Analysis finalized pointer has a different owner or version.',
+          'Analysis finalized pointer has a different owner.',
         );
       }
       _validateDescriptors(finalized.pages);
@@ -492,8 +463,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
     if (state.status == BookAnalysisStatus.complete &&
         (finalized == null ||
             finalized.generationId != state.receipt?.generationId ||
-            finalized.documentDigest != state.documentDigest ||
-            finalized.documentVersion != state.documentVersion)) {
+            finalized.documentDigest != state.documentDigest)) {
       throw const FormatException(
         'Complete analysis requires a matching finalized local pointer.',
       );
@@ -515,8 +485,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
   }
 
   AnalysisResultPage _decodeEnvelope(Map<String, dynamic> json) {
-    if (json['schemaVersion'] != analysisSchemaVersion ||
-        json['pageJson'] is! String) {
+    if (json['pageJson'] is! String) {
       throw const FormatException('Unsupported analysis page envelope.');
     }
     final payload = json['pageJson'] as String;
@@ -551,30 +520,11 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
       _sameImport(json, book) &&
       json['accountKey'] == accountKey;
 
-  bool _future(Map<String, dynamic> json) =>
-      (json['schemaVersion'] is int &&
-          (json['schemaVersion'] as int) > analysisSchemaVersion) ||
-      (json['analysisVersion'] is int &&
-          (json['analysisVersion'] as int) > bookAnalysisVersion) ||
-      (json['promptVersion'] is int &&
-          (json['promptVersion'] as int) > analysisPromptVersion) ||
-      (json['documentVersion'] is int &&
-          (json['documentVersion'] as int) > textDocumentVersion);
-
-  bool _futurePage(Map<String, dynamic> json) {
-    if (_future(json)) return true;
-    try {
-      final payload = jsonDecode(json['pageJson'] as String);
-      return payload is Map && _future(payload.cast<String, dynamic>());
-    } on Object {
-      return false;
-    }
-  }
-
   Future<Map<String, dynamic>?> _raw(File file) async {
     if (await FileSystemEntity.type(file.path, followLinks: false) !=
-        FileSystemEntityType.file)
+        FileSystemEntityType.file) {
       return null;
+    }
     try {
       final json = jsonDecode(await file.readAsString());
       return json is Map ? json.cast<String, dynamic>() : null;
@@ -584,8 +534,9 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
   }
 
   void _identity(String value) {
-    if (!_hex.hasMatch(value))
+    if (!_hex.hasMatch(value)) {
       throw const FormatException('Invalid analysis identity.');
+    }
   }
 
   void _regularDirectory(Directory directory) {

@@ -7,7 +7,7 @@ import 'settings_store.dart';
 
 /// Stores global reader settings as one JSON value in SharedPreferences.
 class PreferenceSettingsStore implements SettingsStore {
-  static const _key = 'reader.settings.v1';
+  static const _key = 'reader.settings';
   final SharedPreferencesAsync _preferences = SharedPreferencesAsync();
 
   @override
@@ -19,7 +19,7 @@ class PreferenceSettingsStore implements SettingsStore {
         (jsonDecode(value) as Map).cast<String, dynamic>(),
       );
     } on Object {
-      // A corrupt or older value must not prevent the library from opening.
+      // A corrupt value must not prevent the library from opening.
       return const ReaderSettings();
     }
   }

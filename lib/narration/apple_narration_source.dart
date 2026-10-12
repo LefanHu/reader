@@ -38,9 +38,9 @@ class AppleNarrationSource implements NarrationSource {
   @override
   String get engine => 'apple-avspeech';
   @override
-  String get model => 'avspeech-default-rate-v1';
+  String get model => 'avspeech-default-rate';
   @override
-  String get format => 'apple-pcm16-native-v1';
+  String get format => 'apple-pcm16-native';
   @override
   String get segmentationPolicy => appleSentenceNarrationPolicy;
   @override
@@ -145,7 +145,6 @@ class AppleNarrationSource implements NarrationSource {
         final last = boundaries.ceil(end);
         if (first >= last) continue;
         TextPosition position(int relative) => TextPosition(
-          version: unit.chunk.start.version,
           sectionId: unit.chunk.start.sectionId,
           blockId: unit.chunk.start.blockId,
           offset: unit.chunk.start.offset + relative,

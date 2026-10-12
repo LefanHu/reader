@@ -22,8 +22,6 @@ export interface NarrationInput {
   digest: string;
   chunkId: string;
   voice: "marin" | "cedar";
-  documentVersion: number;
-  chunkVersion: number;
 }
 
 /** Reject malformed Unicode, unsupported settings, unbounded IDs and digest lies. */
@@ -40,8 +38,6 @@ export function validateNarrationInput(body: unknown): NarrationInput {
           "digest",
           "chunkId",
           "voice",
-          "documentVersion",
-          "chunkVersion",
         ].includes(key),
     )
   )
@@ -57,9 +53,7 @@ export function validateNarrationInput(body: unknown): NarrationInput {
     /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/u.test(value.text) ||
     !/^[a-f0-9]{64}$/.test(value.digest ?? "") ||
     !/^[a-f0-9]{64}$/.test(value.chunkId ?? "") ||
-    !["marin", "cedar"].includes(value.voice ?? "") ||
-    value.documentVersion !== 1 ||
-    value.chunkVersion !== 1
+    !["marin", "cedar"].includes(value.voice ?? "")
   )
     throw new HttpError(400, "Invalid narration chunk.");
   if (createHash("sha256").update(value.text).digest("hex") !== value.digest)
@@ -351,11 +345,9 @@ export class NarrationBackend {
             bookId,
             digest: input.digest,
             chunkId: input.chunkId,
-            documentVersion: input.documentVersion,
-            chunkVersion: input.chunkVersion,
             voice: input.voice,
             model: "gpt-realtime-2.1-mini",
-            format: "pcm-24000-mono-v1",
+            format: "pcm-24000-mono",
           }),
         );
         const ref = db.collection("narrationJobs").doc(id);

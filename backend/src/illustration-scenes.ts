@@ -27,9 +27,9 @@ export function illustrationSceneRouter(dependencies: {
   async function ownedScene(transaction: Transaction, reference: DocumentReference, uid: string) {
     const scene = await transaction.get(reference);
     const data = scene.data();
-    if (!data || data.schemaVersion !== 2 || data.uid !== uid || data.deleted) throw new HttpError(404, "Scene not found.");
+    if (!data || data.uid !== uid || data.deleted) throw new HttpError(404, "Scene not found.");
     const fence = await readBookFence(transaction, db, "books", uid, data.bookId);
-    if (!fence.live || fence.book.data()?.schemaVersion !== 2) throw new HttpError(410, "Scene was deleted.");
+    if (!fence.live) throw new HttpError(410, "Scene was deleted.");
     return { data, book: fence.book.data()! };
   }
 
@@ -56,7 +56,7 @@ export function illustrationSceneRouter(dependencies: {
         generationSpec = { ...publishedSpec, style: profile.style,
           imageConfig: snapshotImageGenerationConfig(profile.providerId) };
       }
-      const target = Number(data.generationVersion ?? 1) + 1;
+      const target = Number(data.generation) + 1;
       const taskId = `${refresh ? "refresh" : "regen"}-${reference.id}-${target}-${randomUUID()}`;
       transaction.update(reference, { status: "regenerating", regenerationTarget: target,
         regenerationRefresh: refresh, regenerationTaskId: taskId,
@@ -102,14 +102,14 @@ export function illustrationSceneRouter(dependencies: {
     ]);
     await db.runTransaction(async (transaction) => {
       const { data: current } = await ownedScene(transaction, reference, req.uid!);
-      if (current.generationVersion !== scene.generationVersion || !["ready_locked", "unlocked"].includes(current.status)) {
+      if (current.generation !== scene.generation || !["ready_locked", "unlocked"].includes(current.status)) {
         throw new HttpError(409, "Scene changed while unlocking.");
       }
       transaction.update(reference, { status: "unlocked", unlockedAt: FieldValue.serverTimestamp() });
     });
     res.json({ imageUrl, thumbnailUrl, imageMimeType: scene.imageMimeType,
       thumbnailMimeType: scene.thumbnailMimeType, thumbnailUsesOriginal,
-      altText: scene.altText, caption: scene.caption, generationVersion: scene.generationVersion });
+      altText: scene.altText, caption: scene.caption, generation: scene.generation });
   }));
 
   router.post("/scenes/:sceneId/regenerate", requireFeature, asyncRoute(async (req, res) => {
@@ -123,13 +123,12 @@ export function illustrationSceneRouter(dependencies: {
     const data = await db.runTransaction(async (transaction) => {
       const scene = await transaction.get(reference);
       const value = scene.data();
-      if (!value || value.schemaVersion !== 2 || value.uid !== req.uid) throw new HttpError(404, "Scene not found.");
+      if (!value || value.uid !== req.uid) throw new HttpError(404, "Scene not found.");
       // Keep the old object names until cleanup succeeds, so failed deletion is retryable.
       transaction.update(reference, { deleted: true, status: "deleted",
         regenerationGenerationSpec: FieldValue.delete(), regenerationPreviousStatus: FieldValue.delete(),
         regenerationTarget: FieldValue.delete(), regenerationRefresh: FieldValue.delete(), regenerationTaskId: FieldValue.delete(),
         regenerationToken: FieldValue.delete(), regenerationLeaseUntil: FieldValue.delete(), updatedAt: FieldValue.serverTimestamp() });
-      transaction.delete(db.collection("worldReferences").doc(reference.id));
       return value;
     });
     const reservations = await db.collection("creditReservations").where("uid", "==", req.uid)
@@ -142,7 +141,7 @@ export function illustrationSceneRouter(dependencies: {
       const scene = await transaction.get(reference);
       if (!scene.exists || !scene.data()?.deleted) return;
       // A minimal, non-TTL tombstone prevents deterministic scene IDs from resurrecting.
-      transaction.set(reference, { schemaVersion: 2, uid: req.uid, bookId: data.bookId,
+      transaction.set(reference, { uid: req.uid, bookId: data.bookId,
         deleted: true, status: "deleted", deletedAt: FieldValue.serverTimestamp() });
     });
     res.status(204).end();

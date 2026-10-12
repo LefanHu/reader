@@ -12,16 +12,9 @@ gcloud storage buckets describe "gs://$STATE_BUCKET" --project="$STATE_PROJECT" 
   die "remote state is not bootstrapped; run tool/deploy_backend $ENVIRONMENT --scope core"
 
 terraform_init foundation "reader/$ENVIRONMENT/foundation"
-assert_migrated
 if [ "$SCOPE" != illustrations ]; then
   require_google_credentials
-  prepare_apple_retirement
-  if [ "$APPLE_RETIREMENT_REQUIRED" = true ]; then
-    plan_apple_retirement
-    printf '%s\n' "Review this Apple disable/protection transition first; deployment then removes only the retired provider."
-  else
-    plan_infrastructure foundation
-  fi
+  plan_infrastructure foundation
 fi
 [ "$SCOPE" != core ] || exit 0
 require_core

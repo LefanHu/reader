@@ -70,16 +70,16 @@ async function enqueue(path: string, payload: Record<string, unknown>, taskId: s
 
 // Cloud Run reserves some paths ending in "z"; health must reach this container.
 app.get("/health", (_req, res) => res.json({ ok: true }));
-app.use("/v1", authenticate);
-app.use("/v1/account", accountUsageRouter({
+app.use("/api", authenticate);
+app.use("/api/account", accountUsageRouter({
   db, narrationEnabled, illustrationsEnabled,
 }));
 const narration = new NarrationBackend({ db, storage, bucket: bucketName,
   provider: new RealtimeNarrationProvider(), enabled: narrationEnabled,
   enqueue: (path, payload, id) => enqueue(path, payload, id, process.env.NARRATION_TASK_QUEUE ?? "reader-narration"),
 });
-app.use("/v1/account", accountDeletionRouter({ db, storage, bucket: bucketName, narration }));
-app.use("/v1/narration", narration.api());
+app.use("/api/account", accountDeletionRouter({ db, storage, bucket: bucketName, narration }));
+app.use("/api/narration", narration.api());
 function requireFeature(_req: Request, res: Response, next: NextFunction) {
   if (!illustrationsEnabled) {
     res.status(503).json({ error: "Illustrations are temporarily unavailable." });
@@ -89,11 +89,11 @@ function requireFeature(_req: Request, res: Response, next: NextFunction) {
 }
 
 // Preprocessing shares Auth/App Check and rollout, but never image credits or availability.
-app.use("/v1/book-analysis", bookAnalysisApiRouter({
+app.use("/api/book-analysis", bookAnalysisApiRouter({
   db, requireFeature, enqueue, fingerprintSecret,
 }));
 
-app.get("/v1/fingerprint-key", asyncRoute(async (req, res) => {
+app.get("/api/fingerprint-key", asyncRoute(async (req, res) => {
   if (!fingerprintSecret) throw new HttpError(503, "Fingerprinting is not configured.");
   const key = createHmac("sha256", fingerprintSecret)
     .update(req.uid!)
@@ -101,15 +101,15 @@ app.get("/v1/fingerprint-key", asyncRoute(async (req, res) => {
   res.json({ key });
 }));
 
-app.get("/v1/illustrations/config", illustrationConfiguration);
-app.post("/v1/books", requireFeature, illustrationBookRegistration({ db, pilotCredits }));
+app.get("/api/illustrations/config", illustrationConfiguration);
+app.post("/api/books", requireFeature, illustrationBookRegistration({ db, pilotCredits }));
 
-app.use("/v1", illustrationJobRouter({ db, requireFeature, enqueue }));
+app.use("/api", illustrationJobRouter({ db, requireFeature, enqueue }));
 
-app.use("/v1", illustrationSceneRouter({
+app.use("/api", illustrationSceneRouter({
   db, storage, bucket: bucketName, requireFeature, enqueue,
 }));
-app.delete("/v1/books/:bookId", illustrationBookDeletion({ db, storage, bucket: bucketName }));
+app.delete("/api/books/:bookId", illustrationBookDeletion({ db, storage, bucket: bucketName }));
 
 function requireTask(req: Request, res: Response, next: NextFunction) {
   if (serviceRole !== "worker") {

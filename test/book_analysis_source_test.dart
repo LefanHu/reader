@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/book_analysis/analysis_source.dart';
 import 'package:reader/book_analysis/analysis_source_models.dart';
 import 'package:reader/book_analysis/analysis_span.dart';
-import 'package:reader/book_analysis/analysis_versions.dart';
+import 'package:reader/book_analysis/analysis_limits.dart';
 import 'package:reader/text/document.dart';
 import 'package:reader/text/document_store.dart';
 import 'package:reader/text/grapheme_boundary.dart';
@@ -17,7 +17,6 @@ void main() {
   test('combining accents emoji and newline share the Node hash golden', () {
     expect(
       analysisSpanHash(
-        version: 1,
         sectionOrdinal: 0,
         sectionId: 's',
         blockOrdinal: 0,
@@ -26,7 +25,7 @@ void main() {
         endOffset: 5,
         text: 'e\u0301😀\n',
       ),
-      '67584d0116c4d0c25f86497defc735a6fa070df9fdb5e8f6fc2da12ce73f8f7d',
+      '5380d185b9087be7937b2ee1ce4c0e2ee659a0fe3684ec10c0e858bee725dfa0',
     );
   });
 
@@ -136,7 +135,6 @@ void main() {
     final original = manifest.chunks.single;
     final span = original.primary.single;
     final invalid = AnalysisSpanDescriptor(
-      version: span.version,
       sectionOrdinal: span.sectionOrdinal,
       sectionId: span.sectionId,
       blockOrdinal: span.blockOrdinal,
@@ -145,7 +143,6 @@ void main() {
       endOffset: span.endOffset,
       blockLength: span.blockLength,
       hash: analysisSpanHash(
-        version: 1,
         sectionOrdinal: 0,
         sectionId: 's0',
         blockOrdinal: 0,

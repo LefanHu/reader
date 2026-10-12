@@ -43,9 +43,9 @@ class FixtureLocalNarrationSource implements NarrationSource {
   @override
   String get model => 'avspeech';
   @override
-  String get format => 'apple-pcm16-native-v1';
+  String get format => 'apple-pcm16-native';
   @override
-  String get segmentationPolicy => 'apple-sentence-v1';
+  String get segmentationPolicy => 'apple-sentence';
   @override
   String get synthesisFingerprint => 'fixture-os';
   @override

@@ -246,7 +246,6 @@ class _TextViewportState extends State<TextViewport>
     if (!mounted ||
         _selectionActive ||
         !isCurrent() ||
-        target.version != widget.document.version ||
         !widget.document.sections.any((item) => item.id == target.sectionId)) {
       return;
     }
@@ -254,7 +253,6 @@ class _TextViewportState extends State<TextViewport>
     if (layout != null &&
         narrationTargetVisible(
           target: target,
-          documentVersion: widget.document.version,
           sectionId: _section!.id,
           layout: layout,
           page: widget.settings.mode == ReadingMode.scroll ? null : _page,
@@ -283,9 +281,7 @@ class _TextViewportState extends State<TextViewport>
     final ordinal = widget.document.sections.indexWhere(
       (item) => item.id == requested.sectionId,
     );
-    final target = requested.version == text.textDocumentVersion && ordinal >= 0
-        ? ordinal
-        : 0;
+    final target = ordinal >= 0 ? ordinal : 0;
     final generation = ++_request;
     ++_restoreGeneration;
     try {
@@ -815,7 +811,6 @@ class _TextViewportState extends State<TextViewport>
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: scrollSectionSlices(
                           layout,
-                          documentVersion: widget.document.version,
                           sectionId: _section!.id,
                           activeNarrationRange: widget.activeNarrationRange,
                           figureBuilder: _figure,
@@ -849,7 +844,6 @@ class _TextViewportState extends State<TextViewport>
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: textPageSlices(
                               layout.pages[_page],
-                              documentVersion: widget.document.version,
                               sectionId: _section!.id,
                               activeNarrationRange: widget.activeNarrationRange,
                               figureBuilder: _figure,

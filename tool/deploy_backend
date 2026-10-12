@@ -22,13 +22,8 @@ if [ "$SCOPE" != core ]; then
   require_command curl
 fi
 
-# Existing ownership is checked before even the bootstrap stack can apply.
-core_initialized=false
-if gcloud storage buckets describe "gs://$STATE_BUCKET" --project="$STATE_PROJECT" >/dev/null 2>&1; then
-  terraform_init foundation "reader/$ENVIRONMENT/foundation"
-  assert_migrated
-  core_initialized=true
-elif [ "$SCOPE" = illustrations ]; then
+if [ "$SCOPE" = illustrations ] && \
+  ! gcloud storage buckets describe "gs://$STATE_BUCKET" --project="$STATE_PROJECT" >/dev/null 2>&1; then
   die "core is not initialized; run tool/deploy_backend $ENVIRONMENT --scope core"
 fi
 
@@ -74,16 +69,8 @@ if [ "$SCOPE" != illustrations ]; then
   plan_apply_bootstrap
 fi
 
-if [ "$core_initialized" = false ]; then
-  terraform_init foundation "reader/$ENVIRONMENT/foundation"
-  assert_migrated
-fi
+terraform_init foundation "reader/$ENVIRONMENT/foundation"
 if [ "$SCOPE" != illustrations ]; then
-  prepare_apple_retirement
-  if [ "$APPLE_RETIREMENT_REQUIRED" = true ]; then
-    plan_apple_retirement
-    terraform -chdir="$INFRA_DIR/foundation" apply "$WORK_DIR/apple-retirement.tfplan"
-  fi
   plan_apply_infrastructure foundation
 else
   require_core

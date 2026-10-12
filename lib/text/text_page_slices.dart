@@ -13,13 +13,10 @@ import 'narration_range.dart';
 /// Validates the complete narration identity before exposing block offsets.
 TextSelection? narrationBlockRange({
   required NarrationRange? range,
-  required int documentVersion,
   required String sectionId,
   required MeasuredBlock block,
 }) {
   if (range == null ||
-      range.start.version != documentVersion ||
-      range.end.version != documentVersion ||
       range.start.sectionId != sectionId ||
       range.end.sectionId != sectionId ||
       range.start.blockId != block.block.id ||
@@ -44,7 +41,6 @@ TextSelection? narrationBlockRange({
 /// them and the text layer never learns what they contain.
 List<Widget> textPageSlices(
   List<TextLine> page, {
-  required int documentVersion,
   required String sectionId,
   NarrationRange? activeNarrationRange,
   Widget Function(String blockId)? figureBuilder,
@@ -75,7 +71,6 @@ List<Widget> textPageSlices(
     }
     final range = narrationBlockRange(
       range: activeNarrationRange,
-      documentVersion: documentVersion,
       sectionId: sectionId,
       block: first.block,
     );
@@ -105,7 +100,6 @@ List<Widget> textPageSlices(
 /// is followed by [blockGap], and each figure slot by its own height and gap.
 List<Widget> scrollSectionSlices(
   SectionLayout layout, {
-  required int documentVersion,
   required String sectionId,
   NarrationRange? activeNarrationRange,
   Widget Function(String blockId)? figureBuilder,
@@ -120,7 +114,6 @@ List<Widget> scrollSectionSlices(
       bottomPadding: blockGap,
       narrationRange: narrationBlockRange(
         range: activeNarrationRange,
-        documentVersion: documentVersion,
         sectionId: sectionId,
         block: block,
       ),

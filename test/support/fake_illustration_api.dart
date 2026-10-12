@@ -82,7 +82,7 @@ class FakeIllustrationApi implements IllustrationApi {
       IllustrationProviderOption(
         id: 'diagnostic',
         label: 'Pipeline test',
-        model: 'text-image-diagnostic-v1',
+        model: 'text-image-diagnostic',
         available: true,
         recommended: false,
         costTier: 'free',
@@ -101,8 +101,7 @@ class FakeIllustrationApi implements IllustrationApi {
     if (existing != null &&
         existing.providerId == profile.providerId &&
         existing.style == profile.style &&
-        existing.density == profile.density &&
-        existing.analysisVersion == profile.analysisVersion) {
+        existing.density == profile.density) {
       return existing;
     }
     if (profile.revision != (existing?.revision ?? 0)) {
@@ -115,7 +114,6 @@ class FakeIllustrationApi implements IllustrationApi {
       providerId: profile.providerId,
       revision: (existing?.revision ?? 0) + 1,
       cloudBookId: profile.cloudBookId,
-      analysisVersion: profile.analysisVersion,
     );
     currentProfile = saved;
     return saved;
@@ -170,7 +168,7 @@ class FakeIllustrationApi implements IllustrationApi {
           thumbnail: illustrationWebp(),
           altText: 'A generated test scene',
           caption: 'A scene from the chapter',
-          generationVersion: 1,
+          generation: 1,
           imageMimeType: 'image/png',
           thumbnailMimeType: 'image/webp',
           thumbnailUsesOriginal: false,

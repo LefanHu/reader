@@ -24,7 +24,7 @@ function bounded<T>(value: T): T { validateAnalysisPageSize(value); return value
 /** All records are top-level, server-owned, and independently purgeable by uid/bookId. */
 export type AnalysisOwner = { uid: string; bookId: string; generationId: string };
 export type StoredAnalysisGeneration = AnalysisOwner & {
-  schemaVersion: 1; recordType: "generation"; admission: AnalysisGenerationAdmission;
+  recordType: "generation"; admission: AnalysisGenerationAdmission;
   status: AnalysisGenerationStatus; manifestReady: boolean; processedChunks: number;
   processedUnits: number; requiredUnits: number; cursor: AnalysisOperationCursor;
   error: { category: string } | null; finalizedRevision: string | null;
@@ -34,7 +34,7 @@ export type StoredAnalysisGeneration = AnalysisOwner & {
   publicationDescriptorDigest?: string;
 };
 export type StoredAnalysisJob = AnalysisOwner & {
-  schemaVersion: 1; jobId: string; operation: "extract" | "finalize";
+  jobId: string; operation: "extract" | "finalize";
   cursor: AnalysisOperationCursor; status: "pending" | "running" | "complete" | "failed";
   providerSubmitted: boolean; claimToken?: string; leaseUntil?: Timestamp;
   inputHash?: string; resultPages?: AnalysisResultPageDescriptor[];
@@ -63,7 +63,7 @@ export class BookAnalysisStore {
     const fence = await readBookFence(transaction, this.db, "books", uid, bookId);
     if (fence.accountDeleted) throw new HttpError(410, "Account was deleted.");
     if (fence.book.data()?.deleted) throw new HttpError(410, "Book was deleted.");
-    if (!fence.live || fence.book.data()?.schemaVersion !== 2 || fence.book.data()?.uid !== uid) {
+    if (!fence.live || fence.book.data()?.uid !== uid) {
       throw new HttpError(404, "Book not found.");
     }
     return fence;
@@ -76,8 +76,7 @@ export class BookAnalysisStore {
   }
   async admit(uid: string, bookId: string, admission: AnalysisGenerationAdmission): Promise<AnalysisReceipt> {
     validateAnalysisAdmission(admission);
-    const generationId = id(uid, bookId, admission.documentDigest, admission.documentVersion,
-      admission.schemaVersion, admission.analysisVersion, admission.promptVersion, admission.model);
+    const generationId = id(uid, bookId, admission.documentDigest, admission.model);
     if (admission.chunkCount === 0) validateAnalysisSourceManifest({ ...admission, chunks: [] });
     return this.db.runTransaction(async transaction => {
       await this.bookFence(transaction, uid, bookId);
@@ -88,7 +87,7 @@ export class BookAnalysisStore {
         return this.receipt(existing);
       }
       const ready = admission.pageCount === 0;
-      const generation: StoredAnalysisGeneration = { schemaVersion: 1, recordType: "generation", uid, bookId, generationId,
+      const generation: StoredAnalysisGeneration = { recordType: "generation", uid, bookId, generationId,
         admission, status: ready ? "finalizing" : "manifest", manifestReady: ready, processedChunks: 0,
         processedUnits: 0, requiredUnits: 0, cursor: { stage: ready ? "reconcile" : "manifest", ordinal: 0 },
         error: null, finalizedRevision: null, resultPages: [] };
@@ -119,10 +118,10 @@ export class BookAnalysisStore {
       page.chunks.forEach((chunk, n) => {
         if (chunkSnapshots[n]!.exists) conflict("Analysis descriptor order conflicts.");
       });
-      transaction.create(refs[ordinal]!, bounded({ schemaVersion: 1, recordType: "descriptor", uid, bookId: g.bookId,
+      transaction.create(refs[ordinal]!, bounded({ recordType: "descriptor", uid, bookId: g.bookId,
         generationId, pageOrdinal: ordinal, page, checksum: analysisJsonHash(page) }));
       page.chunks.forEach((chunk, n) => transaction.create(chunkRefs[n]!, bounded({
-        schemaVersion: 1, recordType: "chunk", uid, bookId: g.bookId, generationId, descriptor: chunk,
+        recordType: "chunk", uid, bookId: g.bookId, generationId, descriptor: chunk,
       })));
       if (pages.every(p => p !== undefined)) transaction.set(this.generationReference(generationId), bounded({ ...g,
         manifestReady: true, status: "extracting", requiredUnits, cursor: { stage: "extract", ordinal: 0 },
@@ -159,11 +158,11 @@ export class BookAnalysisStore {
       if (fence.book.data()?.activeAnalysisGenerationId !== generationId) conflict("Analysis generation was superseded.");
       if (g.processedChunks !== ordinal) conflict("Earlier analysis window is incomplete.");
       if (g.status === "failed" || g.status === "complete") return { receipt: this.receipt(g, existing), enqueue: false };
-      const job: StoredAnalysisJob = existing ?? { schemaVersion: 1, uid, bookId: g.bookId, generationId,
+      const job: StoredAnalysisJob = existing ?? { uid, bookId: g.bookId, generationId,
         jobId, operation: "extract", cursor: { stage: "extract", ordinal }, status: "pending", providerSubmitted: false, inputHash };
       const rawData = raw.data();
       if ((!rawData || (rawData.expiresAt as Timestamp).toMillis() <= Date.now()) && !job.providerSubmitted) {
-        transaction.set(inputRef, bounded({ schemaVersion: 1, uid, bookId: g.bookId, generationId,
+        transaction.set(inputRef, bounded({ uid, bookId: g.bookId, generationId,
           input, expiresAt: Timestamp.fromMillis(Date.now() + INPUT_TTL) }));
       }
       if (!existing) transaction.create(jobRef, bounded(job));
@@ -180,7 +179,7 @@ export class BookAnalysisStore {
       const jobId = id(generationId, "finalize", g.cursor.stage, g.cursor.ordinal);
       const ref = this.jobReference(jobId);
       const existing = (await transaction.get(ref)).data() as StoredAnalysisJob | undefined;
-      const job: StoredAnalysisJob = existing ?? { schemaVersion: 1, uid, bookId: g.bookId, generationId, jobId,
+      const job: StoredAnalysisJob = existing ?? { uid, bookId: g.bookId, generationId, jobId,
         operation: "finalize", cursor: g.cursor, status: "pending", providerSubmitted: false };
       if (!existing) transaction.create(ref, bounded(job));
       return { receipt: this.receipt(g, job), enqueue: job.status === "pending" };
@@ -190,13 +189,13 @@ export class BookAnalysisStore {
   async claim(jobId: string): Promise<{ claim: AnalysisClaim; job: StoredAnalysisJob; generation: StoredAnalysisGeneration } | null> {
     return this.db.runTransaction(async transaction => {
       const ref = this.jobReference(jobId), job = (await transaction.get(ref)).data() as StoredAnalysisJob | undefined;
-      if (!job || job.schemaVersion !== 1 || job.status === "complete" || job.status === "failed" ||
+      if (!job || job.status === "complete" || job.status === "failed" ||
         (job.leaseUntil?.toMillis() ?? 0) > Date.now()) return null;
       const [fence, snapshot] = await Promise.all([readBookFence(transaction, this.db, "books", job.uid, job.bookId),
         transaction.get(this.generationReference(job.generationId))]);
       const generation = snapshot.data() as StoredAnalysisGeneration | undefined;
-      if (!generation || generation.schemaVersion !== 1 || generation.uid !== job.uid || generation.bookId !== job.bookId ||
-        !fence.live || fence.book.data()?.schemaVersion !== 2 || fence.book.data()?.uid !== job.uid ||
+      if (!generation || generation.uid !== job.uid || generation.bookId !== job.bookId ||
+        !fence.live || fence.book.data()?.uid !== job.uid ||
         fence.book.data()?.activeAnalysisGenerationId !== job.generationId || generation.status === "failed" ||
         !same(generation.cursor, job.cursor)) return null;
       const token = randomUUID();
@@ -212,11 +211,11 @@ export class BookAnalysisStore {
     ]);
     const job = jobSnapshot.data() as StoredAnalysisJob | undefined;
     const generation = generationSnapshot.data() as StoredAnalysisGeneration | undefined;
-    if (!job || !generation || job.schemaVersion !== 1 || generation.schemaVersion !== 1 ||
+    if (!job || !generation ||
       job.claimToken !== claim.token || job.status !== "running" ||
       job.uid !== claim.uid || job.bookId !== claim.bookId || job.generationId !== claim.generationId ||
       generation.uid !== claim.uid || generation.bookId !== claim.bookId || !fence.live ||
-      fence.book.data()?.uid !== claim.uid || fence.book.data()?.schemaVersion !== 2 ||
+      fence.book.data()?.uid !== claim.uid ||
       fence.book.data()?.activeAnalysisGenerationId !== claim.generationId ||
       !same(generation.cursor, job.cursor)) throw new CancelledAnalysisClaim();
     if ((job.leaseUntil?.toMillis() ?? 0) <= Date.now()) throw new HttpError(409, "Book analysis claim expired.");
@@ -268,11 +267,11 @@ export class BookAnalysisStore {
     }
     const type = extraction ? "extraction" : "result";
     const records = pages.map(page => {
-      if (page.generationId !== claim.generationId || page.schemaVersion !== 1 || !page.pageId || !Number.isSafeInteger(page.ordinal) || page.ordinal < 0) {
+      if (page.generationId !== claim.generationId || !page.pageId || !Number.isSafeInteger(page.ordinal) || page.ordinal < 0) {
         throw new HttpError(400, "Invalid analysis result page.");
       }
       const descriptor = this.pageDescriptor(page);
-      return { ref: this.recordReference(claim.generationId, type, page.pageId), record: bounded({ schemaVersion: 1,
+      return { ref: this.recordReference(claim.generationId, type, page.pageId), record: bounded({
         recordType: type, uid: claim.uid, bookId: claim.bookId, generationId: claim.generationId,
         jobId: claim.jobId, pageId: page.pageId, descriptor, pageJson: JSON.stringify(page) }) };
     });
@@ -308,7 +307,7 @@ export class BookAnalysisStore {
   async writeWorkRecords(claim: AnalysisClaim, records: AnalysisWorkRecord[]) {
     if (records.length >= 399 || new Set(records.map(r => r.key)).size !== records.length) throw new HttpError(400, "Invalid analysis work batch.");
     const values = records.map(r => ({ ref: this.recordReference(claim.generationId, "work", r.key),
-      value: bounded({ schemaVersion: 1, recordType: "work", uid: claim.uid, bookId: claim.bookId,
+      value: bounded({ recordType: "work", uid: claim.uid, bookId: claim.bookId,
         generationId: claim.generationId, key: r.key, data: r.data }) }));
     await this.db.runTransaction(async transaction => {
       await this.liveClaim(transaction, claim);

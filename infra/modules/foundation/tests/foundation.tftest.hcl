@@ -14,7 +14,7 @@ variables {
   apple_team_id        = "ABCDEFGHIJ"
   google_client_id     = "test.apps.googleusercontent.com"
   google_client_secret = "test-secret-only"
-  budget_amount_usd    = 25
+  budget_amount        = 25
   alert_email          = "reader@example.com"
   firestore_rules      = "rules_version = '2'; service cloud.firestore { match /databases/{database}/documents { match /{document=**} { allow read, write: if false; } } }"
 }
@@ -26,8 +26,8 @@ run "core_protects_shared_project_and_database" {
     error_message = "Core must enable only shared APIs and require no illustration runtime or secrets."
   }
   assert {
-    condition     = google_identity_platform_default_supported_idp_config.google.idp_id == "google.com" && google_identity_platform_default_supported_idp_config.google.enabled && length(google_identity_platform_default_supported_idp_config.apple) == 0
-    error_message = "Google must be the only configured sign-in provider after retirement."
+    condition     = google_identity_platform_default_supported_idp_config.google.idp_id == "google.com" && google_identity_platform_default_supported_idp_config.google.enabled
+    error_message = "Google sign-in must be configured and enabled."
   }
   assert {
     condition     = google_project.environment.deletion_policy == "PREVENT"
@@ -39,18 +39,6 @@ run "core_protects_shared_project_and_database" {
   }
 }
 
-run "apple_retirement_disables_before_removal" {
-  command = plan
-  variables {
-    retain_legacy_apple_provider = true
-    apple_client_id              = "legacy.example.auth"
-    apple_client_secret          = "legacy-test-only"
-  }
-  assert {
-    condition     = !google_identity_platform_default_supported_idp_config.apple[0].enabled && google_identity_platform_default_supported_idp_config.apple[0].deletion_policy == "DELETE"
-    error_message = "Persist disabled Apple and relaxed deletion protection before removing its provider configuration."
-  }
-}
 
 run "budget_matches_non_usd_billing_account" {
   command = plan

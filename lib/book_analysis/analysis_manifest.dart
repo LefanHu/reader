@@ -99,7 +99,7 @@ class AnalysisManifest {
     'finalizedRevision': finalizedRevision,
   };
 
-  /// Restores only supported complete manifest shapes; no schema migration occurs.
+  /// Restores a complete manifest; corrupt persisted fields reject the record.
   factory AnalysisManifest.fromJson(Map<String, dynamic> json) =>
       AnalysisManifest(
         source: AnalysisSourceManifest.fromJson(json),

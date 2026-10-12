@@ -112,7 +112,7 @@ void main() {
       ),
     );
     final hold = client.hold(
-      (r) => r.method == 'DELETE' && r.url.path.startsWith('/v1/books/'),
+      (r) => r.method == 'DELETE' && r.url.path.startsWith('/api/books/'),
     );
 
     // The purge is held, so completing proves delete never awaits the server.
@@ -123,7 +123,7 @@ void main() {
     hold.release();
     await controller.illustrations.drainDeletions();
     final deletes = client.exchanges.where((e) => e.method == 'DELETE');
-    expect(deletes.map((e) => (e.path, e.status)), [('/v1/books/$id', 204)]);
+    expect(deletes.map((e) => (e.path, e.status)), [('/api/books/$id', 204)]);
     expect(await outbox.load(), isEmpty);
     final revived = await api.registerBook(book, chapterCount: 1);
     expect(revived.currentProfile, isNull);
@@ -164,11 +164,11 @@ void main() {
     final setup = await controller.illustrations.beginSetup(book);
     expect(await outbox.load(), isEmpty);
     final order = client.exchanges
-        .where((e) => e.path == '/v1/books/$id' || e.path == '/v1/books')
+        .where((e) => e.path == '/api/books/$id' || e.path == '/api/books')
         .map((e) => (e.method, e.path, e.status));
     expect(order, [
-      ('DELETE', '/v1/books/$id', 204),
-      ('POST', '/v1/books', 200),
+      ('DELETE', '/api/books/$id', 204),
+      ('POST', '/api/books', 200),
     ]);
     expect(setup.cloudBookId, id);
     expect(setup.currentProfile, isNull);
@@ -183,6 +183,7 @@ void main() {
     final epub = File('${bookDirectory.path}/book.epub')
       ..writeAsStringSync('x');
     final book = CatalogBook(
+      wordCount: 0,
       hash: hash,
       fileName: 'book.epub',
       path: epub.path,
@@ -223,6 +224,7 @@ void main() {
     final bookDirectory = Directory('${directory.path}/books/$hash')
       ..createSync(recursive: true);
     final book = CatalogBook(
+      wordCount: 0,
       hash: hash,
       fileName: 'book.epub',
       path: (File(
@@ -242,7 +244,7 @@ void main() {
         '../escape',
         Uint8List.fromList([1]),
         mimeType: 'image/png',
-        generationVersion: 1,
+        generation: 1,
       ),
       throwsFormatException,
     );
@@ -260,7 +262,6 @@ void main() {
     final chapters = List.generate(
       3,
       (chapter) => ChapterTextIndex(
-        documentVersion: 1,
         href: 's$chapter',
         spineOrdinal: chapter,
         title: 'Chapter $chapter',
@@ -269,7 +270,6 @@ void main() {
           (paragraph) => IndexedParagraph(
             id: 'c$chapter-p$paragraph',
             text: 'Paragraph $paragraph',
-            cssSelector: 'body > p:nth-of-type(${paragraph + 1})',
             ordinal: paragraph,
             progression: paragraph / 2,
           ),
@@ -277,6 +277,7 @@ void main() {
       ),
     );
     final book = CatalogBook(
+      wordCount: 0,
       hash: 'abc123',
       fileName: 'book.epub',
       path: '/tmp/book.epub',
@@ -298,7 +299,6 @@ void main() {
             href: 's0',
             spineOrdinal: 0,
             paragraphId: 'c0-p1',
-            cssSelector: 'body > p:nth-of-type(2)',
             fallbackProgression: .5,
           ),
         ),
@@ -352,6 +352,7 @@ void main() {
   test('chapter image jobs wait for finalized preprocessing and resume on completion', () async {
     var ready = false;
     final book = CatalogBook(
+      wordCount: 0,
       hash: 'abc124',
       fileName: 'book.epub',
       path: '/tmp/book.epub',

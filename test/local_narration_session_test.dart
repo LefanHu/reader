@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart' show PlatformException;
@@ -104,7 +103,7 @@ void main() {
         await session.flush();
         final saved = await fixture.store.load(fixture.book);
         expect(saved.engine, 'apple-avspeech');
-        expect(saved.segmentationPolicy, 'apple-sentence-v1');
+        expect(saved.segmentationPolicy, 'apple-sentence');
         expect(saved.synthesisFingerprint, fixture.source.synthesisFingerprint);
         expect(saved.account, isNull);
         expect(saved.cloudBookId, isNull);
@@ -607,73 +606,6 @@ void main() {
       );
     });
     tearDown(() => fixture.dispose());
-
-    test('version-1 cloud resume is atomically converted before local suffix playback', () async {
-      final directory = Directory(
-        '${File(fixture.book.path).parent.path}/narration',
-      );
-      await directory.create();
-      final manifestFile = File('${directory.path}/manifest.json');
-      await manifestFile.writeAsString(
-        jsonEncode({
-          'version': 1,
-          'bookHash': fixture.book.hash,
-          'account': 'old-account',
-          'cloudBookId': 'old-registration',
-          'voice': 'cedar',
-          'speed': 1.75,
-          'anchor': committed.toJson(),
-          'chunkStart': playbackStart.toJson(),
-          'chunkId': 'old-cloud-paragraph',
-          'offsetMs': 7000,
-        }),
-        flush: true,
-      );
-
-      await fixture.session.attach(fixture.book);
-      final converted = (jsonDecode(await manifestFile.readAsString()) as Map)
-          .cast<String, dynamic>();
-      expect(converted['version'], 2);
-      expect(converted['engine'], fixture.source.engine);
-      expect(
-        converted['segmentationPolicy'],
-        fixture.source.segmentationPolicy,
-      );
-      expect(
-        converted['synthesisFingerprint'],
-        fixture.source.synthesisFingerprint,
-      );
-      expect(converted['account'], 'old-account');
-      expect(converted['cloudBookId'], 'old-registration');
-      expect(
-        TextPosition.fromJson(
-          (converted['anchor'] as Map).cast<String, dynamic>(),
-        ),
-        committed,
-      );
-      expect(
-        TextPosition.fromJson(
-          (converted['chunkStart'] as Map).cast<String, dynamic>(),
-        ),
-        playbackStart,
-      );
-      expect(converted['chunkId'], isNull);
-      expect(converted['offsetMs'], 0);
-      expect(fixture.source.requests, isEmpty);
-
-      await fixture.session.play();
-      expect(fixture.source.requests.single.unit.chunk.start, playbackStart);
-      expect(fixture.source.requests.single.unit.chunk.text, 'sentence.');
-      expect(fixture.player.loadedOffset, Duration.zero);
-      expect(fixture.session.manifest.anchor, committed);
-      expect(fixture.commits, isEmpty);
-      fixture.player.finish();
-      await fixture.until(
-        () => fixture.session.status == NarrationStatus.complete,
-      );
-      expect(fixture.commits.single, _position(15, section: 's1', block: 'p2'));
-      expect(fixture.api.calls, isEmpty);
-    });
 
     for (final mismatch in ['voice', 'fingerprint', 'engine/policy']) {
       test(

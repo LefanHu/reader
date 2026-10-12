@@ -95,8 +95,6 @@ export function accountDeletionRouter(dependencies: {
         db.collection("illustrationJobs").where("uid", "==", uid).get(),
         db.collection("illustrationJobInputs").where("uid", "==", uid).get(),
         db.collection("creditReservations").where("uid", "==", uid).get(),
-        db.collection("worldRevisions").where("uid", "==", uid).get(),
-        db.collection("worldReferences").where("uid", "==", uid).get(),
         db.collection("bookAnalysisJobs").where("uid", "==", uid).get(),
         db.collection("bookAnalysisRecords").where("uid", "==", uid).get(),
         db.collection("bookAnalysisInputs").where("uid", "==", uid).get(),

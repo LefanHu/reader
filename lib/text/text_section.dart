@@ -35,9 +35,7 @@ class TextSection {
     final block = blocks
         .where((block) => block.id == position.blockId)
         .firstOrNull;
-    if (position.version != textDocumentVersion ||
-        position.sectionId != id ||
-        block == null) {
+    if (position.sectionId != id || block == null) {
       return start;
     }
     return TextPosition(

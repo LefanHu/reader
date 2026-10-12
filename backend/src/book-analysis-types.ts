@@ -1,7 +1,4 @@
 /** Immutable analysis identity; independent of image profiles, styles and credits. */
-export const ANALYSIS_SCHEMA_VERSION = 1;
-export const ANALYSIS_VERSION = 1;
-export const ANALYSIS_PROMPT_VERSION = 1;
 export const ANALYSIS_MODEL = "gpt-6-luna";
 export const ANALYSIS_WINDOW_TARGET_UNITS = 6_000;
 export const ANALYSIS_OVERLAP_MAX_UNITS = 1_000;
@@ -12,7 +9,7 @@ export const ANALYSIS_DESCRIPTOR_PAGE_MAX_CHUNKS = 100;
 export const ANALYSIS_IDENTITY_PROPERTY = "same_identity";
 
 /** Exact normalized document position, with an end-exclusive UTF-16 grapheme offset. */
-export type AnalysisPosition = { version: number; sectionId: string; blockId: string; offset: number };
+export type AnalysisPosition = { sectionId: string; blockId: string; offset: number };
 /** Evidence is nonempty and block-local; cross-block support uses multiple spans. */
 export type AnalysisSpan = { start: AnalysisPosition; end: AnalysisPosition };
 export type AnalysisEvidence = [AnalysisSpan, ...AnalysisSpan[]];
@@ -65,7 +62,7 @@ export type WorldMap = {
 
 /** Empty blocks use startOffset=endOffset=blockLength=0 only for primary coverage. */
 export type AnalysisSpanDescriptor = {
-  version: number; sectionOrdinal: number; sectionId: string; blockOrdinal: number;
+  sectionOrdinal: number; sectionId: string; blockOrdinal: number;
   blockId: string; startOffset: number; endOffset: number; blockLength: number; hash: string;
 };
 /** Transport text is already normalized; never trim or normalize it again. */
@@ -83,8 +80,8 @@ export type AnalysisChunkInput = {
 export type AnalysisSectionDescriptor = { ordinal: number; id: string; blockCount: number };
 /** Admission is prose-free and omits chunks; descriptor pages supply them separately. */
 export type AnalysisGenerationAdmission = {
-  schemaVersion: 1; analysisVersion: 1; promptVersion: 1; model: "gpt-6-luna";
-  documentVersion: number; documentDigest: string; sectionCount: number; blockCount: number;
+  model: "gpt-6-luna";
+  documentDigest: string; sectionCount: number; blockCount: number;
   chunkCount: number; pageCount: number; sections: AnalysisSectionDescriptor[];
 };
 export type AnalysisSourceManifest = AnalysisGenerationAdmission & { chunks: AnalysisChunkDescriptor[] };
@@ -112,7 +109,7 @@ export type AnalysisSubjectIndex = {
 };
 /** Pages contain only derived records and references, never raw chapter prose. */
 export type AnalysisResultPage = {
-  schemaVersion: 1; generationId: string; pageId: string; kind: AnalysisResultPageKind; ordinal: number;
+  generationId: string; pageId: string; kind: AnalysisResultPageKind; ordinal: number;
   entities?: AnalysisEntity[]; mentions?: AnalysisMention[]; entries?: AnalysisEntry[];
   assertions?: AnalysisAssertion[]; times?: AnalysisTime[]; entityMappings?: AnalysisEntityMapping[];
   timeMappings?: AnalysisTimeMapping[]; worldBaselines?: WorldBaseline[]; worldMaps?: WorldMap[];
@@ -126,7 +123,7 @@ export type AnalysisManifest = AnalysisSourceManifest & {
   resultPages: AnalysisResultPageDescriptor[]; finalizedRevision: string | null;
 };
 export type AnalysisConfiguration = {
-  schemaVersion: 1; analysisVersion: 1; enabled: boolean; model: "gpt-6-luna"; accountKey: string;
+  enabled: boolean; model: "gpt-6-luna"; accountKey: string;
 };
 export type AnalysisRegistration = { bookId: string; accountKey: string };
 export type AnalysisReceipt = {
@@ -134,7 +131,7 @@ export type AnalysisReceipt = {
 };
 /** Read-only status does not register books, submit work, or initialize image credits. */
 export type AnalysisProgress = {
-  generationId: string; bookId: string; accountKey: string; documentVersion: number; documentDigest: string;
+  generationId: string; bookId: string; accountKey: string; documentDigest: string;
   status: AnalysisGenerationStatus; stage: AnalysisStage; processedChunks: number; requiredChunks: number;
   processedUnits: number; requiredUnits: number; nextCursor: AnalysisOperationCursor | null;
   error: AnalysisFailure | null; finalizedRevision: string | null; resultPages: AnalysisResultPageDescriptor[];
@@ -148,7 +145,7 @@ export type AnalysisIdentityCandidate = {
 };
 /** Only primary source may emit new records; overlap supplies preceding context. */
 export type AnalysisWindowInput = {
-  generationId: string; model: "gpt-6-luna"; promptVersion: 1;
+  generationId: string; model: "gpt-6-luna";
   chunk: AnalysisChunkInput; candidates: AnalysisIdentityCandidate[];
   knownTimes?: AnalysisTime[];
   knownAssertions?: AnalysisAssertion[];
@@ -160,7 +157,7 @@ export type AnalysisWindowOutput = {
 };
 /** At most 64 identities and 16,000 UTF-16 context units per paid resolution call. */
 export type EntityResolutionBatch = {
-  generationId: string; model: "gpt-6-luna"; promptVersion: 1; ordinal: number;
+  generationId: string; model: "gpt-6-luna"; ordinal: number;
   candidates: AnalysisIdentityCandidate[]; acceptedMappings: AnalysisEntityMapping[];
 };
 /** Unsupported/uncertain candidates stay unresolved; name equality alone cannot merge. */

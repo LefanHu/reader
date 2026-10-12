@@ -32,8 +32,6 @@ export async function reserveCredit(transaction: Transaction, db: Firestore, own
   });
   // An expired lease transfers its existing reservation, never charging twice.
   transaction.set(reservationRef, {
-    // Explicit cutover marker; maintenance never infers schema from operation IDs.
-    schemaVersion: 2,
     uid: owner.uid, bookId: owner.bookId, operationId, claimToken: owner.token,
     sceneId: operationId.split(":generation:")[0], state: "reserved",
     updatedAt: FieldValue.serverTimestamp(),

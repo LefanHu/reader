@@ -1,10 +1,10 @@
 import 'narration_cue.dart';
 
-/// Versioned optional presentation metadata, never a prerequisite for audio.
+/// Optional presentation metadata, never a prerequisite for audio.
 /// Owners must also verify identities, clip/grapheme bounds and decoded duration.
 class NarrationTiming {
   /// Owns, sorts and deduplicates cues, rejecting empty identities, invalid
-  /// durations, out-of-duration cue starts and mixed source blocks/versions.
+  /// durations, out-of-duration cue starts and mixed source blocks.
   /// Does not establish whether native offsets were experimentally verified.
   NarrationTiming({
     required this.audioKey,
@@ -57,8 +57,7 @@ class NarrationTiming {
       if (sorted.isNotEmpty) {
         final first = sorted.first.range.start;
         final start = cue.range.start;
-        if (first.version != start.version ||
-            first.sectionId != start.sectionId ||
+        if (first.sectionId != start.sectionId ||
             first.blockId != start.blockId) {
           throw const FormatException(
             'Narration cues cross source identities.',
@@ -114,9 +113,8 @@ class NarrationTiming {
       (duration == null ||
           (this.duration - duration).inMicroseconds.abs() <= 1000);
 
-  /// Version-1 companion schema with integer source-media microseconds.
+  /// Companion schema with integer source-media microseconds.
   Map<String, dynamic> toJson() => {
-    'version': 1,
     'audioKey': audioKey,
     'chunkId': chunkId,
     'sourceDigest': sourceDigest,
@@ -128,7 +126,7 @@ class NarrationTiming {
   /// Malformed metadata is rejected independently of the associated WAV.
   factory NarrationTiming.fromJson(Map<String, dynamic> json) {
     try {
-      if (json['version'] != 1 || json['durationUs'] is! int) {
+      if (json['durationUs'] is! int) {
         throw const FormatException('Unsupported narration timing metadata.');
       }
       return NarrationTiming(

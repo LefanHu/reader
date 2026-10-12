@@ -7,8 +7,7 @@ typedef AnalysisPosition = TextPosition;
 class AnalysisSpan {
   /// Rejects malformed anchors; source grapheme validation is a separate step.
   AnalysisSpan({required this.start, required this.end}) {
-    if (start.version != end.version ||
-        start.sectionId != end.sectionId ||
+    if (start.sectionId != end.sectionId ||
         start.blockId != end.blockId ||
         start.offset < 0 ||
         end.offset <= start.offset) {

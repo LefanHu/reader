@@ -16,11 +16,11 @@ class MemoryIllustrationStore implements IllustrationStore {
   Future<void> deleteSceneFiles(
     CatalogBook book,
     String sceneId, {
-    int? generationVersion,
+    int? generation,
   }) async {
     if (!_sceneId.hasMatch(sceneId)) return;
-    if (generationVersion != null && generationVersion < 1) {
-      throw const FormatException('Invalid illustration generation version.');
+    if (generation != null && generation < 1) {
+      throw const FormatException('Invalid illustration generation.');
     }
     final ownedName = RegExp(
       '^$sceneId\\.v([1-9][0-9]*)\\.(?:png|jpg|webp|thumb\\.webp)\$',
@@ -30,8 +30,7 @@ class MemoryIllustrationStore implements IllustrationStore {
       if (!path.startsWith(prefix)) return false;
       final match = ownedName.firstMatch(path.substring(prefix.length));
       return match != null &&
-          (generationVersion == null ||
-              match.group(1) == generationVersion.toString());
+          (generation == null || match.group(1) == generation.toString());
     });
   }
 
@@ -54,10 +53,10 @@ class MemoryIllustrationStore implements IllustrationStore {
     String sceneId,
     Uint8List bytes, {
     required String mimeType,
-    required int generationVersion,
+    required int generation,
     bool thumbnail = false,
   }) async {
-    if (!_sceneId.hasMatch(sceneId) || generationVersion < 1) {
+    if (!_sceneId.hasMatch(sceneId) || generation < 1) {
       throw const FormatException('Invalid illustration asset identity.');
     }
     final extension = switch (mimeType) {
@@ -72,7 +71,7 @@ class MemoryIllustrationStore implements IllustrationStore {
       );
     }
     final suffix = thumbnail ? 'thumb.webp' : extension;
-    final path = '/memory/${book.hash}/$sceneId.v$generationVersion.$suffix';
+    final path = '/memory/${book.hash}/$sceneId.$generation.$suffix';
     images[path] = bytes;
     return path;
   }

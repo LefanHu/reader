@@ -8,17 +8,17 @@ import { narrationMonthCounterId } from "./narration.js";
 async function fixture(action: (url: string, db: MemoryFirestore) => Promise<void>, enabled = false) {
   const db = new MemoryFirestore();
   const app = express();
-  app.use("/v1", authenticateAccount(async token => {
+  app.use("/api", authenticateAccount(async token => {
     if (token !== "valid") throw new Error("invalid identity");
     return { uid: "owner" };
   }, async token => { if (token !== "valid") throw new Error("invalid attestation"); }));
-  app.use("/v1/account", accountUsageRouter({ db: db.firestore,
+  app.use("/api/account", accountUsageRouter({ db: db.firestore,
     now: () => new Date("2026-12-31T23:59:59.999Z"), narrationEnabled: enabled,
     illustrationsEnabled: enabled, env: { NARRATION_MONTHLY_CHARACTERS: "500" } }));
   app.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).end());
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.on("listening", resolve));
-  try { await action(`http://127.0.0.1:${(server.address() as { port: number }).port}/v1/account/usage`, db); }
+  try { await action(`http://127.0.0.1:${(server.address() as { port: number }).port}/api/account/usage`, db); }
   finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 }
 const headers = { authorization: "Bearer valid", "x-firebase-appcheck": "valid" };

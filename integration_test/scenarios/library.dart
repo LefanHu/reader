@@ -59,7 +59,7 @@ void registerLibraryTests() {
           expect(
             find.descendant(
               of: entry,
-              matching: find.text(wordCountLabel(book.wordCount!)),
+              matching: find.text(wordCountLabel(book.wordCount)),
             ),
             findsOneWidget,
           );
@@ -80,7 +80,7 @@ void registerLibraryTests() {
       } else {
         expect(find.byType(SliverGrid), findsNothing);
         expect(find.byType(SliverList), findsOneWidget);
-        expect(find.text(wordCountLabel(book.wordCount!)), findsOneWidget);
+        expect(find.text(wordCountLabel(book.wordCount)), findsOneWidget);
         await app.capture('library-list');
         await tester.tap(
           find.descendant(of: entry, matching: find.byTooltip('Book actions')),

@@ -163,7 +163,6 @@ void registerSelectionTests() {
         expect(api.registrations, 0);
         expect(api.requests, isEmpty);
         expect(active.start, expected);
-        expect(active.end.version, expected.version);
         expect(active.end.sectionId, expected.sectionId);
         expect(active.end.blockId, expected.blockId);
         expect(

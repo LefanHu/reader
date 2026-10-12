@@ -43,38 +43,18 @@ const _anchor = SceneAnchor(
   href: 's0',
   spineOrdinal: 0,
   paragraphId: 'p1',
-  cssSelector: 'body > p:nth-of-type(2)',
   fallbackProgression: .5,
 );
 const _before = TextPosition(sectionId: 's0', blockId: 'p1', offset: 5);
 const _passed = TextPosition(sectionId: 's0', blockId: 'p1', offset: 6);
 const _chapter = ChapterTextIndex(
-  documentVersion: 1,
   href: 's0',
   spineOrdinal: 0,
   title: null,
   paragraphs: [
-    IndexedParagraph(
-      id: 'p0',
-      text: 'start',
-      cssSelector: '',
-      ordinal: 0,
-      progression: 0,
-    ),
-    IndexedParagraph(
-      id: 'p1',
-      text: 'ending',
-      cssSelector: '',
-      ordinal: 1,
-      progression: .5,
-    ),
-    IndexedParagraph(
-      id: 'p2',
-      text: 'after',
-      cssSelector: '',
-      ordinal: 2,
-      progression: 1,
-    ),
+    IndexedParagraph(id: 'p0', text: 'start', ordinal: 0, progression: 0),
+    IndexedParagraph(id: 'p1', text: 'ending', ordinal: 1, progression: .5),
+    IndexedParagraph(id: 'p2', text: 'after', ordinal: 2, progression: 1),
   ],
 );
 const _profile = IllustrationProfile(
@@ -114,26 +94,26 @@ void main() {
       state: IllustrationSceneState.hidden,
       localImagePath: 'original.png',
       localThumbnailPath: 'preview.webp',
-      generationVersion: 1,
+      generation: 1,
       regenerating: true,
-      pendingGenerationVersion: 2,
+      pendingGeneration: 2,
       failureCategory: 'provider',
     );
     final restored = IllustrationScene.fromJson(scene.toJson());
     expect(restored.regenerating, isTrue);
-    expect(restored.pendingGenerationVersion, 2);
+    expect(restored.pendingGeneration, 2);
     expect(restored.copyWith().failureCategory, 'provider');
     final cleared = restored.copyWith(
       regenerating: false,
-      pendingGenerationVersion: null,
+      pendingGeneration: null,
       failureCategory: null,
       localThumbnailPath: null,
     );
-    expect(cleared.pendingGenerationVersion, isNull);
+    expect(cleared.pendingGeneration, isNull);
     expect(cleared.failureCategory, isNull);
     expect(cleared.localThumbnailPath, isNull);
     expect(cleared.localImagePath, 'original.png');
-    expect(cleared.toJson().containsKey('pendingGenerationVersion'), isFalse);
+    expect(cleared.toJson().containsKey('pendingGeneration'), isFalse);
   });
 
   test(
@@ -143,12 +123,12 @@ void main() {
       harness.ready(2);
       final old = harness.scene;
       await harness.coordinator.advance(harness.book, _before);
-      expect(harness.scene.generationVersion, 2);
-      expect(harness.scene.pendingGenerationVersion, isNull);
+      expect(harness.scene.generation, 2);
+      expect(harness.scene.pendingGeneration, isNull);
       expect(harness.scene.regenerating, isFalse);
       expect(harness.scene.state, IllustrationSceneState.hidden);
-      expect(harness.scene.localImagePath, endsWith('.v2.png'));
-      expect(harness.scene.localThumbnailPath, endsWith('.v2.thumb.webp'));
+      expect(harness.scene.localImagePath, endsWith('.2.png'));
+      expect(harness.scene.localThumbnailPath, endsWith('.2.thumb.webp'));
       expect(
         await File(harness.scene.localImagePath!).readAsBytes(),
         illustrationPng(),
@@ -161,7 +141,7 @@ void main() {
       expect(await File(old.localThumbnailPath!).exists(), isFalse);
       expect(harness.book.lastPosition, _passed);
       await harness.reopen();
-      expect(harness.scene.generationVersion, 2);
+      expect(harness.scene.generation, 2);
       expect(harness.scene.state, IllustrationSceneState.hidden);
     },
   );
@@ -179,7 +159,7 @@ void main() {
     harness.remote(IllustrationSceneState.generating, 1, regenerating: true);
     await harness.coordinator.advance(harness.book, _before);
     expect(harness.scene.regenerating, isTrue);
-    expect(harness.scene.generationVersion, 1);
+    expect(harness.scene.generation, 1);
 
     harness.remote(
       IllustrationSceneState.readyLocked,
@@ -189,9 +169,9 @@ void main() {
     await harness.reopen();
     await harness.coordinator.advance(harness.book, _passed);
     expect(harness.scene.regenerating, isFalse);
-    expect(harness.scene.pendingGenerationVersion, isNull);
+    expect(harness.scene.pendingGeneration, isNull);
     expect(harness.scene.failureCategory, 'provider');
-    expect(harness.scene.generationVersion, 1);
+    expect(harness.scene.generation, 1);
     expect(harness.scene.localImagePath, old.localImagePath);
     expect(harness.scene.state, IllustrationSceneState.unlocked);
     expect(harness.api.unlockedSceneIds, isEmpty);
@@ -215,8 +195,8 @@ void main() {
         harness.store.failure = failure;
         await harness.coordinator.advance(harness.book, _passed);
         expect(harness.coordinator.error, isNotNull);
-        expect(harness.scene.generationVersion, 1);
-        expect(harness.scene.pendingGenerationVersion, 2);
+        expect(harness.scene.generation, 1);
+        expect(harness.scene.pendingGeneration, 2);
         expect(harness.scene.localImagePath, old.localImagePath);
         expect(harness.scene.localThumbnailPath, old.localThumbnailPath);
         expect(
@@ -231,13 +211,13 @@ void main() {
 
         harness.store.failure = null;
         await harness.reopen();
-        expect(harness.scene.generationVersion, 1);
-        expect(harness.scene.pendingGenerationVersion, 2);
+        expect(harness.scene.generation, 1);
+        expect(harness.scene.pendingGeneration, 2);
         expect(harness.scene.localImagePath, old.localImagePath);
-        // A process restart retries the pending version without deleting old art.
+        // A process restart retries the pending generation without deleting old art.
         await harness.coordinator.advance(harness.book, _passed);
-        expect(harness.scene.generationVersion, 2);
-        expect(harness.scene.pendingGenerationVersion, isNull);
+        expect(harness.scene.generation, 2);
+        expect(harness.scene.pendingGeneration, isNull);
         expect(await File(old.localImagePath!).exists(), isFalse);
         expect(await File(harness.scene.localImagePath!).exists(), isTrue);
       },
@@ -250,8 +230,8 @@ void main() {
       final harness = await _Harness.create();
       harness.ready(2, alias: true, jpeg: true);
       await harness.coordinator.advance(harness.book, _passed);
-      expect(harness.store.savedVersionTwo, 1);
-      expect(harness.scene.localImagePath, endsWith('.v2.jpg'));
+      expect(harness.store.savedGenerationTwo, 1);
+      expect(harness.scene.localImagePath, endsWith('.2.jpg'));
       expect(harness.scene.localThumbnailPath, harness.scene.localImagePath);
       expect(
         await File(harness.scene.localImagePath!).readAsBytes(),
@@ -263,7 +243,7 @@ void main() {
       await file.rename('${file.path}.bak');
       await file.writeAsString('{broken');
       await harness.reopen();
-      expect(harness.scene.generationVersion, 2);
+      expect(harness.scene.generation, 2);
       expect(harness.scene.localThumbnailPath, harness.scene.localImagePath);
       await harness.coordinator.deleteScene(harness.book, harness.scene);
       expect(await harness.images.list().toList(), isEmpty);
@@ -292,7 +272,7 @@ void main() {
       await harness.coordinator.hide(harness.book, harness.scene);
       api.continueUnlock!.complete();
       await advance;
-      expect(harness.scene.generationVersion, 2);
+      expect(harness.scene.generation, 2);
       expect(harness.scene.state, IllustrationSceneState.hidden);
     },
   );
@@ -366,15 +346,15 @@ void main() {
         _sceneId,
         illustrationJpeg(),
         mimeType: 'image/jpeg',
-        generationVersion: 2,
+        generation: 2,
       );
       final current = harness.coordinator
           .manifestFor(harness.book)
           .copyWith(
             scenes: [
               harness.scene.copyWith(
-                generationVersion: 2,
-                pendingGenerationVersion: null,
+                generation: 2,
+                pendingGeneration: null,
                 localImagePath: image,
                 localThumbnailPath: image,
               ),
@@ -384,7 +364,7 @@ void main() {
       harness.coordinator.manifests[harness.book.hash] = current;
       api.continueUnlock!.complete();
       await replacement;
-      expect(harness.scene.generationVersion, 2);
+      expect(harness.scene.generation, 2);
       expect(harness.scene.localImagePath, image);
       expect(await File(image).readAsBytes(), illustrationJpeg());
     },
@@ -435,7 +415,6 @@ void main() {
               href: 's0',
               spineOrdinal: 0,
               paragraphId: 'missing',
-              cssSelector: '',
               fallbackProgression: .5,
             ),
             state: IllustrationSceneState.readyLocked,
@@ -455,12 +434,12 @@ void main() {
     // A failed download leaves the replacement pending for a later retry.
     harness.store.failure = 'image';
     await harness.coordinator.advance(harness.book, _before);
-    expect(harness.scene.pendingGenerationVersion, 2);
+    expect(harness.scene.pendingGeneration, 2);
     harness.remote(IllustrationSceneState.readyLocked, 1);
     await harness.reopen();
     await harness.coordinator.advance(harness.book, _before);
-    expect(harness.scene.pendingGenerationVersion, 2);
-    expect(harness.scene.generationVersion, 1);
+    expect(harness.scene.pendingGeneration, 2);
+    expect(harness.scene.generation, 1);
   });
 
   test('confirm saves server revision/current provider, retaining admitted jobs and art', () async {
@@ -513,7 +492,7 @@ void main() {
       client.exchanges
           .where((e) => e.method == 'PUT')
           .map((e) => (e.path, e.status)),
-      [('/v1/books/$id/profile', 200)],
+      [('/api/books/$id/profile', 200)],
     );
     void expectSaved() {
       final manifest = harness.coordinator.manifestFor(harness.book);
@@ -528,77 +507,70 @@ void main() {
     expectSaved();
   }, timeout: devApiTimeout);
 
-  test(
-    'version deletion is scene-owned and ignores unrelated files and symlinks',
-    () async {
-      final harness = await _Harness.create();
-      final other = 'b' * 40;
-      final v2 = await harness.store.saveImage(
+  test('generation deletion is scene-owned and ignores unrelated files and symlinks', () async {
+    final harness = await _Harness.create();
+    final other = 'b' * 40;
+    final v2 = await harness.store.saveImage(
+      harness.book,
+      _sceneId,
+      illustrationJpeg(),
+      mimeType: 'image/jpeg',
+      generation: 2,
+    );
+    final otherPath = await harness.store.saveImage(
+      harness.book,
+      other,
+      illustrationPng(),
+      mimeType: 'image/png',
+      generation: 1,
+    );
+    final unrelated = File('${harness.images.path}/$_sceneId.1.png.extra');
+    await unrelated.writeAsString('not owned');
+    final victim = File('${harness.root.path}/private.txt');
+    await victim.writeAsString('private');
+    final link = Link('${harness.images.path}/$_sceneId.3.png');
+    await link.create(victim.path);
+    await harness.store.deleteSceneFiles(harness.book, _sceneId, generation: 1);
+    expect(await File(v2).exists(), isTrue);
+    expect(await File(otherPath).exists(), isTrue);
+    expect(await unrelated.exists(), isTrue);
+    await harness.store.deleteSceneFiles(harness.book, _sceneId);
+    expect(await File(v2).exists(), isFalse);
+    expect(await File(otherPath).exists(), isTrue);
+    expect(await victim.readAsString(), 'private');
+    expect(await link.exists(), isTrue);
+    await expectLater(
+      harness.store.saveImage(
         harness.book,
         _sceneId,
-        illustrationJpeg(),
-        mimeType: 'image/jpeg',
-        generationVersion: 2,
-      );
-      final otherPath = await harness.store.saveImage(
-        harness.book,
-        other,
         illustrationPng(),
         mimeType: 'image/png',
-        generationVersion: 1,
-      );
-      final unrelated = File('${harness.images.path}/$_sceneId.v1.png.extra');
-      await unrelated.writeAsString('not owned');
-      final victim = File('${harness.root.path}/private.txt');
-      await victim.writeAsString('private');
-      final link = Link('${harness.images.path}/$_sceneId.v3.png');
-      await link.create(victim.path);
-      await harness.store.deleteSceneFiles(
+        generation: 3,
+      ),
+      throwsFormatException,
+    );
+    await expectLater(
+      harness.store.saveImage(
         harness.book,
         _sceneId,
-        generationVersion: 1,
-      );
-      expect(await File(v2).exists(), isTrue);
-      expect(await File(otherPath).exists(), isTrue);
-      expect(await unrelated.exists(), isTrue);
-      await harness.store.deleteSceneFiles(harness.book, _sceneId);
-      expect(await File(v2).exists(), isFalse);
-      expect(await File(otherPath).exists(), isTrue);
-      expect(await victim.readAsString(), 'private');
-      expect(await link.exists(), isTrue);
-      await expectLater(
-        harness.store.saveImage(
-          harness.book,
-          _sceneId,
-          illustrationPng(),
-          mimeType: 'image/png',
-          generationVersion: 3,
-        ),
-        throwsFormatException,
-      );
-      await expectLater(
-        harness.store.saveImage(
-          harness.book,
-          _sceneId,
-          illustrationPng(),
-          mimeType: 'image/png',
-          generationVersion: 0,
-        ),
-        throwsFormatException,
-      );
-      await expectLater(
-        harness.store.saveImage(
-          harness.book,
-          _sceneId,
-          illustrationPng(),
-          mimeType: 'image/png',
-          generationVersion: 4,
-          thumbnail: true,
-        ),
-        throwsFormatException,
-      );
-    },
-  );
+        illustrationPng(),
+        mimeType: 'image/png',
+        generation: 0,
+      ),
+      throwsFormatException,
+    );
+    await expectLater(
+      harness.store.saveImage(
+        harness.book,
+        _sceneId,
+        illustrationPng(),
+        mimeType: 'image/png',
+        generation: 4,
+        thumbnail: true,
+      ),
+      throwsFormatException,
+    );
+  });
 
   test(
     'image-directory links cannot redirect saves or scoped deletion',
@@ -606,7 +578,7 @@ void main() {
       final harness = await _Harness.create();
       final external = Directory('${harness.root.path}/external');
       await external.create();
-      final victim = File('${external.path}/$_sceneId.v1.png');
+      final victim = File('${external.path}/$_sceneId.1.png');
       await victim.writeAsString('private');
       await harness.images.rename('${harness.images.path}-owned');
       await Link(harness.images.path).create(external.path);
@@ -616,7 +588,7 @@ void main() {
           _sceneId,
           illustrationPng(),
           mimeType: 'image/png',
-          generationVersion: 2,
+          generation: 2,
         ),
         throwsFormatException,
       );
@@ -670,6 +642,7 @@ class _Harness {
     final source = File('${owned.path}/book.epub');
     await source.writeAsString('source book remains untouched');
     final book = CatalogBook(
+      wordCount: 0,
       hash: hash,
       fileName: 'book.epub',
       path: source.path,
@@ -684,14 +657,14 @@ class _Harness {
       _sceneId,
       illustrationPng(),
       mimeType: 'image/png',
-      generationVersion: 1,
+      generation: 1,
     );
     final thumbnail = await store.saveImage(
       book,
       _sceneId,
       illustrationWebp(),
       mimeType: 'image/webp',
-      generationVersion: 1,
+      generation: 1,
       thumbnail: true,
     );
     await store.saveIndex(
@@ -759,7 +732,7 @@ class _Harness {
 
   void remote(
     IllustrationSceneState state,
-    int version, {
+    int generation, {
     bool regenerating = false,
     String? failureCategory,
   }) {
@@ -772,7 +745,7 @@ class _Harness {
           jobId: 'job-0',
           anchor: _anchor,
           state: state,
-          generationVersion: version,
+          generation: generation,
           regenerating: regenerating,
           failureCategory: failureCategory,
         ),
@@ -780,8 +753,8 @@ class _Harness {
     );
   }
 
-  void ready(int version, {bool alias = false, bool jpeg = false}) {
-    remote(IllustrationSceneState.readyLocked, version);
+  void ready(int generation, {bool alias = false, bool jpeg = false}) {
+    remote(IllustrationSceneState.readyLocked, generation);
     final bytes = jpeg ? illustrationJpeg() : illustrationPng();
     final mime = jpeg ? 'image/jpeg' : 'image/png';
     api.unlockedScenes[_sceneId] = UnlockedIllustration(
@@ -790,7 +763,7 @@ class _Harness {
       imageMimeType: mime,
       thumbnailMimeType: alias ? mime : 'image/webp',
       thumbnailUsesOriginal: alias,
-      generationVersion: version,
+      generation: generation,
       altText: 'Replacement scene',
       caption: 'Replacement caption',
     );
@@ -800,7 +773,7 @@ class _Harness {
 class _FaultingStore extends FileIllustrationStore {
   _FaultingStore(super.root);
   String? failure;
-  int savedVersionTwo = 0;
+  int savedGenerationTwo = 0;
   Completer<void>? imageSaved;
   Completer<void>? continueImage;
   Completer<void>? manifestSaved;
@@ -812,10 +785,10 @@ class _FaultingStore extends FileIllustrationStore {
     String sceneId,
     Uint8List bytes, {
     required String mimeType,
-    required int generationVersion,
+    required int generation,
     bool thumbnail = false,
   }) async {
-    if (generationVersion == 2 && failure == 'thumbnail' && thumbnail) {
+    if (generation == 2 && failure == 'thumbnail' && thumbnail) {
       throw const FileSystemException('Injected thumbnail write failure');
     }
     final path = await super.saveImage(
@@ -823,11 +796,11 @@ class _FaultingStore extends FileIllustrationStore {
       sceneId,
       bytes,
       mimeType: mimeType,
-      generationVersion: generationVersion,
+      generation: generation,
       thumbnail: thumbnail,
     );
-    if (generationVersion == 2) {
-      savedVersionTwo++;
+    if (generation == 2) {
+      savedGenerationTwo++;
       if (failure == 'image' && !thumbnail) {
         throw const FileSystemException('Injected image publication failure');
       }
@@ -845,9 +818,7 @@ class _FaultingStore extends FileIllustrationStore {
     CatalogBook book,
     IllustrationManifest manifest,
   ) async {
-    final replacement = manifest.scenes.any(
-      (scene) => scene.generationVersion == 2,
-    );
+    final replacement = manifest.scenes.any((scene) => scene.generation == 2);
     if (failure == 'manifest' && replacement) {
       throw const FileSystemException('Injected manifest write failure');
     }

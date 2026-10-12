@@ -178,16 +178,16 @@ Future<ReaderController> _accountController({
 
 /// Matches the read-only usage request that Settings refreshes.
 bool _isUsage(http.BaseRequest request) =>
-    request.method == 'GET' && request.url.path == '/v1/account/usage';
+    request.method == 'GET' && request.url.path == '/api/account/usage';
 
 /// Matches the server purge sent by cloud account deletion.
 bool _isAccountDeletion(http.BaseRequest request) =>
-    request.method == 'DELETE' && request.url.path == '/v1/account';
+    request.method == 'DELETE' && request.url.path == '/api/account';
 
 /// Logged usage statuses; null marks an injected network loss.
 List<int?> _usageStatuses(DevApiClient client) => [
   for (final exchange in client.exchanges)
-    if (exchange.path == '/v1/account/usage') exchange.status,
+    if (exchange.path == '/api/account/usage') exchange.status,
 ];
 
 /// Real-network shared identity, created outside the widget test's fake clock.
@@ -278,7 +278,7 @@ void main() {
       expect(identity.signIns, 0);
       expect(
         client.exchanges.where(
-          (exchange) => exchange.path == '/v1/narration/books',
+          (exchange) => exchange.path == '/api/narration/books',
         ),
         isEmpty,
       );
@@ -380,7 +380,7 @@ void main() {
       expect(identity.signIns, 0);
       expect(
         client.exchanges.where(
-          (exchange) => exchange.path == '/v1/narration/books',
+          (exchange) => exchange.path == '/api/narration/books',
         ),
         isEmpty,
       );
@@ -450,12 +450,7 @@ void main() {
     testWidgets(
       'account deletion $failure ($failureStatus) preserves local state and a later 204 clears cloud registration',
       (tester) async {
-        const anchor = TextPosition(
-          version: 1,
-          sectionId: 's0',
-          blockId: 'p1',
-          offset: 2,
-        );
+        const anchor = TextPosition(sectionId: 's0', blockId: 'p1', offset: 2);
         final book = testBook(
           position: anchor,
           progress: .3,
@@ -549,7 +544,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text(failureMessage), findsOneWidget);
         expect(client.exchanges.map((exchange) => '$exchange'), [
-          'DELETE /v1/account -> $failureStatus',
+          'DELETE /api/account -> $failureStatus',
         ]);
         expect(find.text(email), findsWidgets);
         expect(identity.deletions, 0);
@@ -573,8 +568,8 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(client.exchanges.map((exchange) => '$exchange'), [
-          'DELETE /v1/account -> $failureStatus',
-          'DELETE /v1/account -> 204',
+          'DELETE /api/account -> $failureStatus',
+          'DELETE /api/account -> 204',
         ]);
         expect(find.text('You are signed out'), findsOneWidget);
         expect(find.text('Sign in with Google'), findsOneWidget);

@@ -266,10 +266,12 @@ Future<List<Map<String, dynamic>>> _durableMentions(
       final bytes = utf8.encode(page.serializedJson);
       expect(bytes.length, descriptor.byteLength);
       expect(sha256.convert(bytes).toString(), descriptor.checksum);
-      if (page.kind == AnalysisResultPageKind.mentions)
+      if (page.kind == AnalysisResultPageKind.mentions) {
         result.addAll(page.mentions!);
-      if (page.kind == AnalysisResultPageKind.entities)
+      }
+      if (page.kind == AnalysisResultPageKind.entities) {
         entities.addAll(page.entities!);
+      }
     }
     expect({
       for (final entity in entities) entity.names.single.text: entity.kind,
@@ -289,13 +291,11 @@ Future<List<Map<String, dynamic>>> _durableMentions(
         final offset = _sections[ordinal].indexOf(surface);
         expected['${section.id}/$surface'] = {
           'start': TextPosition(
-            version: document.version,
             sectionId: section.id,
             blockId: section.blocks.first.id,
             offset: offset,
           ).toJson(),
           'end': TextPosition(
-            version: document.version,
             sectionId: section.id,
             blockId: section.blocks.first.id,
             offset: offset + surface.length,

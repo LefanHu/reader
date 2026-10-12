@@ -119,25 +119,6 @@ resource "google_identity_platform_default_supported_idp_config" "google" {
   depends_on      = [google_identity_platform_config.auth]
 }
 
-# Preserve the complete provider state while disabling Apple and relaxing its
-# API-side deletion protection. The next apply removes only this provider.
-moved {
-  from = google_identity_platform_default_supported_idp_config.apple
-  to   = google_identity_platform_default_supported_idp_config.apple[0]
-}
-resource "google_identity_platform_default_supported_idp_config" "apple" {
-  provider      = google.quota
-  count         = var.retain_legacy_apple_provider ? 1 : 0
-  project       = google_project.environment.project_id
-  idp_id        = "apple.com"
-  enabled       = false
-  client_id     = var.apple_client_id
-  client_secret = var.apple_client_secret
-
-  deletion_policy = "DELETE"
-  depends_on      = [google_identity_platform_config.auth]
-}
-
 resource "google_firestore_database" "default" {
   project                 = google_project.environment.project_id
   name                    = "(default)"
@@ -199,7 +180,7 @@ resource "google_billing_budget" "monthly" {
   amount {
     specified_amount {
       currency_code = var.budget_currency
-      units         = tostring(var.budget_amount_usd)
+      units         = tostring(var.budget_amount)
     }
   }
 

@@ -4,26 +4,19 @@
 import 'chapter_text_index.dart';
 import 'scene_anchor.dart';
 
-/// Versioned, local-only index used to submit bounded chapter prose.
+/// Local-only index used to submit bounded chapter prose.
 class BookTextIndex {
-  const BookTextIndex({
-    required this.bookHash,
-    required this.chapters,
-    this.version = 2,
-  });
+  const BookTextIndex({required this.bookHash, required this.chapters});
 
-  final int version;
   final String bookHash;
   final List<ChapterTextIndex> chapters;
 
   Map<String, dynamic> toJson() => {
-    'version': version,
     'bookHash': bookHash,
     'chapters': chapters.map((chapter) => chapter.toJson()).toList(),
   };
 
   factory BookTextIndex.fromJson(Map<String, dynamic> json) => BookTextIndex(
-    version: (json['version'] as num?)?.round() ?? 1,
     bookHash: json['bookHash'] as String,
     chapters: (json['chapters'] as List<dynamic>? ?? const [])
         .whereType<Map>()

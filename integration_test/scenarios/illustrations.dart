@@ -150,14 +150,14 @@ void registerIllustrationTests() {
       api.finishRegeneration(success: true);
       await _until(
         tester,
-        () => _scene(app, book).generationVersion == 2,
+        () => _scene(app, book).generation == 2,
         'the polled replacement',
       );
       final replaced = _scene(app, book);
       expect(replaced.regenerating, isFalse);
-      expect(replaced.pendingGenerationVersion, isNull);
+      expect(replaced.pendingGeneration, isNull);
       expect(File(replaced.localImagePath!).existsSync(), isTrue);
-      expect(replaced.localImagePath, endsWith('.v2.jpg'));
+      expect(replaced.localImagePath, endsWith('.2.jpg'));
       expect(File(first.localImagePath!).existsSync(), isFalse);
       expect(app.viewport.navigation.leadingPosition, anchor);
       await _closeGallery(tester);
@@ -172,7 +172,7 @@ void registerIllustrationTests() {
         () => !_scene(app, book).regenerating,
         'the failed replacement to clear',
       );
-      expect(_scene(app, book).generationVersion, 2);
+      expect(_scene(app, book).generation, 2);
       expect(_scene(app, book).localImagePath, replaced.localImagePath);
       expect(File(replaced.localImagePath!).existsSync(), isTrue);
       await _closeGallery(tester);

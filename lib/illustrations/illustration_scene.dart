@@ -25,9 +25,9 @@ class IllustrationScene {
     this.localThumbnailPath,
     this.altText,
     this.caption,
-    this.generationVersion = 1,
+    this.generation = 1,
     this.regenerating = false,
-    this.pendingGenerationVersion,
+    this.pendingGeneration,
     this.failureCategory,
   });
 
@@ -40,15 +40,15 @@ class IllustrationScene {
   final String? altText;
   final String? caption;
 
-  /// Last locally committed image version, not the newest server recipe.
-  final int generationVersion;
+  /// Last locally committed image generation, not the newest server recipe.
+  final int generation;
 
   /// Remote generation progress, independent of the committed local image.
   final bool regenerating;
 
-  /// Newer ready server version awaiting atomic local commit.
+  /// Newer ready server generation awaiting atomic local commit.
   /// Null means no replacement is awaiting download; it never owns local paths.
-  final int? pendingGenerationVersion;
+  final int? pendingGeneration;
   final String? failureCategory;
 
   bool get available =>
@@ -58,16 +58,16 @@ class IllustrationScene {
   static const _unchanged = Object();
 
   /// Omitted nullable fields retain their values; explicit null clears them.
-  /// Replacements preserve committed paths/version until manifest commit.
+  /// Replacements preserve committed paths/generation until manifest commit.
   IllustrationScene copyWith({
     IllustrationSceneState? state,
     Object? localImagePath = _unchanged,
     Object? localThumbnailPath = _unchanged,
     Object? altText = _unchanged,
     Object? caption = _unchanged,
-    int? generationVersion,
+    int? generation,
     bool? regenerating,
-    Object? pendingGenerationVersion = _unchanged,
+    Object? pendingGeneration = _unchanged,
     Object? failureCategory = _unchanged,
   }) => IllustrationScene(
     id: id,
@@ -82,11 +82,11 @@ class IllustrationScene {
         : localThumbnailPath as String?,
     altText: identical(altText, _unchanged) ? this.altText : altText as String?,
     caption: identical(caption, _unchanged) ? this.caption : caption as String?,
-    generationVersion: generationVersion ?? this.generationVersion,
+    generation: generation ?? this.generation,
     regenerating: regenerating ?? this.regenerating,
-    pendingGenerationVersion: identical(pendingGenerationVersion, _unchanged)
-        ? this.pendingGenerationVersion
-        : pendingGenerationVersion as int?,
+    pendingGeneration: identical(pendingGeneration, _unchanged)
+        ? this.pendingGeneration
+        : pendingGeneration as int?,
     failureCategory: identical(failureCategory, _unchanged)
         ? this.failureCategory
         : failureCategory as String?,
@@ -101,10 +101,9 @@ class IllustrationScene {
     if (localThumbnailPath != null) 'localThumbnailPath': localThumbnailPath,
     if (altText != null) 'altText': altText,
     if (caption != null) 'caption': caption,
-    'generationVersion': generationVersion,
+    'generation': generation,
     'regenerating': regenerating,
-    if (pendingGenerationVersion != null)
-      'pendingGenerationVersion': pendingGenerationVersion,
+    if (pendingGeneration != null) 'pendingGeneration': pendingGeneration,
     if (failureCategory != null) 'failureCategory': failureCategory,
   };
 
@@ -122,9 +121,9 @@ class IllustrationScene {
         localThumbnailPath: json['localThumbnailPath'] as String?,
         altText: json['altText'] as String?,
         caption: json['caption'] as String?,
-        generationVersion: (json['generationVersion'] as num?)?.round() ?? 1,
+        generation: json['generation'] as int,
         regenerating: json['regenerating'] as bool? ?? false,
-        pendingGenerationVersion: json['pendingGenerationVersion'] as int?,
+        pendingGeneration: json['pendingGeneration'] as int?,
         failureCategory: json['failureCategory'] as String?,
       );
 }

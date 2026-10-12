@@ -16,7 +16,7 @@ class CatalogBook {
     this.identifier,
     this.language,
     this.coverPath,
-    this.wordCount,
+    required this.wordCount,
     this.lastPosition,
     this.progress = 0,
     this.lastOpenedAt,
@@ -46,9 +46,8 @@ class CatalogBook {
   /// Cached local cover path, or `null` for a generated cover.
   final String? coverPath;
 
-  /// Approximate normalized-text word count; absent until older books backfill.
-  /// This additive field does not change document identities or catalog version.
-  final int? wordCount;
+  /// Approximate normalized-text word count computed at import.
+  final int wordCount;
 
   /// Leading normalized text position, independent of typography and viewport.
   final TextPosition? lastPosition;
@@ -105,7 +104,7 @@ class CatalogBook {
     if (identifier != null) 'identifier': identifier,
     if (language != null) 'language': language,
     if (coverPath != null) 'coverPath': coverPath,
-    if (wordCount != null) 'wordCount': wordCount,
+    'wordCount': wordCount,
     if (lastPosition != null) 'lastPosition': lastPosition!.toJson(),
     'progress': progress,
     'addedAt': addedAt.toUtc().toIso8601String(),
@@ -125,9 +124,7 @@ class CatalogBook {
     identifier: json['identifier'] as String?,
     language: json['language'] as String?,
     coverPath: json['coverPath'] as String?,
-    wordCount: json['wordCount'] is int && (json['wordCount'] as int) >= 0
-        ? json['wordCount'] as int
-        : null,
+    wordCount: json['wordCount'] as int,
     lastPosition: json['lastPosition'] == null
         ? null
         : TextPosition.fromJson(

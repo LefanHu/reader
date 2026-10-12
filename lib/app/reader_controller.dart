@@ -44,9 +44,7 @@ import '../narration/store.dart';
 import '../preferences/preference_settings_store.dart';
 import '../preferences/reader_preferences_coordinator.dart';
 import '../preferences/settings_store.dart';
-import '../text/book_word_counter.dart';
 import '../text/document_store.dart';
-import '../text/file_book_word_counter.dart';
 import '../text/text_position.dart';
 
 /// Narration dependencies installed together; absent graphs have no narration.
@@ -75,7 +73,6 @@ class ReaderController extends ChangeNotifier {
     required BookPicker picker,
     required IllustrationStore illustrationStore,
     required TextIndexer textIndexer,
-    required BookWordCounter wordCounter,
     required IllustrationApi illustrationApi,
     required CloudDeletionOutbox illustrationDeletionOutbox,
     required this.narrationSource,
@@ -90,7 +87,6 @@ class ReaderController extends ChangeNotifier {
       store: catalogStore,
       importer: importer,
       picker: picker,
-      wordCounter: wordCounter,
       changed: notifyListeners,
       acceptedBook: _acceptedBook,
     );
@@ -303,7 +299,6 @@ class ReaderController extends ChangeNotifier {
       illustrationStore: FileIllustrationStore(store.root),
       illustrationApi: HttpIllustrationApi(identity: identity),
       textIndexer: DocumentTextIndexer(),
-      wordCounter: FileBookWordCounter(),
     );
     // The mounted app supplies the actual native lifecycle before any dispatch.
     controller.setAppResumed(false);
@@ -315,7 +310,7 @@ class ReaderController extends ChangeNotifier {
   Future<void> initialize() async {
     await Future.wait([catalog.load(), preferences.load()]);
     if (!narrationSource.requiresCloudRegistration) {
-      // Only old cloud defaults migrate; a removed saved Apple voice stays honest.
+      // Switching providers chooses its default; removed Apple voices stay unavailable.
       if (!preferences.settings.narrationVoice.startsWith('apple:') &&
           narrationSource.defaultVoice != null) {
         await preferences.configure(
@@ -332,7 +327,6 @@ class ReaderController extends ChangeNotifier {
     await analysis?.restore(catalog.books);
     unawaited(illustrations.drainDeletions());
     unawaited(_narrationDeletions.drain());
-    unawaited(catalog.backfillWordCounts());
     unawaited(refreshCloudAccount());
     notifyListeners();
   }

@@ -1,8 +1,5 @@
-"""Offline checks for deployment boundaries and resumable Terraform ownership moves."""
+"""Offline checks for deployment boundaries."""
 import base64
-import contextlib
-import copy
-import io
 import json
 import os
 from pathlib import Path
@@ -11,165 +8,11 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from support import ROOT, load_tool
 
 
-migration = load_tool("migrate_illustration_state")
 defines = load_tool("write_firebase_defines")
-
-
-def fixture_state():
-    """Retain private data and for_each keys so moves exercise complete records."""
-    state = migration.empty_state()
-    state["serial"] = 7
-    for kind, name, key, attributes in [
-        ("google_project", "environment", None, {"id": "reader-test"}),
-        ("google_project_service", "required", "firestore.googleapis.com", {"id": "core-api"}),
-        ("google_project_service", "required", "run.googleapis.com", {"id": "runtime-api"}),
-        ("google_firestore_index", "composite", "illustrationJobs", {"id": "index-1"}),
-        ("random_password", "fingerprint", None, {"id": "password", "result": "private-fingerprint"}),
-        ("google_secret_manager_secret_version", "fingerprint", None, {"id": "secret-1", "secret_data": "private-fingerprint"}),
-    ]:
-        provider = "random" if kind == "random_password" else "google"
-        instance = {"schema_version": 0, "attributes": attributes, "sensitive_attributes": [], "private": "cHJpdmF0ZQ=="}
-        if key is not None:
-            instance["index_key"] = key
-        state["resources"].append({"module": "module.foundation", "mode": "managed", "type": kind,
-                                   "name": name, "provider": f'provider["registry.terraform.io/hashicorp/{provider}"]',
-                                   "instances": [instance]})
-    return state
-
-
-class MigrationTests(unittest.TestCase):
-    """Exercise migration with real local state edits and mocked remote commits."""
-    def setUp(self):
-        self.states = {"foundation": fixture_state(), "illustrations": None}
-        self.events = []
-        self.fail_source = False
-        self.output = io.StringIO()
-        self.original_run = migration.run
-
-    def pull(self, infra, stack):
-        return copy.deepcopy(self.states[stack])
-
-    def terraform_run(self, infra, stack, *args, **kwargs):
-        if args[:2] == ("state", "push"):
-            self.events.append(stack)
-            if stack == "foundation" and self.fail_source:
-                raise RuntimeError("simulated source push failure")
-            state = json.loads(Path(args[2]).read_text())
-            existing = self.states[stack]
-            if existing:
-                self.assertEqual(existing["lineage"], state["lineage"])
-                self.assertGreater(state["serial"], existing["serial"])
-            self.states[stack] = state
-            return ""
-        # Real local Terraform edits verify serialization without touching a backend.
-        self.assertEqual(stack, ".")
-        self.assertFalse((infra / ".terraform").exists())
-        return self.original_run(infra, stack, *args, **kwargs)
-
-    def migrate(self, apply):
-        with patch.object(migration, "pull", self.pull), patch.object(migration, "run", self.terraform_run), contextlib.redirect_stdout(self.output):
-            migration.migrate(ROOT / "infra", apply)
-
-    def test_preview_reports_addresses_without_writing_or_logging_secrets(self):
-        before = copy.deepcopy(self.states)
-        self.migrate(False)
-        self.assertEqual(before, self.states)
-        self.assertEqual([], self.events)
-        self.assertNotIn("private-fingerprint", self.output.getvalue())
-
-    def test_moves_complete_records_and_commits_destination_before_source(self):
-        before = migration.inventory(self.states["foundation"])
-        lineage = self.states["foundation"]["lineage"]
-        self.migrate(True)
-        self.assertEqual(["illustrations", "foundation"], self.events)
-        self.assertEqual(lineage, self.states["foundation"]["lineage"])
-        for address, record in before.items():
-            target = migration.destination(address)
-            stack = "illustrations" if target else "foundation"
-            self.assertEqual(record, migration.inventory(self.states[stack])[target or address])
-        self.assertNotIn("private-fingerprint", self.output.getvalue())
-
-    def test_retry_finishes_after_destination_commit_and_failed_source_push(self):
-        self.fail_source = True
-        with self.assertRaisesRegex(RuntimeError, "simulated"):
-            self.migrate(True)
-        self.assertIsNotNone(self.states["illustrations"])
-        self.assertTrue(any(migration.destination(a) for a in migration.inventory(self.states["foundation"])))
-        self.fail_source = False
-        target = copy.deepcopy(self.states["illustrations"])
-        self.migrate(True)
-        self.assertEqual(target, self.states["illustrations"])
-        self.assertFalse(any(migration.destination(a) for a in migration.inventory(self.states["foundation"])))
-        self.assertEqual(["illustrations", "foundation", "foundation"], self.events)
-        self.migrate(True)
-        self.assertEqual(["illustrations", "foundation", "foundation"], self.events)
-
-    def test_conflicting_destination_stops_before_any_write(self):
-        self.migrate(True)
-        self.states["foundation"] = fixture_state()
-        self.states["illustrations"]["resources"][0]["instances"][0]["attributes"]["id"] = "unexpected"
-        before = copy.deepcopy(self.states)
-        self.events.clear()
-        with self.assertRaisesRegex(RuntimeError, "Conflicting"):
-            self.migrate(True)
-        self.assertEqual(before, self.states)
-        self.assertEqual([], self.events)
-
-    def test_same_resource_ids_with_changed_secret_data_are_rejected(self):
-        self.migrate(True)
-        self.states["foundation"] = fixture_state()
-        password = next(r for r in self.states["illustrations"]["resources"] if r["type"] == "random_password")
-        password["instances"][0]["attributes"]["result"] = "unexpected-secret"
-        before = copy.deepcopy(self.states)
-        self.events.clear()
-        with self.assertRaisesRegex(RuntimeError, "Conflicting"):
-            self.migrate(True)
-        self.assertEqual(before, self.states)
-        self.assertEqual([], self.events)
-
-    def test_empty_installation_needs_no_state_transfer(self):
-        self.states = {"foundation": None, "illustrations": None}
-        self.migrate(True)
-        self.assertEqual([], self.events)
-        self.assertEqual({"foundation": None, "illustrations": None}, self.states)
-
-    def test_failed_destination_push_retains_all_source_ownership(self):
-        before = copy.deepcopy(self.states)
-        original_run = self.terraform_run
-
-        def fail_destination(infra, stack, *args, **kwargs):
-            if stack == "illustrations" and args[:2] == ("state", "push"):
-                raise RuntimeError("simulated destination failure")
-            return original_run(infra, stack, *args, **kwargs)
-
-        with patch.object(migration, "pull", self.pull), patch.object(migration, "run", fail_destination), contextlib.redirect_stdout(self.output):
-            with self.assertRaisesRegex(RuntimeError, "destination failure"):
-                migration.migrate(ROOT / "infra", True)
-        self.assertEqual(before, self.states)
-        self.assertEqual([], self.events)
-
-    def test_concurrent_state_change_stops_before_destination_push(self):
-        calls = 0
-        original_pull = self.pull
-
-        def changed(infra, stack):
-            nonlocal calls
-            result = original_pull(infra, stack)
-            if stack == "foundation":
-                calls += 1
-                if calls > 1:
-                    result["serial"] += 1
-            return result
-
-        with patch.object(migration, "pull", changed), patch.object(migration, "run", self.terraform_run), contextlib.redirect_stdout(self.output):
-            with self.assertRaisesRegex(RuntimeError, "concurrently"):
-                migration.migrate(ROOT / "infra", True)
-        self.assertEqual([], self.events)
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -180,9 +23,11 @@ class ConfigurationTests(unittest.TestCase):
             ios = root / "ios.plist"
             macos = root / "macos.plist"
             output = root / "defines.json"
-            base = {"API_KEY": "ios-key", "GOOGLE_APP_ID": "ios-app", "GCM_SENDER_ID": "sender", "PROJECT_ID": "project"}
+            base = {"API_KEY": "ios-key", "GOOGLE_APP_ID": "ios-app", "GCM_SENDER_ID": "sender", "PROJECT_ID": "project",
+                    "CLIENT_ID": "ios.apps.googleusercontent.com", "REVERSED_CLIENT_ID": "com.googleusercontent.apps.ios"}
             ios.write_bytes(plistlib.dumps(base))
-            macos.write_bytes(plistlib.dumps({**base, "API_KEY": "macos-key", "GOOGLE_APP_ID": "macos-app"}))
+            macos.write_bytes(plistlib.dumps({**base, "API_KEY": "macos-key", "GOOGLE_APP_ID": "macos-app",
+                                            "CLIENT_ID": "macos.apps.googleusercontent.com", "REVERSED_CLIENT_ID": "com.googleusercontent.apps.macos"}))
             defines.write_defines(ios, output, "https://api.test", macos)
             values = json.loads(output.read_text())
             self.assertEqual(values["FIREBASE_MACOS_APP_ID"], "macos-app")
@@ -198,7 +43,8 @@ class ConfigurationTests(unittest.TestCase):
     def test_core_only_defines_omit_endpoint_then_preserve_existing_endpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "firebase.plist"
-            config.write_bytes(plistlib.dumps({"API_KEY": "key", "GOOGLE_APP_ID": "app", "GCM_SENDER_ID": "sender", "PROJECT_ID": "project"}))
+            config.write_bytes(plistlib.dumps({"API_KEY": "key", "GOOGLE_APP_ID": "app", "GCM_SENDER_ID": "sender", "PROJECT_ID": "project",
+                                              "CLIENT_ID": "ios.apps.googleusercontent.com", "REVERSED_CLIENT_ID": "com.googleusercontent.apps.ios"}))
             output = Path(directory) / "defines.json"
             defines.write_defines(config, output)
             self.assertNotIn("ILLUSTRATION_API_BASE_URL", json.loads(output.read_text()))
@@ -222,19 +68,13 @@ if name=='terraform':
         if a.startswith('-var-file=') and os.path.exists(a[10:]):
             with open(os.environ['VARFILE_LOG'],'a') as vf: vf.write(open(a[10:]).read())
     if args==['version','-json']: print('{"terraform_version":"1.14.8"}')
-    if 'pull' in args:
-        if os.environ.get('LEGACY_STATE')=='1':
-            print(json.dumps({'resources':[{'module':'module.foundation','mode':'managed','type':'random_password','name':'fingerprint','provider':'random','instances':[{'attributes':{'id':'test'}}]}]}))
-        elif os.environ.get('APPLE_STATE') in ('protected','disabled'):
-            protected = os.environ['APPLE_STATE']=='protected'
-            print(json.dumps({'resources':[{'module':'module.foundation','mode':'managed','type':'google_identity_platform_default_supported_idp_config','name':'apple','provider':'google','instances':[{'attributes':{'enabled':protected,'deletion_policy':'PREVENT' if protected else 'DELETE','client_id':'legacy-client','client_secret':'never-print-legacy-secret'}}]}]}))
-        else: print('{"resources":[]}')
+    if 'pull' in args: print('{"resources":[]}')
     if 'show' in args: print('{"resource_changes":[]}')
     if 'output' in args:
         key=args[-1]
         if key=='project_id' and os.environ.get('MISSING_CORE')=='1': sys.exit(1)
         if key in ('firebase_config', 'firebase_macos_config'):
-            print(base64.b64encode(plistlib.dumps({'API_KEY':'key','GOOGLE_APP_ID':'app','GCM_SENDER_ID':'sender','PROJECT_ID':'project'})).decode())
+            print(base64.b64encode(plistlib.dumps({'API_KEY':'key','GOOGLE_APP_ID':'app','GCM_SENDER_ID':'sender','PROJECT_ID':'project','CLIENT_ID':'native.apps.googleusercontent.com','REVERSED_CLIENT_ID':'com.googleusercontent.apps.native'})).decode())
         else: print({'google_client_id':'test.apps.googleusercontent.com','project_id':'reader-test','build_service_account':'build@example.test','openai_secret_id':'openai','api_url':'https://api.test','worker_url':'https://worker.test','image':'test@sha256:'+'a'*64}.get(key,''))
     if 'list' in args: print('google_project.state\ngoogle_storage_bucket.state')
 elif name=='gcloud':
@@ -297,31 +137,10 @@ class DeploymentTests(unittest.TestCase):
         config = json.loads((self.root / ".dart-defines/dev.json").read_text())
         self.assertNotIn("ILLUSTRATION_API_BASE_URL", config)
 
-    def test_protected_apple_provider_is_disabled_before_removal_without_new_credentials(self):
-        result, calls = self.execute("deploy_backend", "--scope", "core", APPLE_STATE='protected')
-        self.assertEqual(0, result.returncode, result.stderr)
-        foundation_applies = [c for c in calls if c[0]=='terraform' and '/foundation' in c[1] and 'apply' in c]
-        self.assertEqual(2, len(foundation_applies))
-        self.assertIn('apple-retirement.tfplan', foundation_applies[0][-1])
-        self.assertIn('foundation.tfplan', foundation_applies[1][-1])
-        self.assertNotIn('never-print-legacy-secret', result.stdout + result.stderr + self.log.read_text())
-
-    def test_disabled_apple_retirement_resumes_with_only_final_apply(self):
-        result, calls = self.execute("deploy_backend", "--scope", "core", APPLE_STATE='disabled')
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(1, sum(c[0]=='terraform' and '/foundation' in c[1] and 'apply' in c for c in calls))
-
-    def test_apple_retirement_plan_reviews_transition_without_apply(self):
-        result, calls = self.execute("plan_infra", "--scope", "core", APPLE_STATE='protected')
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertTrue(any('-var=retain_legacy_apple_provider=true' in c for c in calls))
-        self.assertFalse(any('apply' in c for c in calls))
-
-    def test_missing_google_credentials_reports_prerequisite_without_apple_prompt(self):
+    def test_missing_google_credentials_reports_prerequisite(self):
         result, _ = self.execute("plan_infra", "--scope", "core", TF_VAR_google_client_id='', TF_VAR_google_client_secret='')
         self.assertNotEqual(0, result.returncode)
         self.assertIn('configure a Google web OAuth client', result.stderr)
-        self.assertNotIn('Apple', result.stderr)
 
     def test_missing_google_credentials_blocks_deploy_before_cloud_mutation(self):
         result, calls = self.execute("deploy_backend", "--scope", "core", TF_VAR_google_client_id='', TF_VAR_google_client_secret='')
@@ -462,19 +281,6 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse(any('apply' in c and '/foundation' in c[1] for c in calls if c[0]=='terraform'))
         self.assertFalse(any(c[:3]==['gcloud','projects','create'] for c in calls))
-
-    def test_legacy_ownership_blocks_infrastructure_apply(self):
-        result, calls = self.execute("deploy_backend", "--scope", "illustrations", LEGACY_STATE='1')
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn('migrate_backend_state', result.stderr)
-        self.assertFalse(any('apply' in c for c in calls))
-
-    def test_legacy_ownership_blocks_default_deployment_before_bootstrap_apply(self):
-        result, calls = self.execute("deploy_backend", LEGACY_STATE='1')
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn('migrate_backend_state', result.stderr)
-        self.assertFalse(any('apply' in c for c in calls))
-        self.assertFalse(any(c[:3]==['gcloud','billing','projects'] for c in calls))
 
     def test_core_plan_has_no_runtime_image_requirement_or_apply(self):
         result, calls = self.execute("plan_infra", "--scope", "core")

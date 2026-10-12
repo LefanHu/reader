@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import '../importing/book_importer.dart';
 import '../importing/book_picker.dart';
 import '../importing/import_result.dart';
-import '../text/book_word_counter.dart';
 import '../text/text_position.dart';
 import 'catalog_book.dart';
 import 'catalog_store.dart';
@@ -20,8 +19,7 @@ class CatalogSession {
     required this.store,
     required this.importer,
     required this.picker,
-    required this.wordCounter,
-    required this._changed,
+    required this.changed,
     this.acceptedBook,
   });
 
@@ -33,9 +31,6 @@ class CatalogSession {
 
   /// Supplies user-selected import candidates.
   final BookPicker picker;
-
-  /// Counts normalized text independently of cloud indexing.
-  final BookWordCounter wordCounter;
 
   /// Runs only after an accepted import's catalog snapshot is durable.
   /// The composition root queues noninteractive work and must not throw.
@@ -53,7 +48,8 @@ class CatalogSession {
   /// Total candidates in the current import.
   int importTotal = 0;
 
-  final VoidCallback _changed;
+  /// Publishes catalog transactions through the app's sole shared notifier.
+  final VoidCallback changed;
   Timer? _positionSave;
   Future<void>? _positionWrite;
   bool _disposed = false;
@@ -77,7 +73,7 @@ class CatalogSession {
     importing = true;
     importDone = 0;
     importTotal = candidates.length;
-    _changed();
+    changed();
     final results = <ImportResult>[];
     try {
       final hashes = books.map((book) => book.hash).toSet();
@@ -91,12 +87,12 @@ class CatalogSession {
           acceptedBook?.call(imported.book!);
         }
         importDone++;
-        _changed();
+        changed();
       }
       return results;
     } finally {
       importing = false;
-      _changed();
+      changed();
     }
   }
 
@@ -159,27 +155,6 @@ class CatalogSession {
     return null;
   }
 
-  /// Backfills missing counts, merging only into the matching latest live row.
-  ///
-  /// Snapshot identities survive asynchronous counting; hash, path, and addedAt
-  /// checks prevent resurrecting deleted/reimported books or stale positions.
-  Future<void> backfillWordCounts() async {
-    for (final candidate in List<CatalogBook>.of(books)) {
-      if (_disposed) return;
-      if (candidate.wordCount != null) continue;
-      try {
-        final count = await wordCounter.count(candidate.path);
-        if (_disposed) return;
-        final current = isLive(candidate) ? find(candidate) : null;
-        if (current == null || current.wordCount != null) continue;
-        _replace(current.copyWith(wordCount: count));
-        await store.save(books);
-      } on Object {
-        // An unreadable section must not stop other books or offline reading.
-      }
-    }
-  }
-
   /// Removes matching hashes without notifying or performing I/O.
   void removeFromMemory(CatalogBook book) {
     books = books.where((item) => item.hash != book.hash).toList();
@@ -201,10 +176,10 @@ class CatalogSession {
     books = books
         .map((book) => book.hash == updated.hash ? updated : book)
         .toList();
-    _changed();
+    changed();
   }
 
-  /// Fences background count/position work without closing services or writing.
+  /// Fences delayed position work without closing services or writing.
   void dispose() {
     _disposed = true;
     _positionSave?.cancel();

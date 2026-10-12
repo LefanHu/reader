@@ -37,7 +37,6 @@ void main() {
     expect(() => value.cues.clear(), throwsUnsupportedError);
     final decoded = NarrationTiming.fromJson(value.toJson());
     expect(decoded.toJson(), value.toJson());
-    expect(decoded.cues.first.range.start.version, textDocumentVersion);
     expect(decoded.cues.first.range.start.sectionId, 's');
     expect(decoded.cues.first.range.start.blockId, 'p');
     expect(
@@ -73,7 +72,6 @@ void main() {
     () {
       final valid = timing([cue(100, 0, 5)]).toJson();
       for (final changes in <Map<String, dynamic>>[
-        {'version': 2},
         {'durationUs': 0},
         {'durationUs': 1.5},
         {'audioKey': ''},

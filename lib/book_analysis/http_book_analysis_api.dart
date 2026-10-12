@@ -6,11 +6,11 @@ import '../catalog/catalog_book.dart';
 import '../identity/cloud_book_fingerprint.dart';
 import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
-import '../text/text_position.dart';
 import 'analysis_protocol.dart';
 import 'analysis_result.dart';
 import 'analysis_source_models.dart';
-import 'analysis_versions.dart';
+import 'analysis_limits.dart';
+import 'analysis_model.dart';
 import 'api.dart';
 
 /// Authenticated preprocessing REST transport that never prompts for an account.
@@ -32,7 +32,7 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
   static final _pageId = RegExp(
     '^(${AnalysisResultPageKind.values.map((kind) => kind.name).join('|')})-(0|[1-9][0-9]*)\$',
   );
-  static const _prefix = '/v1/book-analysis';
+  static const _prefix = '/api/book-analysis';
 
   @override
   bool get configured => _http.configured;
@@ -59,7 +59,7 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
     _ordinal(sectionCount);
     final key = await _http.json(
       'GET',
-      '/v1/fingerprint-key',
+      '/api/fingerprint-key',
       interactive: false,
       maxBytes: analysisPageMaxBytes,
     );
@@ -68,12 +68,10 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
       throw const FormatException('The server returned no book key.');
     }
     final body = {
-      'schemaVersion': 2,
       'fingerprint': cloudBookFingerprint(book.hash, encodedKey),
       'title': book.title,
       'authors': book.authors,
       'language': book.language,
-      // Shared registration retains the existing schema-2 metadata field.
       'chapterCount': sectionCount,
     };
     _bounded(body);
@@ -97,11 +95,7 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
     String cloudBookId,
   ) async {
     _book(cloudBookId);
-    if (manifest.schemaVersion != analysisSchemaVersion ||
-        manifest.analysisVersion != bookAnalysisVersion ||
-        manifest.promptVersion != analysisPromptVersion ||
-        manifest.model != analysisModel ||
-        manifest.documentVersion != textDocumentVersion) {
+    if (manifest.model != analysisModel) {
       throw const FormatException('Unsupported analysis generation.');
     }
     _hex(manifest.documentDigest);
@@ -172,7 +166,6 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
       ),
     );
     if (progress.generationId != generationId ||
-        progress.documentVersion != textDocumentVersion ||
         progress.processedChunks < 0 ||
         progress.processedChunks > progress.requiredChunks ||
         progress.processedUnits < 0 ||
@@ -247,18 +240,21 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
   }
 
   void _book(String value) {
-    if (!_bookId.hasMatch(value))
+    if (!_bookId.hasMatch(value)) {
       throw const FormatException('Invalid cloud book identity.');
+    }
   }
 
   void _hex(String value) {
-    if (!_digest.hasMatch(value))
+    if (!_digest.hasMatch(value)) {
       throw const FormatException('Invalid analysis identity.');
+    }
   }
 
   void _page(String value) {
-    if (!_pageId.hasMatch(value))
+    if (!_pageId.hasMatch(value)) {
       throw const FormatException('Invalid analysis page identity.');
+    }
   }
 
   void _ordinal(int value) {

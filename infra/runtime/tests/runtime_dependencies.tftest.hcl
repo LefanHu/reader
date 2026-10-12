@@ -43,7 +43,7 @@ variables {
   illustrations_bucket = "reader-test-illustrations"
   apple_bundle_id      = "com.example.reader"
   apple_team_id        = "ABCDEFGHIJ"
-  budget_amount_usd    = 25
+  budget_amount        = 25
   alert_email          = "reader@example.com"
   image                = "us-east1-docker.pkg.dev/reader-test/reader-backend/backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }

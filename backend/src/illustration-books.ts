@@ -4,7 +4,7 @@ import { asyncRoute, HttpError, routeParam } from "./http.js";
 import { bookReference } from "./fences.js";
 import { registerOwnedBook } from "./book-registration.js";
 import { refundReservation } from "./illustration-credits.js";
-import { getIllustrationConfiguration, requireIllustrationProfile, requireIllustrationSchema } from "./illustration-configuration.js";
+import { getIllustrationConfiguration, requireIllustrationProfile } from "./illustration-configuration.js";
 
 function stylesFor(title: string): string[] {
   const normalized = title.toLowerCase();
@@ -25,7 +25,6 @@ export function illustrationBookRegistration(dependencies: { db: Firestore; pilo
   const { db, pilotCredits } = dependencies;
   return asyncRoute(async (req, res) => {
     const uid = req.uid!;
-    requireIllustrationSchema(req.body.schemaVersion);
     const configuration = getIllustrationConfiguration();
     if (!configuration.enabled || !configuration.providers.some(provider => provider.available)) {
       throw new HttpError(503, "Illustrations are currently unavailable.");
@@ -48,7 +47,6 @@ export function illustrationBookRegistration(dependencies: { db: Firestore; pilo
     const styles = stylesFor(req.body.title);
     res.json({
       id: bookId,
-      schemaVersion: 2,
       configuration,
       ...(profile ? { currentProfile: profile } : {}),
       suggestedStyle: styles[0],
@@ -74,8 +72,6 @@ export function illustrationBookDeletion(dependencies: { db: Firestore; storage:
       db.collection("illustrationJobs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
       db.collection("illustrationJobInputs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
       db.collection("creditReservations").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("worldRevisions").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("worldReferences").where("uid", "==", uid).where("bookId", "==", bookId).get(),
       db.collection("bookAnalysisJobs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
       db.collection("bookAnalysisRecords").where("uid", "==", uid).where("bookId", "==", bookId).get(),
       db.collection("bookAnalysisInputs").where("uid", "==", uid).where("bookId", "==", bookId).get(),

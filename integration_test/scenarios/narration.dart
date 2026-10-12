@@ -22,7 +22,7 @@ import '../../test/support/fake_narration_api.dart';
 import '../support/native_test_app.dart';
 import '../support/apple_narration_probe.dart';
 
-/// Actual Apple local generation plus the retained legacy cloud/privacy fixture.
+/// Actual Apple local generation plus the cloud/privacy fixture.
 void registerNarrationTests() {
   testWidgets(
     'installed Apple voices produce probed PCM and native sentence ranges',

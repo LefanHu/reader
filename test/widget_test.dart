@@ -47,6 +47,7 @@ void main() {
       path: '/tmp/z.txt',
       title: 'Another Book',
       authors: const ['Zed'],
+      wordCount: 0,
       progress: 1,
       addedAt: DateTime.utc(2025),
     );

@@ -18,12 +18,11 @@ class GoogleFirebaseDefinesTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.output = self.root / "dev.json"
 
-    def config(self, platform, project="reader", callback=True):
+    def config(self, platform, project="reader"):
         values = dict(API_KEY=f"{platform}-key", GOOGLE_APP_ID=f"{platform}-app",
-                      GCM_SENDER_ID="sender", PROJECT_ID=project)
-        if callback:
-            values.update(CLIENT_ID=f"{platform}.apps.googleusercontent.com",
-                          REVERSED_CLIENT_ID=f"com.googleusercontent.apps.{platform}")
+                      GCM_SENDER_ID="sender", PROJECT_ID=project,
+                      CLIENT_ID=f"{platform}.apps.googleusercontent.com",
+                      REVERSED_CLIENT_ID=f"com.googleusercontent.apps.{platform}")
         path = self.root / f"{platform}.plist"
         path.write_bytes(plistlib.dumps(values))
         return path
@@ -61,39 +60,25 @@ class GoogleFirebaseDefinesTests(unittest.TestCase):
             defines.write_defines(ios, self.output)
         self.assertEqual(before, self.output.read_bytes())
 
-    def test_old_firebase_configuration_without_google_fields_remains_supported(self):
-        defines.write_defines(self.config("ios", callback=False), self.output)
-        self.assertFalse((self.root / "ios.xcconfig").exists())
-
-    def test_supplied_platform_without_google_config_clears_old_callback(self):
-        defines.write_defines(self.config("ios"), self.output, "", self.config("macos"), "web-id")
-        defines.write_defines(self.config("ios", callback=False), self.output,
-                              "", self.config("macos", callback=False))
-        values = json.loads(self.output.read_text())
-        self.assertNotIn("FIREBASE_GOOGLE_CLIENT_ID", values)
-        self.assertNotIn("FIREBASE_GOOGLE_MACOS_CLIENT_ID", values)
-        self.assertFalse((self.root / "ios.xcconfig").exists())
-        self.assertFalse((self.root / "macos.xcconfig").exists())
-
     def test_project_switch_clears_omitted_platform_and_previous_callbacks(self):
         defines.write_defines(self.config("ios"), self.output, "https://old.example",
                               self.config("macos"), "old-server-id")
-        defines.write_defines(self.config("ios", project="new", callback=False), self.output)
+        defines.write_defines(self.config("ios", project="new"), self.output)
         values = json.loads(self.output.read_text())
-        self.assertNotIn("FIREBASE_GOOGLE_CLIENT_ID", values)
+        self.assertEqual("ios.apps.googleusercontent.com", values["FIREBASE_GOOGLE_CLIENT_ID"])
         self.assertNotIn("FIREBASE_GOOGLE_MACOS_CLIENT_ID", values)
         self.assertNotIn("FIREBASE_MACOS_APP_ID", values)
         self.assertNotIn("FIREBASE_GOOGLE_SERVER_CLIENT_ID", values)
         self.assertNotIn("ILLUSTRATION_API_BASE_URL", values)
-        self.assertFalse((self.root / "ios.xcconfig").exists())
+        self.assertTrue((self.root / "ios.xcconfig").exists())
         self.assertFalse((self.root / "macos.xcconfig").exists())
 
     def test_omitted_same_project_platform_reconstructs_matching_callback(self):
         defines.write_defines(self.config("ios"), self.output, "", self.config("macos"))
         (self.root / "macos.xcconfig").write_text("GOOGLE_REVERSED_CLIENT_ID = stale")
-        defines.write_defines(self.config("ios", callback=False), self.output)
+        defines.write_defines(self.config("ios"), self.output)
         self.assertIn("com.googleusercontent.apps.macos", (self.root / "macos.xcconfig").read_text())
-        self.assertFalse((self.root / "ios.xcconfig").exists())
+        self.assertIn("com.googleusercontent.apps.ios", (self.root / "ios.xcconfig").read_text())
 
     def test_mixed_projects_are_rejected_before_native_configuration_is_written(self):
         with self.assertRaisesRegex(ValueError, "share a project"):

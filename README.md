@@ -2,7 +2,7 @@
 
 An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and TXT imports (up to 100 MB each) are normalized by our Dart parser and displayed by a custom viewport using Flutter's text layout engine.
 
-- Library: search by title/author, filter All / Reading / Finished, sort by recent activity or title. macOS uses cover tiles; iPhone/iPad use lists. Approximate word counts use the same normalized text as the reader; older books backfill in the background.
+- Library: search by title/author, filter All / Reading / Finished, sort by recent activity or title. macOS uses cover tiles; iPhone/iPad use lists. Approximate word counts are computed at import from the same normalized text as the reader.
 - Reading: Page flip (interactive paper curl) / Pages / Scroll, Paper / Sepia / Dark palettes applied app-wide, typography controls for book text only. Switching modes, themes, or window sizes retains a grapheme-safe text position.
 - Text selection works in every mode (long-press and handles on iOS, mouse-drag on macOS). Copy keeps normalized text; Look Up opens the OS dictionary; Read from here starts narration at the start of the selection's first paragraph. Selecting never commits reading progress.
 - Edge Back: swiping right from the leftmost 20 logical pixels (at least 64 px) goes Back in Reader and Settings. Reader flushes its full committed position first.
@@ -11,8 +11,6 @@ An offline-first Flutter text reader for iPhone, iPad, and macOS. EPUB 2/3 and T
 - Optional per-book, spoiler-safe AI illustrations built from exactly the displayed text; they unlock once the leading reading position passes their ending paragraph and persist in a local gallery. Art direction and image source are saved per book: OpenAI (initial default), Google (recommended when configured), ByteDance Seedream, Alibaba Qwen, xAI, and BFL FLUX. Settings affect future submissions and explicit regeneration, not ready artwork or admitted jobs.
 - Settings (library gear, or Command-comma on macOS) hold account, appearance, reading, global narration, library defaults, usage, storage, privacy, and app info. Preferences are local and need no account; payments and sync are not included.
 - Storage: source files, normalized sections, and the catalog live under Application Support; reading preferences in SharedPreferences.
-
-Catalog version 2 intentionally discards legacy imported books and Readium reading positions on first launch; global preferences survive. A durable reset marker makes cleanup restartable, and known cloud illustration book IDs are queued for deletion before local data is removed. Startup retries use an existing identity session and never prompt for sign-in.
 
 ## Development
 
@@ -52,7 +50,6 @@ Defines can also be passed individually: `FIREBASE_API_KEY`, `FIREBASE_APP_ID`, 
 - Protected generation on macOS requires macOS 14+ and a supported installation producing valid App Check tokens; OS version and signing alone do not establish App Attest support. Local reading works on older systems.
 - Illustrations sign in with Google only when the reader taps the illustration control, and need per-book consent before chapter prose is uploaded. Configure the native Google OAuth client, Firebase Authentication, App Check/App Attest, and the services in [`backend/README.md`](backend/README.md) before enabling the server-side rollout flag.
 - Illustration source availability is server-owned. Provider keys never enter Flutter or request bodies; the selected generator receives a scene prompt and up to two prior artworks, while OpenAI performs normalized chapter analysis and moderation. No EPUB is uploaded. Every successfully published image costs one illustration credit; failures do not silently switch sources.
-- Illustration schema 2 intentionally discards old illustration sidecars only, requiring fresh per-book consent. Books, complete reading positions, accounts, balances, narration, and global preferences survive. Server cutover requires an explicit quiescent illustration-only maintenance purge; ordinary deployment never performs it. See [`backend/README.md`](backend/README.md).
 - Local macOS builds need development signing and a matching provisioning profile for the Keychain groups used by Google sign-in.
 
 ### Headless iPhone builds and private QR installation
@@ -199,11 +196,11 @@ PROFILE_LABEL=baseline flutter drive --profile -d macos --no-dds \
 
 Use a new label after each code change with the same device/window/settings; omit `PROFILE_LABEL` for a timestamp. Labels are 1–96 letters, digits, underscores, or hyphens, and existing captures are never overwritten. Replace `macos` with a physical iOS device ID if needed; keep the macOS app frontmost. The runner rejects debug/release mode and is not part of `reader_test.dart` or the normal suite.
 
-Output goes to Git-ignored `build/performance/<label>/`: `raw.json` (workload/device metadata, completion flag, per-phase VM timelines, CPU samples, raw frame timings), `summary.json` (per-phase frame count, UI/raster/total median, p95, max, and over-budget counts), and `<phase>_<repetition>_timeline.json`. The budget uses the display refresh rate (or a flagged 60 Hz reference). There is no pass/fail timing threshold; correctness failures or missing data fail the run, and a failed run's data is saved with `complete: false` and must not be compared. A three-minute host timeout excludes build time. Compare captures only when fixture hash, normalization version, device, OS/Flutter version, window, scale, refresh rate, and settings match; record the device and `flutter --version` alongside them.
+Output goes to Git-ignored `build/performance/<label>/`: `raw.json` (workload/device metadata, completion flag, per-phase VM timelines, CPU samples, raw frame timings), `summary.json` (per-phase frame count, UI/raster/total median, p95, max, and over-budget counts), and `<phase>_<repetition>_timeline.json`. The budget uses the display refresh rate (or a flagged 60 Hz reference). There is no pass/fail timing threshold; correctness failures or missing data fail the run, and a failed run's data is saved with `complete: false` and must not be compared. A three-minute host timeout excludes build time. Compare captures only when fixture hash, device, OS/Flutter version, window, scale, refresh rate, and settings match; record the device and `flutter --version` alongside them.
 
 ## Organization
 
-- `lib/catalog/`: catalog records, serial imports, recency, complete text-position persistence, serialized atomic catalog writes, restartable legacy reset.
+- `lib/catalog/`: catalog records, serial imports, recency, complete text-position persistence, serialized atomic catalog writes.
 - `lib/preferences/`: device-local reader settings with serialized persistence and native-audio application queue. `lib/importing/`: selection, isolated parsing, hashing, atomic import staging.
 - `lib/text/`: shared normalized document pipeline, EPUB/TXT parsing, direction detection, lazy section loading, logical navigation. `lib/text/layout/` owns measured section painters (at most two section layouts retained; curl turns keep at most two page textures).
 - `lib/app/reader_controller.dart` is the single shared `ChangeNotifier` coordinating catalog, preferences, illustrations, narration, and account transactions; feature coordinators do not import it or each other. `lib/app/reader_app.dart` owns theme/lifecycle/Settings routing; `lib/main.dart` runs it.
@@ -227,11 +224,11 @@ Deploy authentication with `tool/deploy_backend dev --scope core` after configur
 
 Settings is single-pane on iOS (including tablets); macOS uses a sidebar at widths of at least 700 px with text scale at most 1.5, otherwise compact navigation.
 
-Voice and listening speed are global across books; Settings and the listening sheet edit the same values. Speed changes apply immediately without regenerating audio. Changing voice pauses playback, invalidates the old audio offset, and waits for Play. Saved voices unavailable in the active provider stay visibly unavailable until replaced, but other preference edits still work. Legacy sidecar voice values identify cached/resumable audio, not per-book overrides. At startup a saved `apple:` voice is migrated to the cloud default when the active source is cloud (and a saved cloud voice to the Apple default when it is on-device).
+Voice and listening speed are global across books; Settings and the listening sheet edit the same values. Speed changes apply immediately without regenerating audio. Changing voice pauses playback, invalidates the old audio offset, and waits for Play. Saved voices unavailable in the active provider stay visibly unavailable until replaced, but other preference edits still work. Sidecar voice values identify cached/resumable audio, not per-book overrides. At startup a saved `apple:` voice is migrated to the cloud default when the active source is cloud (and a saved cloud voice to the Apple default when it is on-device).
 
 Library filter/sort defaults are saved separately from temporary choices. Reset preferences restores app-wide defaults without deleting books, account, illustration consent, registrations, or caches. Clearing narration audio stops playback and invalidates audio resume offsets while preserving books, registrations, and text anchors.
 
-Usage & allowance shows only server-reported balances (including outstanding reservations) and unavailable/offline states otherwise. The read-only `/v1/account/usage` endpoint requires Firebase Auth and App Check even while generation is disabled; viewing it neither initializes credits nor registers books. A core-only build can sign in and change local settings without an API deployment.
+Usage & allowance shows only server-reported balances (including outstanding reservations) and unavailable/offline states otherwise. The read-only `/api/account/usage` endpoint requires Firebase Auth and App Check even while generation is disabled; viewing it neither initializes credits nor registers books. A core-only build can sign in and change local settings without an API deployment.
 
 ## Listening to books
 

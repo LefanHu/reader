@@ -24,7 +24,6 @@ class DocumentTextIndexer implements TextIndexer {
       final section = await store.loadSection(sourcePath, summary.id);
       chapters.add(
         ChapterTextIndex(
-          documentVersion: document.version,
           href: section.id,
           spineOrdinal: ordinal,
           title: summary.title,
@@ -34,7 +33,6 @@ class DocumentTextIndexer implements TextIndexer {
               IndexedParagraph(
                 id: section.blocks[i].id,
                 text: section.blocks[i].text,
-                cssSelector: '#${section.blocks[i].id}',
                 ordinal: i,
                 progression: section.blocks.length == 1
                     ? 1

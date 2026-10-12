@@ -11,7 +11,6 @@ class FakeTextIndexer implements TextIndexer {
 
   static const _defaultChapters = [
     ChapterTextIndex(
-      documentVersion: 1,
       href: 's0',
       spineOrdinal: 0,
       title: null,
@@ -19,7 +18,6 @@ class FakeTextIndexer implements TextIndexer {
         IndexedParagraph(
           id: 'paragraph-1',
           text: 'A test paragraph.',
-          cssSelector: 'body > p:nth-of-type(1)',
           ordinal: 0,
           progression: 1,
         ),

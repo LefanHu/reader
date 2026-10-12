@@ -6,13 +6,13 @@ import { analysisSpanHash, analysisChunkHash, analysisOverlapHash } from "./book
 import { ANALYSIS_PAGE_MAX_BYTES, type AnalysisWindowInput, type AnalysisWindowOutput, type AnalysisSourceSpan, type AnalysisEvidence, type AnalysisPosition, type EntityResolutionBatch, type EntityResolutionOutput } from "./book-analysis-types.js";
 import type { ImageHttpOptions } from "./image-provider-http.js";
 
-const position = (offset: number): AnalysisPosition => ({ version: 1, sectionId: "section", blockId: "block", offset });
+const position = (offset: number): AnalysisPosition => ({ sectionId: "section", blockId: "block", offset });
 const evidence = (start: number, end: number): AnalysisEvidence => [{ start: position(start), end: position(end) }];
 function fixture() {
   const text = "Mara meets A\u0301da 👩🏽‍🚀. Mara is also called Ash.";
-  const source: AnalysisSourceSpan = { version: 1, sectionOrdinal: 0, sectionId: "section", blockOrdinal: 0, blockId: "block", startOffset: 0, endOffset: text.length, blockLength: text.length, hash: "", text };
+  const source: AnalysisSourceSpan = { sectionOrdinal: 0, sectionId: "section", blockOrdinal: 0, blockId: "block", startOffset: 0, endOffset: text.length, blockLength: text.length, hash: "", text };
   source.hash = analysisSpanHash(source);
-  const input: AnalysisWindowInput = { generationId: "generation", model: "gpt-6-luna", promptVersion: 1, candidates: [], chunk: { ordinal: 0, hash: analysisChunkHash([source]), primary: [source], overlap: [], overlapHash: analysisOverlapHash([]) } };
+  const input: AnalysisWindowInput = { generationId: "generation", model: "gpt-6-luna", candidates: [], chunk: { ordinal: 0, hash: analysisChunkHash([source]), primary: [source], overlap: [], overlapHash: analysisOverlapHash([]) } };
   const ash = text.indexOf("Ash");
   const output: AnalysisWindowOutput = {
     entities: [{ id: "person", kind: "individual", names: [{ text: "Mara", role: "name", evidence: evidence(0, 4), revealAt: position(0) }, { text: "Ash", role: "alias", evidence: evidence(ash, ash + 3), revealAt: position(0) }], firstIntroduction: position(999) }],
@@ -32,7 +32,7 @@ function liveWire(output: AnalysisWindowOutput) {
 function injected(responseValue: Record<string, unknown>, inspect: (body: Record<string, unknown>) => void = () => {}) {
   let calls = 0, closed = 0;
   const provider = new ResponsesBookAnalysisProvider("private-key", {}, () => ({
-    async postJson(url, headers, body) { calls++; assert.equal(url, "https://api.openai.com/v1/responses"); assert.equal(headers.authorization, "Bearer private-key"); inspect(body); return responseValue; },
+    async postJson(url, headers, body) { calls++; assert.equal(url, "https://api.openai.com/api/responses"); assert.equal(headers.authorization, "Bearer private-key"); inspect(body); return responseValue; },
     close() { closed++; },
   }));
   return { provider, counts: () => ({ calls, closed }) };
@@ -144,7 +144,7 @@ test("transport exceptions are sanitized, operation closes on failure and bounde
 
 function resolutionFixture() {
   const candidates = ["first", "second"].map(id => ({ id, kind: "individual" as const, names: [{ text: "Mara", role: "name" as const, evidence: evidence(0, 4), revealAt: position(4) }], description: "Explicitly identified by a second name.", evidence: evidence(10, 40), firstIntroduction: position(0), identitySupports: [{ evidence: evidence(10, 40), support: "asserted" as const }] }));
-  const batch: EntityResolutionBatch = { generationId: "generation", model: "gpt-6-luna", promptVersion: 1, ordinal: 0, candidates, acceptedMappings: [] };
+  const batch: EntityResolutionBatch = { generationId: "generation", model: "gpt-6-luna", ordinal: 0, candidates, acceptedMappings: [] };
   const output: EntityResolutionOutput = { decisions: [{ entityIds: ["first", "second"], sameIdentity: true, evidence: evidence(10, 40), revealAt: position(40) }], unresolvedEntityIds: [] };
   return { batch, output };
 }

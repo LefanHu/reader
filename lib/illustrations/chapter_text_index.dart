@@ -6,7 +6,6 @@ import 'indexed_paragraph.dart';
 /// Ordered normalized section and deterministic server paragraph mappings.
 class ChapterTextIndex {
   const ChapterTextIndex({
-    required this.documentVersion,
     required this.href,
     required this.spineOrdinal,
     required this.title,
@@ -17,16 +16,12 @@ class ChapterTextIndex {
   /// Normalized section ID used as the backend resource identifier.
   final String href;
 
-  /// `TextDocument.version` the paragraphs were normalized with; sent with
-  /// chapter jobs so server source positions match preprocessing.
-  final int documentVersion;
   final int spineOrdinal;
   final String? title;
   final String? language;
   final List<IndexedParagraph> paragraphs;
 
   Map<String, dynamic> toJson() => {
-    'documentVersion': documentVersion,
     'href': href,
     'spineOrdinal': spineOrdinal,
     if (title != null) 'title': title,
@@ -36,8 +31,6 @@ class ChapterTextIndex {
 
   factory ChapterTextIndex.fromJson(Map<String, dynamic> json) =>
       ChapterTextIndex(
-        // Pre-version caches decode as 0; the index version check rejects them.
-        documentVersion: (json['documentVersion'] as num?)?.round() ?? 0,
         href: json['href'] as String,
         spineOrdinal: (json['spineOrdinal'] as num).round(),
         title: json['title'] as String?,

@@ -1,5 +1,5 @@
 import 'analysis_result.dart';
-import 'analysis_versions.dart';
+import 'analysis_model.dart';
 
 /// Server generation states, distinct from local consent/account waiting states.
 enum AnalysisGenerationStatus {
@@ -91,18 +91,10 @@ class AnalysisFailure {
 class AnalysisConfiguration {
   /// Owner key is opaque, account-specific and never a Firebase UID.
   const AnalysisConfiguration({
-    this.schemaVersion = analysisSchemaVersion,
-    this.analysisVersion = bookAnalysisVersion,
     this.model = analysisModel,
     required this.enabled,
     required this.accountKey,
   });
-
-  /// Supported public wire contract.
-  final int schemaVersion;
-
-  /// Supported extraction/reconciliation contract.
-  final int analysisVersion;
 
   /// Existing feature rollout admission flag.
   final bool enabled;
@@ -115,18 +107,14 @@ class AnalysisConfiguration {
 
   /// Configuration snapshot; contains no provider secrets.
   Map<String, dynamic> toJson() => {
-    'schemaVersion': schemaVersion,
-    'analysisVersion': analysisVersion,
     'enabled': enabled,
     'model': model,
     'accountKey': accountKey,
   };
 
-  /// Rejects future schemas/models rather than silently changing generation identity.
+  /// Rejects unsupported models rather than changing generation identity.
   factory AnalysisConfiguration.fromJson(Map<String, dynamic> json) {
-    if (json['schemaVersion'] != analysisSchemaVersion ||
-        json['analysisVersion'] != bookAnalysisVersion ||
-        json['model'] != analysisModel) {
+    if (json['model'] != analysisModel) {
       throw const FormatException('Unsupported analysis configuration.');
     }
     return AnalysisConfiguration(
@@ -211,7 +199,6 @@ class AnalysisProgress {
     required this.generationId,
     required this.bookId,
     required this.accountKey,
-    required this.documentVersion,
     required this.documentDigest,
     required this.status,
     required this.stage,
@@ -233,9 +220,6 @@ class AnalysisProgress {
 
   /// Opaque account owner fence.
   final String accountKey;
-
-  /// Exact normalized document version.
-  final int documentVersion;
 
   /// Exact normalized primary-coverage digest.
   final String documentDigest;
@@ -275,7 +259,6 @@ class AnalysisProgress {
     'generationId': generationId,
     'bookId': bookId,
     'accountKey': accountKey,
-    'documentVersion': documentVersion,
     'documentDigest': documentDigest,
     'status': status.name,
     'stage': stage.wire,
@@ -295,7 +278,6 @@ class AnalysisProgress {
         generationId: json['generationId'] as String,
         bookId: json['bookId'] as String,
         accountKey: json['accountKey'] as String,
-        documentVersion: json['documentVersion'] as int,
         documentDigest: json['documentDigest'] as String,
         status: AnalysisGenerationStatus.values.byName(
           json['status'] as String,

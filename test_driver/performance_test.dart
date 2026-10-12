@@ -54,7 +54,6 @@ Future<void> main() async {
         );
       }
       final summary = {
-        'schema_version': data['schema_version'],
         'complete': data['complete'] == true,
         'recorded_at_utc': DateTime.now().toUtc().toIso8601String(),
         'metadata': metadata,

@@ -56,7 +56,7 @@ class _FailingClearStore extends MemoryNarrationStore {
 
 /// Matches the read-only usage request that the coordinator fences.
 bool _isUsage(http.BaseRequest request) =>
-    request.method == 'GET' && request.url.path == '/v1/account/usage';
+    request.method == 'GET' && request.url.path == '/api/account/usage';
 
 /// Real account boundary on the dev backend sharing [client]'s exchange log.
 HttpAccountApi _devAccountApi(CloudIdentity identity, DevApiClient client) =>
@@ -176,12 +176,7 @@ void main() {
         preferences.firstWrite.complete();
       }
     });
-    const anchor = TextPosition(
-      version: 1,
-      sectionId: 's0',
-      blockId: 'p1',
-      offset: 2,
-    );
+    const anchor = TextPosition(sectionId: 's0', blockId: 'p1', offset: 2);
     await controller.savePosition(controller.catalog.books.single, anchor, .3);
     final book = controller.catalog.books.single;
     await controller.registerNarration(book);
@@ -291,7 +286,7 @@ void main() {
       expect(notifications, beforeDispose);
       await controller.refreshAccountUsage();
       expect(client.exchanges.map((exchange) => '$exchange'), [
-        'GET /v1/account/usage -> 200',
+        'GET /api/account/usage -> 200',
       ]);
     },
     timeout: devApiTimeout,
@@ -316,7 +311,7 @@ void main() {
       expect(controller.accountUsage, isNull);
       expect(controller.usageLoading, false);
       expect(client.exchanges.map((exchange) => '$exchange'), [
-        'GET /v1/account/usage -> 200',
+        'GET /api/account/usage -> 200',
       ]);
     },
     timeout: devApiTimeout,
@@ -341,7 +336,7 @@ void main() {
       expect(controller.cloudEmail, 'dev-api-test-shared-b@dev-api.test');
       expect(controller.accountUsage, isNull);
       expect(client.exchanges.map((exchange) => '$exchange'), [
-        'GET /v1/account/usage -> 200',
+        'GET /api/account/usage -> 200',
       ]);
     },
     timeout: devApiTimeout,
@@ -405,12 +400,7 @@ void main() {
       narrationStore: _FailingClearStore(),
       narrationDocuments: MemoryDocumentStore(),
     );
-    const anchor = TextPosition(
-      version: 1,
-      sectionId: 's0',
-      blockId: 'p1',
-      offset: 2,
-    );
+    const anchor = TextPosition(sectionId: 's0', blockId: 'p1', offset: 2);
     await controller.savePosition(controller.catalog.books.single, anchor, .3);
     await expectLater(
       controller.deleteCloudAccount(),
@@ -423,7 +413,7 @@ void main() {
       ),
     );
     expect(client.exchanges.map((exchange) => '$exchange'), [
-      'DELETE /v1/account -> 204',
+      'DELETE /api/account -> 204',
     ]);
     expect(identity.deletions, 1);
     expect(identity.email, isNull);

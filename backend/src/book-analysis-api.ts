@@ -30,7 +30,7 @@ export function bookAnalysisApiRouter(deps: {
   const store = new BookAnalysisStore(db);
   const router = express.Router();
   router.get("/config", asyncRoute(async (req, res) => {
-    res.json({ schemaVersion: 1, analysisVersion: 1, enabled: getIllustrationConfiguration().enabled,
+    res.json({ enabled: getIllustrationConfiguration().enabled,
       model: ANALYSIS_MODEL, accountKey: bookAnalysisAccountKey(req.uid!, fingerprintSecret) });
   }));
   router.post("/books", requireFeature, asyncRoute(async (req, res) => {
@@ -55,7 +55,7 @@ export function bookAnalysisApiRouter(deps: {
     const g = await store.readGeneration(req.uid!, routeParam(req, "generationId"));
     const progress: AnalysisProgress = {
       generationId: g.generationId, bookId: g.bookId, accountKey: bookAnalysisAccountKey(req.uid!, fingerprintSecret),
-      documentVersion: g.admission.documentVersion, documentDigest: g.admission.documentDigest,
+      documentDigest: g.admission.documentDigest,
       status: g.status, stage: g.cursor.stage, processedChunks: g.processedChunks,
       requiredChunks: g.admission.chunkCount, processedUnits: g.processedUnits, requiredUnits: g.requiredUnits,
       nextCursor: g.status === "complete" || g.status === "failed" ? null : g.cursor,

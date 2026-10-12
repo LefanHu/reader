@@ -169,7 +169,7 @@ class DevApiIdentity implements CloudIdentity {
     final client = devNetworkClient();
     try {
       await client.delete(
-        DevApiEnvironment.instance.baseUri.resolve('/v1/account'),
+        DevApiEnvironment.instance.baseUri.resolve('/api/account'),
         headers: {
           'authorization': 'Bearer ${_tokens.idToken}',
           'x-firebase-appcheck': _tokens.appCheckToken,

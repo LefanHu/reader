@@ -58,7 +58,7 @@ export class DiagnosticImageProvider implements ImageGenerationProvider {
     const operation = createImageOperation(this.options);
     try {
       const token = await operation.bounded(this.token(origin));
-      const result = await operation.postJson(`${origin}/v1/render`, { authorization: `Bearer ${token}` }, {
+      const result = await operation.postJson(`${origin}/render`, { authorization: `Bearer ${token}` }, {
         prompt, referenceCount: referenceImages.length,
       });
       if (typeof result.data !== "string" || typeof result.mimeType !== "string") {

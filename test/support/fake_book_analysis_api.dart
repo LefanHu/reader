@@ -184,7 +184,6 @@ class FakeBookAnalysisApi implements BookAnalysisApi {
       generationId: generationId,
       bookId: generation.bookId,
       accountKey: generation.owner,
-      documentVersion: manifest.documentVersion,
       documentDigest: manifest.documentDigest,
       status: generation.status,
       stage: stage,
@@ -260,13 +259,11 @@ class FakeBookAnalysisApi implements BookAnalysisApi {
             final offset = source.text.indexOf(surface.key, from);
             if (offset < 0) break;
             final start = TextPosition(
-              version: source.version,
               sectionId: source.sectionId,
               blockId: source.blockId,
               offset: source.startOffset + offset,
             );
             final end = TextPosition(
-              version: source.version,
               sectionId: source.sectionId,
               blockId: source.blockId,
               offset: start.offset + surface.key.length,

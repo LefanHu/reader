@@ -184,7 +184,7 @@ void main() {
       client: client,
     );
     final hold = client.hold(
-      (r) => r.method == 'DELETE' && r.url.path == '/v1/account',
+      (r) => r.method == 'DELETE' && r.url.path == '/api/account',
     );
     unawaited(
       hold.started.then((_) {
@@ -201,7 +201,7 @@ void main() {
       ['reauth', 'purge', 'delete-user', 'google-out'],
     );
     expect(client.exchanges.map((e) => (e.method, e.path, e.status)), [
-      ('DELETE', '/v1/account', 204),
+      ('DELETE', '/api/account', 204),
     ]);
   }, timeout: devApiTimeout);
   test(
@@ -257,7 +257,7 @@ void main() {
         client: client,
       );
       client.missingRoute(
-        (r) => r.method == 'DELETE' && r.url.path == '/v1/account',
+        (r) => r.method == 'DELETE' && r.url.path == '/api/account',
       );
       await expectLater(
         api.deleteAccount(),
@@ -274,8 +274,8 @@ void main() {
       final bookId = 'f' * 64;
       await narration.deleteBook(bookId);
       expect(client.exchanges.map((e) => e.path), [
-        '/v1/account',
-        '/v1/narration/books/$bookId',
+        '/api/account',
+        '/api/narration/books/$bookId',
       ]);
       expect(client.exchanges.map((e) => e.status), [404, 204]);
       expect(events, isNot(contains('delete-user')));

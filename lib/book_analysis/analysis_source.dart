@@ -6,7 +6,7 @@ import '../text/document_store.dart';
 import '../text/grapheme_boundary.dart';
 import '../text/text_section.dart';
 import 'analysis_source_models.dart';
-import 'analysis_versions.dart';
+import 'analysis_limits.dart';
 
 /// SHA-256 of compact primitive JSON; identical to Node JSON.stringify arrays.
 String analysisPrimitiveHash(List<Object?> value) =>
@@ -14,7 +14,6 @@ String analysisPrimitiveHash(List<Object?> value) =>
 
 /// Hashes untouched normalized text and its original block-local coordinates.
 String analysisSpanHash({
-  required int version,
   required int sectionOrdinal,
   required String sectionId,
   required int blockOrdinal,
@@ -23,7 +22,6 @@ String analysisSpanHash({
   required int endOffset,
   required String text,
 }) => analysisPrimitiveHash([
-  version,
   sectionOrdinal,
   sectionId,
   blockOrdinal,
@@ -175,7 +173,6 @@ class AnalysisSource {
           if (units + block.text.length > analysisPrimaryTarget) flush();
           add(
             _span(
-              document.version,
               sectionOrdinal,
               section.id,
               blockOrdinal,
@@ -201,7 +198,6 @@ class AnalysisSource {
           }
           add(
             _span(
-              document.version,
               sectionOrdinal,
               section.id,
               blockOrdinal,
@@ -221,7 +217,6 @@ class AnalysisSource {
     flush();
     final pages = analysisDescriptorPages(chunks);
     return AnalysisSourceManifest(
-      documentVersion: document.version,
       documentDigest: analysisPrimitiveHash(
         chunks.map((chunk) => <Object?>[chunk.ordinal, chunk.hash]).toList(),
       ),
@@ -250,8 +245,7 @@ class AnalysisSource {
     for (final group in [descriptor.overlap, descriptor.primary]) {
       final target = identical(group, descriptor.overlap) ? overlap : primary;
       for (final span in group) {
-        if (span.version != document.version ||
-            span.sectionOrdinal < 0 ||
+        if (span.sectionOrdinal < 0 ||
             span.sectionOrdinal >= document.sections.length ||
             document.sections[span.sectionOrdinal].id != span.sectionId) {
           throw const FormatException('Analysis source section changed.');
@@ -283,7 +277,6 @@ class AnalysisSource {
           throw const FormatException('Analysis source splits a grapheme.');
         }
         final loaded = _span(
-          span.version,
           span.sectionOrdinal,
           span.sectionId,
           span.blockOrdinal,
@@ -324,7 +317,6 @@ class AnalysisSource {
 }
 
 AnalysisSourceSpan _span(
-  int version,
   int sectionOrdinal,
   String sectionId,
   int blockOrdinal,
@@ -334,7 +326,6 @@ AnalysisSourceSpan _span(
   int end,
   String text,
 ) => AnalysisSourceSpan(
-  version: version,
   sectionOrdinal: sectionOrdinal,
   sectionId: sectionId,
   blockOrdinal: blockOrdinal,
@@ -344,7 +335,6 @@ AnalysisSourceSpan _span(
   endOffset: end,
   text: text,
   hash: analysisSpanHash(
-    version: version,
     sectionOrdinal: sectionOrdinal,
     sectionId: sectionId,
     blockOrdinal: blockOrdinal,
@@ -369,7 +359,6 @@ List<AnalysisSourceSpan> _tail(List<AnalysisSourceSpan> spans, int budget) {
     if (start < span.text.length) {
       reversed.add(
         _span(
-          span.version,
           span.sectionOrdinal,
           span.sectionId,
           span.blockOrdinal,

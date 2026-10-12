@@ -6,7 +6,6 @@ class IndexedParagraph {
   const IndexedParagraph({
     required this.id,
     required this.text,
-    required this.cssSelector,
     required this.ordinal,
     required this.progression,
   });
@@ -14,16 +13,15 @@ class IndexedParagraph {
   final String id;
   final String text;
 
-  /// Deterministic block selector retained for backend wire compatibility.
-  /// Unlocking uses paragraph identity, never DOM visibility.
-  final String cssSelector;
+  /// Zero-based block order in the normalized section.
   final int ordinal;
+
+  /// Section progress at the paragraph's release boundary.
   final double progression;
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'text': text,
-    'cssSelector': cssSelector,
     'ordinal': ordinal,
     'progression': progression,
   };
@@ -32,7 +30,6 @@ class IndexedParagraph {
       IndexedParagraph(
         id: json['id'] as String,
         text: json['text'] as String,
-        cssSelector: json['cssSelector'] as String,
         ordinal: (json['ordinal'] as num).round(),
         progression: (json['progression'] as num).toDouble().clamp(0, 1),
       );

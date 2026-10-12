@@ -11,14 +11,14 @@ import type { AnalysisChunkInput, AnalysisGenerationAdmission, AnalysisReceipt, 
 
 function source(texts = ["Mara arrives.", "The valley remains dark."]) {
   const inputs: AnalysisChunkInput[] = texts.map((text, ordinal) => {
-    const span: AnalysisSourceSpan = { version: 7, sectionOrdinal: ordinal, sectionId: `section-${ordinal}`,
+    const span: AnalysisSourceSpan = { sectionOrdinal: ordinal, sectionId: `section-${ordinal}`,
       blockOrdinal: 0, blockId: `block-${ordinal}`, startOffset: 0, endOffset: text.length, blockLength: text.length, hash: "", text };
     span.hash = analysisSpanHash(span);
     return { ordinal, hash: analysisChunkHash([span]), primary: [span], overlap: [], overlapHash: analysisOverlapHash([]) };
   });
   const chunks = inputs.map(input => ({ ...input, primary: input.primary.map(({ text: _text, ...span }) => span) }));
-  const admission: AnalysisGenerationAdmission = { schemaVersion: 1, analysisVersion: 1, promptVersion: 1,
-    model: "gpt-6-luna", documentVersion: 7, documentDigest: analysisDocumentDigest(chunks), sectionCount: texts.length,
+  const admission: AnalysisGenerationAdmission = { 
+    model: "gpt-6-luna", documentDigest: analysisDocumentDigest(chunks), sectionCount: texts.length,
     blockCount: texts.length, chunkCount: texts.length, pageCount: texts.length,
     sections: texts.map((_text, ordinal) => ({ ordinal, id: `section-${ordinal}`, blockCount: 1 })) };
   return { inputs, chunks, admission };
@@ -38,7 +38,7 @@ async function fixture(action: (f: {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
   app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = req.header("x-test-owner") ?? "owner"; next(); });
-  app.use("/v1/book-analysis", bookAnalysisApiRouter({ db: memory.firestore, fingerprintSecret,
+  app.use("/api/book-analysis", bookAnalysisApiRouter({ db: memory.firestore, fingerprintSecret,
     requireFeature: (_req, _res, next) => next(enabled ? undefined : new HttpError(503, "Service unavailable.")),
     enqueue: async (path, payload, taskId) => {
       tasks.push({ path, payload, taskId });
@@ -52,13 +52,13 @@ async function fixture(action: (f: {
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address();
   assert(address && typeof address === "object");
-  const request = (path: string, method = "GET", body?: unknown, uid = "owner") => fetch(`http://127.0.0.1:${address.port}/v1/book-analysis${path}`, {
+  const request = (path: string, method = "GET", body?: unknown, uid = "owner") => fetch(`http://127.0.0.1:${address.port}/api/book-analysis${path}`, {
     method, headers: { "content-type": "application/json", "x-test-owner": uid }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   try {
     await action({ memory, store, tasks, request,
       register: async () => {
-        const response = await request("/books", "POST", { schemaVersion: 2, fingerprint: "fixture", title: "Fixture", chapterCount: 2, uid: "intruder" });
+        const response = await request("/books", "POST", { fingerprint: "fixture", title: "Fixture", chapterCount: 2, uid: "intruder" });
         assert.equal(response.status, 200);
         return (await response.json() as { bookId: string }).bookId;
       },
@@ -117,7 +117,7 @@ test("analysis registration has no image/profile/credit coupling; rollout-off re
     f.enabled(false);
     const before = f.memory.events.length;
     const config = await (await f.request("/config")).json() as Record<string, unknown>;
-    assert.deepEqual(config, { schemaVersion: 1, analysisVersion: 1, enabled: false, model: "gpt-6-luna", accountKey: bookAnalysisAccountKey("owner", "test-secret") });
+    assert.deepEqual(config, { enabled: false, model: "gpt-6-luna", accountKey: bookAnalysisAccountKey("owner", "test-secret") });
     const progress = await f.request(`/generations/${generationId}`);
     assert.equal(progress.status, 200);
     assert.equal((await progress.json() as Record<string, unknown>).uid, undefined);
@@ -140,7 +140,7 @@ test("generation admissions adopt identical identity and reject conflicting head
     assert.equal((await f.request(`/generations/${generationId}/manifest-pages/0`, "PUT", { chunks: source().chunks }, "other")).status, 404);
     assert.equal((await f.request(`/generations/${generationId}/chunks/0`, "POST", source().inputs[0], "other")).status, 404);
     assert.equal((await f.request(`/generations/${generationId}/finalize`, "POST", {}, "other")).status, 404);
-    f.memory.values.set(`users/owner/books/${bookId}`, { schemaVersion: 2, uid: "owner", deleted: true });
+    f.memory.values.set(`users/owner/books/${bookId}`, { uid: "owner", deleted: true });
     assert.equal((await f.request(`/books/${bookId}/generations`, "POST", admission)).status, 410);
   });
 });
@@ -249,7 +249,7 @@ test("client-driven finalization publishes only durable immutable result pages a
     const repeated = await (await f.request(`${base}/finalize`, "POST", {})).json() as AnalysisReceipt;
     assert.equal(first.jobId, repeated.jobId);
     const claimed = await f.store.claim(first.jobId!); assert(claimed);
-    const page: AnalysisResultPage = { schemaVersion: 1, generationId, pageId: "entities-0", kind: "entities", ordinal: 0, entities: [] };
+    const page: AnalysisResultPage = { generationId, pageId: "entities-0", kind: "entities", ordinal: 0, entities: [] };
     await f.store.writeStagingPages(claimed.claim, [page]);
     assert.equal((await f.request(`${base}/pages/entities-0`)).status, 404);
     await assert.rejects(f.store.publish(claimed.claim, [f.store.pageDescriptor(page)]), error => error instanceof HttpError && error.status === 409);
@@ -285,7 +285,7 @@ test("client-driven finalization publishes only durable immutable result pages a
     assert.deepEqual(await (await f.request(`${base}/pages/entities-0`)).json(), page);
     f.enabled(false);
     assert.equal((await f.request(`${base}/pages/entities-0`)).status, 200);
-    f.memory.values.set(`users/owner/books/${bookId}`, { uid: "owner", schemaVersion: 2, deleted: true });
+    f.memory.values.set(`users/owner/books/${bookId}`, { uid: "owner", deleted: true });
     assert.equal((await f.request(`${base}/pages/entities-0`)).status, 410);
   });
 });
@@ -308,7 +308,7 @@ test("publication remains private until every checksum batch completes with the 
     let receipt = await (await f.request(`${base}/finalize`, "POST", {})).json() as AnalysisReceipt;
     let unit = await f.store.claim(receipt.jobId!); assert(unit);
     const pages: AnalysisResultPage[] = Array.from({ length: 33 }, (_, ordinal) => ({
-      schemaVersion: 1, generationId, pageId: `entities-${ordinal}`, kind: "entities", ordinal, entities: [],
+      generationId, pageId: `entities-${ordinal}`, kind: "entities", ordinal, entities: [],
     }));
     const descriptors = await f.store.writeStagingPages(unit.claim, pages);
     for (const stage of ["materialize", "index", "publish"] as const) {
@@ -347,9 +347,9 @@ test("expiry timestamps restore the same input before submission and book deleti
     await f.store.commitExtraction(second.claim, []);
     const finalReceipt = await (await f.request(`/generations/${generationId}/finalize`, "POST", {})).json() as AnalysisReceipt;
     const finalizer = await f.store.claim(finalReceipt.jobId!); assert(finalizer);
-    f.memory.values.set(`users/owner/books/${bookId}`, { uid: "owner", schemaVersion: 2, deleted: true });
+    f.memory.values.set(`users/owner/books/${bookId}`, { uid: "owner", deleted: true });
     const writes = f.memory.events.length;
-    const page: AnalysisResultPage = { schemaVersion: 1, generationId, pageId: "late", kind: "entities", ordinal: 0, entities: [] };
+    const page: AnalysisResultPage = { generationId, pageId: "late", kind: "entities", ordinal: 0, entities: [] };
     await assert.rejects(f.store.writeStagingPages(finalizer.claim, [page]), CancelledAnalysisClaim);
     await assert.rejects(f.store.commitFinalization(finalizer.claim, { stage: "materialize", ordinal: 0 }), CancelledAnalysisClaim);
     await assert.rejects(f.store.publish(finalizer.claim, []), CancelledAnalysisClaim);
@@ -373,7 +373,7 @@ test("missing owner fingerprint secret cannot issue an account key or register m
   await fixture(async f => {
     assert.equal((await f.request("/config")).status, 503);
     const registration = await f.request("/books", "POST", {
-      schemaVersion: 2, fingerprint: "fixture", title: "Fixture", chapterCount: 1,
+      fingerprint: "fixture", title: "Fixture", chapterCount: 1,
     });
     assert.equal(registration.status, 503);
     assert.equal(f.memory.values.size, 0);

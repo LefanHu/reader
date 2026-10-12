@@ -1,12 +1,12 @@
 import 'dart:convert';
 
-import 'analysis_versions.dart';
+import 'analysis_limits.dart';
+import 'analysis_model.dart';
 
 /// Prose-free identity and exact offsets of one normalized source slice.
 class AnalysisSpanDescriptor {
   /// Empty blocks are represented by start=end=0, never used as evidence.
   const AnalysisSpanDescriptor({
-    required this.version,
     required this.sectionOrdinal,
     required this.sectionId,
     required this.blockOrdinal,
@@ -16,9 +16,6 @@ class AnalysisSpanDescriptor {
     required this.blockLength,
     required this.hash,
   });
-
-  /// Normalization version, not the analysis schema version.
-  final int version;
 
   /// Zero-based section position in the normalized document.
   final int sectionOrdinal;
@@ -46,7 +43,6 @@ class AnalysisSpanDescriptor {
 
   /// Prose-free manifest representation.
   Map<String, dynamic> toJson() => {
-    'version': version,
     'sectionOrdinal': sectionOrdinal,
     'sectionId': sectionId,
     'blockOrdinal': blockOrdinal,
@@ -60,7 +56,6 @@ class AnalysisSpanDescriptor {
   /// Restores an exact descriptor; the source mapper validates actual text.
   factory AnalysisSpanDescriptor.fromJson(Map<String, dynamic> json) =>
       AnalysisSpanDescriptor(
-        version: json['version'] as int,
         sectionOrdinal: json['sectionOrdinal'] as int,
         sectionId: json['sectionId'] as String,
         blockOrdinal: json['blockOrdinal'] as int,
@@ -76,7 +71,6 @@ class AnalysisSpanDescriptor {
 class AnalysisSourceSpan extends AnalysisSpanDescriptor {
   /// Attaches untouched normalized text to its verified descriptor.
   const AnalysisSourceSpan({
-    required super.version,
     required super.sectionOrdinal,
     required super.sectionId,
     required super.blockOrdinal,
@@ -93,7 +87,6 @@ class AnalysisSourceSpan extends AnalysisSpanDescriptor {
 
   /// Drops prose before retaining coverage metadata.
   AnalysisSpanDescriptor get descriptor => AnalysisSpanDescriptor(
-    version: version,
     sectionOrdinal: sectionOrdinal,
     sectionId: sectionId,
     blockOrdinal: blockOrdinal,
@@ -111,7 +104,6 @@ class AnalysisSourceSpan extends AnalysisSpanDescriptor {
   /// Restores transient transport text; not a persisted source-manifest decoder.
   factory AnalysisSourceSpan.fromJson(Map<String, dynamic> json) =>
       AnalysisSourceSpan(
-        version: json['version'] as int,
         sectionOrdinal: json['sectionOrdinal'] as int,
         sectionId: json['sectionId'] as String,
         blockOrdinal: json['blockOrdinal'] as int,
@@ -321,13 +313,9 @@ class AnalysisDescriptorPage {
 
 /// Deterministic generation source identity, containing coverage but no prose.
 class AnalysisSourceManifest {
-  /// Model and analysis versions are immutable across retries.
+  /// Model identity is immutable across retries.
   const AnalysisSourceManifest({
-    this.schemaVersion = analysisSchemaVersion,
-    this.analysisVersion = bookAnalysisVersion,
-    this.promptVersion = analysisPromptVersion,
     this.model = analysisModel,
-    required this.documentVersion,
     required this.documentDigest,
     required this.sectionCount,
     required this.blockCount,
@@ -337,20 +325,8 @@ class AnalysisSourceManifest {
     required this.chunks,
   });
 
-  /// Persisted contract version.
-  final int schemaVersion;
-
-  /// Extraction/reconciliation semantics version.
-  final int analysisVersion;
-
-  /// Immutable extraction instructions version.
-  final int promptVersion;
-
   /// Immutable extraction model snapshot.
   final String model;
-
-  /// Normalization version shared with source positions.
-  final int documentVersion;
 
   /// SHA-256 of ordered compact [ordinal, primaryHash] pairs.
   final String documentDigest;
@@ -375,11 +351,7 @@ class AnalysisSourceManifest {
 
   /// Admission omits chunks, which are uploaded as bounded manifest pages.
   Map<String, dynamic> toAdmissionJson() => {
-    'schemaVersion': schemaVersion,
-    'analysisVersion': analysisVersion,
-    'promptVersion': promptVersion,
     'model': model,
-    'documentVersion': documentVersion,
     'documentDigest': documentDigest,
     'sectionCount': sectionCount,
     'blockCount': blockCount,
@@ -394,16 +366,12 @@ class AnalysisSourceManifest {
     'chunks': chunks.map((chunk) => chunk.toJson()).toList(),
   };
 
-  /// Restores supported metadata without touching unsupported future schemas.
+  /// Restores metadata for the configured extraction model.
   factory AnalysisSourceManifest.fromJson(Map<String, dynamic> json) {
-    if (json['schemaVersion'] != analysisSchemaVersion ||
-        json['analysisVersion'] != bookAnalysisVersion ||
-        json['promptVersion'] != analysisPromptVersion ||
-        json['model'] != analysisModel) {
+    if (json['model'] != analysisModel) {
       throw const FormatException('Unsupported book analysis manifest.');
     }
     return AnalysisSourceManifest(
-      documentVersion: json['documentVersion'] as int,
       documentDigest: json['documentDigest'] as String,
       sectionCount: json['sectionCount'] as int,
       blockCount: json['blockCount'] as int,

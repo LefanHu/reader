@@ -19,6 +19,7 @@ CatalogBook testBook({
   path: '/tmp/test.txt',
   title: 'Test Book',
   authors: const ['Test Author'],
+  wordCount: 1000,
   addedAt: DateTime.utc(2026),
   lastPosition: position,
   progress: progress,

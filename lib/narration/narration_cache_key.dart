@@ -17,21 +17,17 @@ String narrationCacheKey(
   jsonEncode(
     manifest.engine == 'openai-realtime'
         ? {
-            // Keep this cloud identity byte-for-byte compatible with version-1 caches.
             'account': manifest.account,
             'book': book.hash,
-            'document': chunk.start.version,
-            'chunkVersion': narrationChunkVersion,
             'chunk': chunk.id,
             'digest': chunk.digest,
             'model': 'gpt-realtime-2.1-mini',
             'voice': manifest.voice,
-            'format': 'pcm-24000-mono-v1',
+            'format': 'pcm-24000-mono',
           }
         : {
             'engine': manifest.engine,
             'book': book.hash,
-            'document': chunk.start.version,
             'start': chunk.start.toJson(),
             'end': chunk.end.toJson(),
             'sentence': sentence?.toJson(),
@@ -40,7 +36,7 @@ String narrationCacheKey(
             'voice': manifest.voice,
             'synthesisFingerprint': manifest.synthesisFingerprint,
             'rate': 'AVSpeechUtteranceDefaultSpeechRate',
-            'format': 'apple-pcm16-native-v1',
+            'format': 'apple-pcm16-native',
           },
   ),
 );

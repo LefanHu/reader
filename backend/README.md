@@ -21,7 +21,7 @@ docker build --platform linux/amd64 -t reader-backend-dev backend
   rollout gates, error translation. `src/http.ts`: bounded validation and
   expected HTTP errors.
 - `src/illustration-books.ts` (registration/deletion, pilot credits),
-  `illustration-jobs.ts` (`/v1` profile/job routes), `illustration-scenes.ts`
+  `illustration-jobs.ts` (`/api` profile/job routes), `illustration-scenes.ts`
   (scene delivery, regeneration, cleanup), `illustration-worker.ts` (claims,
   planning, settlement, moderation, guarded publication),
   `illustration-credits.ts`, `fences.ts` (deletion-fence lookups).
@@ -66,7 +66,7 @@ The mobile build supplies Firebase/API values with `--dart-define`.
   Terraform module. Identity relations use the reserved property `same_identity`.
   Result pages publish in batches of 32 per finalization call; clients resume by
   repeating `POST .../finalize` until status is `complete`.
-- Book preprocessing registration shares the schema-2 owned book identity and
+- Book preprocessing registration shares the owned book identity and
   tombstones, but does not initialize image credits or modify illustration
   profiles. `bookAnalysisJobs` and `bookAnalysisRecords` hold book-owned
   intents/pages; bounded raw windows live in `bookAnalysisInputs` with a
@@ -106,7 +106,7 @@ most two private inline continuity references:
 
 `diagnostic` ("Pipeline test (prompt as text)") proves the whole illustration
 pipeline without a paid provider. A separately deployed Cloud Run service
-(`node dist/image-test-provider-server.js`, same image; `POST /v1/render`) returns a
+(`node dist/image-test-provider-server.js`, same image; `POST /render`) returns a
 white 3:2 PNG showing the exact prompt the worker sent (art direction, world
 state, scene facts, source scene), `references: N`, and a truncation notice for
 prompts beyond 36 wrapped lines. Terraform creates it only when
@@ -144,17 +144,8 @@ tool/deploy_backend dev
 ```
 
 `--scope core` deploys accounts/shared infrastructure; `--scope illustrations`
-requires core to exist already; omitting scope runs both. Existing foundation
-state must migrate before either path is applied. See
-[`../infra/README.md`](../infra/README.md) for state bootstrap, migration
-safeguards, secrets and drift review.
-
-### Schema-2 cutover reset
-
-`npm run reset:illustrations -- --project P --bucket B` reports obsolete
-illustration records (dry run). `--apply --maintenance` deletes them while keeping
-users, tombstones, `narrationBooks`, `narrationAccountTombstones` and
-`users/{uid}/narration/`. See [`../infra/README.md`](../infra/README.md).
+requires core to exist already; omitting scope runs both. See
+[`../infra/README.md`](../infra/README.md) for bootstrap, secrets and drift review.
 
 ## Illustration privacy and lifecycle guarantees
 
@@ -180,9 +171,9 @@ users, tombstones, `narrationBooks`, `narrationAccountTombstones` and
   source range and the admitted temporal `context`). Raw chapter text lives only
   in the 24-hour-TTL input until the guarded commit deletes it. Terminal states
   remove the plan.
-- Image intents (`POST /books/:id/chapters/:n/jobs`) require `documentVersion` and
-  a complete preprocessing generation of that exact version, else 409 `Book
-  preprocessing is not complete.` with no intent, input or credit mutation.
+- Image intents (`POST /api/books/:id/chapters/:n/jobs`) require the book's latest
+  preprocessing generation to be complete, else 409 `Book preprocessing is not
+  complete.` with no intent, input or credit mutation.
   `book-analysis-context.ts` snapshots into each scene recipe only facts that are
   `asserted`, applicable at the scene's story time by partial-order reachability,
   not superseded, and revealed by the scene end; vetted world baselines
@@ -199,7 +190,7 @@ users, tombstones, `narrationBooks`, `narrationAccountTombstones` and
 - Deletion: scene delete fences, refunds, removes assets, leaves a `deleted`
   tombstone (delivery 404). Book delete writes a durable tombstone first, then
   purges everything owned (profile/jobs/registration then return 410).
-  `DELETE /v1/account` purges prose, jobs, scenes, history, reservations, user
+  `DELETE /api/account` purges prose, jobs, scenes, history, reservations, user
   records, storage prefix and narration data, leaving only the account tombstone
   that fences delayed workers; shared daily usage keeps submitted charges.
   Firebase identity deletion is the native client's job after HTTP success.
@@ -207,18 +198,18 @@ users, tombstones, `narrationBooks`, `narrationAccountTombstones` and
 - The first illustration registration initializes pilot credits; later
   registrations keep balances. Deleted account/book fences reject registration
   with 410.
-- Schema 2 registers salted book/job identities and rejects legacy mutation
-  payloads before writes. `GET /v1/illustrations/config` requires Auth/App Check,
-  stays readable with rollout off, returns all six sources and `no-store`.
+- Book/job identities are salted. `GET /api/illustrations/config` requires
+  Auth/App Check, stays readable with rollout off, returns all six sources and
+  `no-store`.
 - The saved book profile has a server-owned revision. No-op saves retain it;
   stale differing updates return 409. Chapter admission snapshots style,
-  density, provider, exact model and immutable `reader-landscape-v1` preset.
+  density, provider, exact model and immutable `reader-landscape` preset.
   Queued work never rereads live preferences or model environment overrides.
 - Settings apply to unscheduled chapters and paid explicit regeneration.
   Free expiry refresh retains the published recipe. Pending replacements keep
   prior assets and spoiler/reveal state until new downloads and manifest commit.
-  Local `generationVersion` and paths remain committed artwork;
-  `regenerating` is independent progress and `pendingGenerationVersion` denotes
+  Local `generation` and paths remain committed artwork;
+  `regenerating` is independent progress and `pendingGeneration` denotes
   a newer ready replacement. Server `unlocked` does not bypass the device's
   ending-paragraph gate. Terminal failure clears pending progress, not artwork;
   replacing a hidden/dismissed scene never repeats automatic reveal.
@@ -245,14 +236,14 @@ Firebase registrations; the feature stack owns the queue, input TTL and indexes.
 
 Authenticated routes:
 
-- `GET /v1/narration/config`: rollout, model/voices, remaining UTC-month allowance.
-- `POST /v1/narration/books`: fingerprint only; no prose.
-- `POST /v1/narration/books/:bookId/jobs`: exact prose, SHA-256 digest, chunk ID,
-  document/chunk versions, `marin`/`cedar` voice. Idempotent.
-- `GET /v1/narration/jobs/:jobId`: status plus a ten-minute download URL for live,
+- `GET /api/narration/config`: rollout, model/voices, remaining UTC-month allowance.
+- `POST /api/narration/books`: fingerprint only; no prose.
+- `POST /api/narration/books/:bookId/jobs`: exact prose, SHA-256 digest, chunk ID,
+  `marin`/`cedar` voice. Idempotent.
+- `GET /api/narration/jobs/:jobId`: status plus a ten-minute download URL for live,
   unexpired audio owned by the caller.
-- `DELETE /v1/narration/books/:bookId`: tombstone and purge; works with rollout off.
-- `DELETE /v1/account`: purges narration before the client deletes identity.
+- `DELETE /api/narration/books/:bookId`: tombstone and purge; works with rollout off.
+- `DELETE /api/account`: purges narration before the client deletes identity.
 
 Worker `/internal/narration/:jobId` claims a job with a four-minute lease and
 claim token, then calls OpenAI Realtime (`gpt-realtime-2.1-mini`, fixed
@@ -276,7 +267,7 @@ no live provider calls.
 
 ## Account usage
 
-`GET /v1/account/usage` needs the verified Firebase ID token and App Check token,
+`GET /api/account/usage` needs the verified Firebase ID token and App Check token,
 stays readable with both rollout flags off, derives ownership from the token
 only, and returns `Cache-Control: no-store` with:
 
@@ -293,7 +284,7 @@ reservations until cleanup runs. Missing monthly usage means the full allowance.
 ## Approved dev live smoke
 
 Use only a disposable, authenticated dev account, after deployment/provider-spend
-approval. Never run account deletion against a real user's identity. Every `/v1`
+approval. Never run account deletion against a real user's identity. Every `/api`
 request needs `Authorization: Bearer <Firebase ID token>` and
 `X-Firebase-AppCheck: <App Check token>`; never log those, provider keys, passage
 bodies or signed URLs; never fabricate App Check tokens. No public test bypass
@@ -302,46 +293,42 @@ exists. Both rollout flags must be on for the full recipe.
 | Request | Body / assertion |
 | --- | --- |
 | `GET /health` | 200 `{"ok":true}`, no auth (Cloud Run reserves some `z`-suffixed paths). |
-| `GET /v1/account/usage` | 200, `no-store`; flags true, nonnegative narration allowance; fresh illustration credits null. Keep as baseline. |
-| `GET /v1/fingerprint-key` | 200, base64 `key`; derive the account-scoped HMAC-SHA256 fingerprint of a disposable book identifier. |
-| `GET /v1/illustrations/config` | 200, `schemaVersion:2`, all six sources, availability, OpenAI default, `no-store`; readable with rollout off. |
-| `POST /v1/books` | `{"schemaVersion":2,"fingerprint":"<64-hex>","title":"The Lantern Courtyard","authors":["Dev smoke"],"language":"en","chapterCount":1}` → 200, salted 40-hex `id`, configuration/current profile, suggested style, two alternatives, `estimatedCredits:3`. |
-| `PUT /v1/books/:bookId/profile` | `{"schemaVersion":2,"providerId":"openai","style":"<suggestedStyle>","density":1,"expectedRevision":0,"analysisVersion":2}` → 200, saved profile with `revision:1`. |
-| `POST /v1/books/:bookId/chapters/0/jobs` | Chapter body below → 202, 40-hex job `id`; exact repeat returns same ID, no second charge. |
-| `GET /v1/jobs/:jobId` | Poll `queued`/`analyzing` → `complete` with at least one `ready_locked` scene (scene-less `complete` is not success). Anchor `href`, paragraph ID, selector, progression match the submission. |
-| `POST /v1/scenes/:sceneId/unlock` | 200, signed URLs, verified image/thumbnail MIME, alias flag, alt text, caption, `generationVersion:1`. Decode the landscape original and preview using returned MIME; aliased FLUX preview is byte-identical to its original. Bare object URLs are inaccessible. |
-| `POST /v1/scenes/:sceneId/regenerate` | 202; poll to ready; unlock → 200, `generationVersion:2`, decodable new native-format image. |
-| `GET /v1/account/usage` | Initial + paid regeneration spend exactly two credits; reserved returns to 0. Re-registering the book or registering another fingerprint grants/resets nothing. |
-| `GET /v1/narration/config` | 200, `enabled:true`, model `gpt-realtime-2.1-mini`, voices `marin`/`cedar`, limits, allowance. |
-| `POST /v1/narration/books` | `{"fingerprint":"<64-hex>"}` → 200, 64-hex `id`, matching `account`; illustration balances unchanged. |
-| `POST /v1/narration/books/:bookId/jobs` | Narration body below → 200, 64-hex `id`; exact repeat: same ID, no second reservation. |
-| `GET /v1/narration/jobs/:jobId` | Poll to `ready` with ten-minute `url`; fetch RIFF/WAVE 24 kHz mono 16-bit PCM; listen for the exact passage, no introduction. Repeat with `voice:"cedar"` and a new chunk ID. |
-| `GET /v1/account/usage` | Two voice jobs reduce narration remaining by twice the passage UTF-16 length; credits unchanged; agrees with config. |
-| `DELETE /v1/scenes/:sceneId` | 204; unlock → 404; reference/objects removed. |
-| `DELETE /v1/books/:bookId` | 204; profile/job/same-fingerprint registration → 410; only the tombstone remains. Delete the second registration too. |
-| `DELETE /v1/narration/books/:bookId` | 204; old job delivery and new submission → 410; audio removed, submitted allowance stays charged. |
-| `DELETE /v1/account` | 204; privately verify full purge except account tombstone and shared daily usage. Delete Firebase identity only afterward. Old job delivery → 404; new registrations with the old token → 410. |
+| `GET /api/account/usage` | 200, `no-store`; flags true, nonnegative narration allowance; fresh illustration credits null. Keep as baseline. |
+| `GET /api/fingerprint-key` | 200, base64 `key`; derive the account-scoped HMAC-SHA256 fingerprint of a disposable book identifier. |
+| `GET /api/illustrations/config` | 200, all six sources, availability, OpenAI default, `no-store`; readable with rollout off. |
+| `POST /api/books` | `{"fingerprint":"<64-hex>","title":"The Lantern Courtyard","authors":["Dev smoke"],"language":"en","chapterCount":1}` → 200, salted 40-hex `id`, configuration/current profile, suggested style, two alternatives, `estimatedCredits:3`. |
+| `PUT /api/books/:bookId/profile` | `{"providerId":"openai","style":"<suggestedStyle>","density":1,"expectedRevision":0}` → 200, saved profile with `revision:1`. |
+| `POST /api/books/:bookId/chapters/0/jobs` | Chapter body below → 202, 40-hex job `id`; exact repeat returns same ID, no second charge. |
+| `GET /api/jobs/:jobId` | Poll `queued`/`analyzing` → `complete` with at least one `ready_locked` scene (scene-less `complete` is not success). Anchor `href`, paragraph ID and progression match the submission. |
+| `POST /api/scenes/:sceneId/unlock` | 200, signed URLs, verified image/thumbnail MIME, alias flag, alt text, caption, `generation:1`. Decode the landscape original and preview using returned MIME; aliased FLUX preview is byte-identical to its original. Bare object URLs are inaccessible. |
+| `POST /api/scenes/:sceneId/regenerate` | 202; poll to ready; unlock → 200, `generation:2`, decodable new native-format image. |
+| `GET /api/account/usage` | Initial + paid regeneration spend exactly two credits; reserved returns to 0. Re-registering the book or registering another fingerprint grants/resets nothing. |
+| `GET /api/narration/config` | 200, `enabled:true`, model `gpt-realtime-2.1-mini`, voices `marin`/`cedar`, limits, allowance. |
+| `POST /api/narration/books` | `{"fingerprint":"<64-hex>"}` → 200, 64-hex `id`, matching `account`; illustration balances unchanged. |
+| `POST /api/narration/books/:bookId/jobs` | Narration body below → 200, 64-hex `id`; exact repeat: same ID, no second reservation. |
+| `GET /api/narration/jobs/:jobId` | Poll to `ready` with ten-minute `url`; fetch RIFF/WAVE 24 kHz mono 16-bit PCM; listen for the exact passage, no introduction. Repeat with `voice:"cedar"` and a new chunk ID. |
+| `GET /api/account/usage` | Two voice jobs reduce narration remaining by twice the passage UTF-16 length; credits unchanged; agrees with config. |
+| `DELETE /api/scenes/:sceneId` | 204; unlock → 404; reference/objects removed. |
+| `DELETE /api/books/:bookId` | 204; profile/job/same-fingerprint registration → 410; only the tombstone remains. Delete the second registration too. |
+| `DELETE /api/narration/books/:bookId` | 204; old job delivery and new submission → 410; audio removed, submitted allowance stays charged. |
+| `DELETE /api/account` | 204; privately verify full purge except account tombstone and shared daily usage. Delete Firebase identity only afterward. Old job delivery → 404; new registrations with the old token → 410. |
 
 Chapter body (omits optional metadata to exercise strict Firestore serialization):
 
 ```json
 {
   "href": "smoke.xhtml",
-  "schemaVersion": 2,
   "profileRevision": 1,
-  "analysisVersion": 2,
   "paragraphs": [
     {
       "id": "p0",
       "text": "Mira, wearing a blue coat, stepped into a quiet stone courtyard at dusk. A brass lantern glowed beside the arched gate.",
-      "cssSelector": "#p0",
       "ordinal": 0,
       "progression": 0
     },
     {
       "id": "p1",
       "text": "She set the lantern on a wooden table beneath the flowering tree. Golden light fell across the stone walls and the silver leaves.",
-      "cssSelector": "#p1",
       "ordinal": 1,
       "progression": 1
     }
@@ -357,9 +344,7 @@ lowercase SHA-256 of a stable disposable anchor; length counts UTF-16 units):
   "text": "The lantern glowed beside the quiet courtyard gate.",
   "digest": "<64-hex SHA-256>",
   "chunkId": "<64-hex SHA-256>",
-  "voice": "marin",
-  "documentVersion": 1,
-  "chunkVersion": 1
+  "voice": "marin"
 }
 ```
 

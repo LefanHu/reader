@@ -2,10 +2,6 @@ import 'dart:typed_data';
 
 import 'epub.dart';
 
-/// Fixed mixed-script workload; bump when prose/navigation changes so reports
-/// from different workloads are not mistaken for before/after measurements.
-const performanceFixtureVersion = 1;
-
 /// Paragraph count and navigation target stay fixed across profiling runs.
 const performanceParagraphCount = 300;
 

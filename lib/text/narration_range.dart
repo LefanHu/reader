@@ -1,12 +1,11 @@
 import 'text_position.dart';
 
-/// A nonempty, exclusive source range within one normalized block/version.
+/// A nonempty, exclusive source range within one normalized block.
 /// Offsets must additionally be checked against the source's grapheme boundaries.
 class NarrationRange {
   /// Rejects empty, reversed or mixed-identity ranges before presentation.
   NarrationRange(this.start, this.end) {
-    if (start.version != end.version ||
-        start.sectionId != end.sectionId ||
+    if (start.sectionId != end.sectionId ||
         start.blockId != end.blockId ||
         start.sectionId.isEmpty ||
         start.blockId.isEmpty ||
@@ -24,13 +23,12 @@ class NarrationRange {
 
   /// Whether another full-identity range lies wholly within this range.
   bool contains(NarrationRange other) =>
-      start.version == other.start.version &&
       start.sectionId == other.start.sectionId &&
       start.blockId == other.start.blockId &&
       start.offset <= other.start.offset &&
       end.offset >= other.end.offset;
 
-  /// Complete anchors used by version-1 timing cue JSON.
+  /// Complete anchors used by timing cue JSON.
   Map<String, dynamic> toJson() => {
     'start': start.toJson(),
     'end': end.toJson(),

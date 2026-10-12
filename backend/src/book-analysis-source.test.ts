@@ -10,7 +10,7 @@ import {
 } from "./book-analysis-source.js";
 
 function source(text: string, blockOrdinal = 0, startOffset = 0, blockLength = text.length): AnalysisSourceSpan {
-  const span: AnalysisSourceSpan = { version: 1, sectionOrdinal: 0, sectionId: "s", blockOrdinal,
+  const span: AnalysisSourceSpan = { sectionOrdinal: 0, sectionId: "s", blockOrdinal,
     blockId: `b${blockOrdinal}`, startOffset, endOffset: startOffset + text.length, blockLength, text, hash: "" };
   span.hash = analysisSpanHash(span);
   return span;
@@ -25,15 +25,15 @@ function chunk(ordinal: number, primary: AnalysisSourceSpan[], overlap: Analysis
 function manifest(inputs: AnalysisChunkInput[], blockCount: number): AnalysisSourceManifest {
   const chunks: AnalysisChunkDescriptor[] = inputs.map((input) => ({ ...input,
     primary: input.primary.map(descriptor), overlap: input.overlap.map(descriptor) }));
-  return { schemaVersion: 1, analysisVersion: 1, promptVersion: 1, model: "gpt-6-luna",
-    documentVersion: 1, documentDigest: analysisDocumentDigest(chunks), sectionCount: 2,
+  return { model: "gpt-6-luna",
+    documentDigest: analysisDocumentDigest(chunks), sectionCount: 2,
     blockCount, chunkCount: chunks.length, pageCount: chunks.length ? 1 : 0,
     sections: [{ ordinal: 0, id: "s", blockCount }, { ordinal: 1, id: "empty", blockCount: 0 }], chunks };
 }
 
 test("primitive-array hash preserves combining accents, emoji and original whitespace", () => {
   const span = { ...source("e\u0301😀\n"), blockId: "b" };
-  assert.equal(analysisSpanHash(span), "67584d0116c4d0c25f86497defc735a6fa070df9fdb5e8f6fc2da12ce73f8f7d");
+  assert.equal(analysisSpanHash(span), "5380d185b9087be7937b2ee1ce4c0e2ee659a0fe3684ec10c0e858bee725dfa0");
   assert.notEqual(analysisSpanHash(span), analysisSpanHash({ ...span, text: span.text.normalize("NFC") }));
 });
 
@@ -42,7 +42,7 @@ test("primary coverage preserves empty blocks and empty sections without accepti
   const result = manifest([input], 2);
   validateAnalysisSourceManifest(result);
   validateAnalysisChunkInput(input, result.chunks[0]!);
-  const position = { version: 1, sectionId: "s", blockId: "b0", offset: 0 };
+  const position = { sectionId: "s", blockId: "b0", offset: 0 };
   assert.throws(() => validateAnalysisEvidenceSpan({ start: position, end: position }, input.primary[0]!),
     AnalysisSourceValidationError);
   validateAnalysisSourceManifest(manifest([], 0));
@@ -75,7 +75,7 @@ test("gaps, duplicate block identities, reordered chunks and incomplete coverage
 
 test("grapheme-invalid evidence and source splits are rejected rather than snapped", () => {
   const span = source("e\u0301😀");
-  const position = { version: 1, sectionId: "s", blockId: "b0", offset: 0 };
+  const position = { sectionId: "s", blockId: "b0", offset: 0 };
   validateAnalysisEvidenceSpan({ start: position, end: { ...position, offset: 2 } }, span, "e\u0301");
   for (const offset of [1, 3]) {
     assert.throws(() => validateAnalysisEvidenceSpan({ start: position, end: { ...position, offset } }, span),

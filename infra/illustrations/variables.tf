@@ -44,8 +44,8 @@ variable "illustrations_bucket" {
   type        = string
 }
 
-variable "budget_amount_usd" {
-  description = "Monthly budget in budget_currency; legacy variable name retained for environment compatibility."
+variable "budget_amount" {
+  description = "Monthly budget in budget_currency."
   type        = number
 }
 
@@ -63,12 +63,6 @@ variable "budget_currency" {
 variable "alert_email" {
   description = "Email address receiving budget and operational alerts."
   type        = string
-}
-
-variable "enable_existing_imports" {
-  description = "Imports the pre-Terraform development project resources during initial adoption."
-  type        = bool
-  default     = false
 }
 
 variable "state_bucket" {

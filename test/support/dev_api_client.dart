@@ -84,13 +84,13 @@ class DevApiClient extends http.BaseClient {
   }
 
   static final _paidRoutes = [
-    RegExp(r'^/v1/books/[^/]+/chapters/\d+/jobs$'),
-    RegExp(r'^/v1/scenes/[^/]+/(unlock|regenerate)$'),
-    RegExp(r'^/v1/narration/books/[^/]+/jobs$'),
-    RegExp(r'^/v1/book-analysis/generations/[^/]+/(chunks/\d+|finalize)$'),
+    RegExp(r'^/api/books/[^/]+/chapters/\d+/jobs$'),
+    RegExp(r'^/api/scenes/[^/]+/(unlock|regenerate)$'),
+    RegExp(r'^/api/narration/books/[^/]+/jobs$'),
+    RegExp(r'^/api/book-analysis/generations/[^/]+/(chunks/\d+|finalize)$'),
   ];
 
-  static const _missingRoutePath = '/v1/dev-api-test/missing-route';
+  static const _missingRoutePath = '/api/dev-api-test/missing-route';
 
   final http.Client _inner;
 

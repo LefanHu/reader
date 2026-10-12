@@ -48,7 +48,6 @@ type ScenePlan = {
     href: string;
     spineOrdinal: number;
     paragraphId: string;
-    cssSelector: string;
     fallbackProgression: number;
   };
   altText: string;
@@ -98,8 +97,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
       readBookFence(transaction, db, "books", claim.uid, claim.bookId),
     ]);
     const data = record.data();
-    if (!data || data.schemaVersion !== 2 || fence.book.data()?.schemaVersion !== 2 ||
-      data.deleted || data[claim.tokenField] !== claim.token || !fence.live) throw new CancelledClaim();
+    if (!data || data.deleted || data[claim.tokenField] !== claim.token || !fence.live) throw new CancelledClaim();
     // A still-owned but expired lease must be retried, not acknowledged and stranded.
     if ((data[claim.leaseField]?.toMillis() ?? 0) <= Date.now()) {
       throw new HttpError(409, "Illustration claim expired.");
@@ -147,11 +145,11 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     const jobData = await db.runTransaction(async (transaction) => {
       const job = await transaction.get(jobRef);
       const data = job.data();
-      if (!data || data.schemaVersion !== 2 || data.deleted) return null;
+      if (!data || data.deleted) return null;
       if (["complete", "failed", "insufficient_credits"].includes(data.status)) return null;
       if ((data.leaseUntil?.toMillis() ?? 0) > Date.now()) return null;
       const fence = await readBookFence(transaction, db, "books", data.uid, data.bookId);
-      if (!fence.live || fence.book.data()?.schemaVersion !== 2) return null;
+      if (!fence.live) return null;
       transaction.update(jobRef, {
         status: "analyzing", claimToken: token,
         leaseUntil: Timestamp.fromMillis(Date.now() + 10 * 60 * 1000), updatedAt: FieldValue.serverTimestamp(),
@@ -167,11 +165,11 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
       let plan = jobData.plan as JobPlan | undefined;
       if (!plan) {
         const inputSnapshot = await inputRef.get();
-        if (!inputSnapshot.exists || inputSnapshot.data()?.schemaVersion !== 2) {
+        if (!inputSnapshot.exists) {
           failureCategory = "missing_input"; throw new HttpError(404, "Job input not found.");
         }
         const input = inputSnapshot.data()?.input as ChapterInput;
-        if (input.profileRevision !== profile.revision || input.analysisVersion !== profile.analysisVersion) {
+        if (input.profileRevision !== profile.revision) {
           throw new Error("Operation snapshot is incomplete");
         }
         const selected = await selectScenes(input, profile.density);
@@ -184,13 +182,13 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
           const opening = input.paragraphs[start]!.text.trim();
           const excerpt = opening.length > 120 ? `${opening.slice(0, 117)}…` : opening;
           // Paragraph IDs are normalized block IDs, so source positions map from unchanged selected text.
-          const sceneStart: AnalysisPosition = { version: input.documentVersion, sectionId: input.href, blockId: input.paragraphs[start]!.id, offset: 0 };
-          const sceneEnd: AnalysisPosition = { version: input.documentVersion, sectionId: input.href, blockId: paragraph.id, offset: paragraph.text.length };
+          const sceneStart: AnalysisPosition = { sectionId: input.href, blockId: input.paragraphs[start]!.id, offset: 0 };
+          const sceneEnd: AnalysisPosition = { sectionId: input.href, blockId: paragraph.id, offset: paragraph.text.length };
           // Snapshotted once here so retries, regeneration and refresh reuse the same admitted truth.
           const context = await resolveContext(db, { uid, bookId, anchor: sceneEnd, sceneStart, sceneEnd });
           scenes.push({ id, paragraphOrdinal: end,
             anchor: { href: input.href, spineOrdinal: chapterOrdinal, paragraphId: paragraph.id,
-              cssSelector: paragraph.cssSelector, fallbackProgression: paragraph.progression },
+              fallbackProgression: paragraph.progression },
             altText: `Illustration of the passage beginning “${excerpt}”`, caption: "",
             sceneText: input.paragraphs.slice(start, end + 1).map((item) => item.text).join("\n\n").slice(0, 6000),
             sceneStart, sceneEnd, ...(context ? { context } : {}) });
@@ -229,10 +227,10 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
           const scene = await transaction.get(sceneRef);
           if (scene.exists && scene.data()?.status !== "generating") return "skip" as const;
           if (!(await reserveCredit(transaction, db, claim, candidate.id))) return "insufficient" as const;
-          if (!scene.exists) transaction.create(sceneRef, { schemaVersion: 2, uid, bookId, jobId, chapterOrdinal,
+          if (!scene.exists) transaction.create(sceneRef, { uid, bookId, jobId, chapterOrdinal,
             paragraphOrdinal: candidate.paragraphOrdinal, status: "generating",
             anchor: candidate.anchor, altText: candidate.altText, caption: candidate.caption,
-            generationVersion: 0, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+            generation: 0, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
           return "go" as const;
         });
         if (confirmation === "insufficient") { finalStatus = "insufficient_credits"; break; }
@@ -254,7 +252,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
             await settleCredit(transaction, db, claim, candidate.id, true);
             // Native MIME/object ownership and recipe commit together with the credit.
             transaction.update(sceneRef, { status: "ready_locked", ...publication,
-              generationSpec: spec, generationVersion: 1,
+              generationSpec: spec, generation: 1,
               assetExpiresAt: Timestamp.fromMillis(Date.now() + assetRetentionMilliseconds),
               updatedAt: FieldValue.serverTimestamp() });
           });
@@ -296,10 +294,10 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     const data = await db.runTransaction(async (transaction) => {
       const scene = await transaction.get(reference);
       const value = scene.data();
-      if (!value || value.schemaVersion !== 2) return null;
-      if (value.deleted || Number(value.generationVersion ?? 1) >= targetGeneration) return null;
+      if (!value) return null;
+      if (value.deleted || (value.generation as number) >= targetGeneration) return null;
       const fence = await readBookFence(transaction, db, "books", value.uid, value.bookId);
-      if (!fence.live || fence.book.data()?.schemaVersion !== 2) return null;
+      if (!fence.live) return null;
       if (value.regenerationTarget !== targetGeneration || value.status !== "regenerating" ||
         value.regenerationTaskId !== req.body.taskId) return null;
       if ((value.regenerationLeaseUntil?.toMillis() ?? 0) > Date.now()) throw new HttpError(409, "Regeneration is already running.");
@@ -313,7 +311,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     const operationId = `${reference.id}:generation:${targetGeneration}`;
     // Refresh/paid intent is persisted by the API; task payload cannot change accounting.
     const refresh = data.regenerationRefresh === true;
-    const prefix = `users/${data.uid}/books/${data.bookId}/scenes/${reference.id}.v${targetGeneration}.claim-${token}`;
+    const prefix = `users/${data.uid}/books/${data.bookId}/scenes/${reference.id}.${targetGeneration}.claim-${token}`;
     let assets: PublishedAssets | undefined;
     let reserved = false, published = false;
     try {
@@ -336,7 +334,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
         await liveClaim(transaction, claim);
         if (!refresh) await settleCredit(transaction, db, claim, operationId, true);
         transaction.update(reference, { status: "ready_locked", ...publication,
-          generationSpec: spec, generationVersion: targetGeneration,
+          generationSpec: spec, generation: targetGeneration,
           assetExpiresAt: Timestamp.fromMillis(Date.now() + assetRetentionMilliseconds),
           regenerationGenerationSpec: FieldValue.delete(), regenerationPreviousStatus: FieldValue.delete(),
           regenerationTarget: FieldValue.delete(), regenerationRefresh: FieldValue.delete(), regenerationTaskId: FieldValue.delete(),

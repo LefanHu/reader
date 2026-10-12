@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'analysis_entity.dart';
 import 'analysis_index.dart';
 import 'analysis_timeline.dart';
-import 'analysis_versions.dart';
+import 'analysis_limits.dart';
 import 'analysis_world.dart';
 
 /// Derived record shard category, matching the finalized server page contract.
@@ -89,7 +89,6 @@ class AnalysisResultPageDescriptor {
 class AnalysisResultPage {
   /// Optional record arrays mirror the category-specific wire page fields.
   const AnalysisResultPage({
-    this.schemaVersion = analysisSchemaVersion,
     required this.generationId,
     required this.pageId,
     required this.kind,
@@ -107,8 +106,7 @@ class AnalysisResultPage {
   }) : _wireJson = null;
 
   AnalysisResultPage._wire(AnalysisResultPage page, this._wireJson)
-    : schemaVersion = page.schemaVersion,
-      generationId = page.generationId,
+    : generationId = page.generationId,
       pageId = page.pageId,
       kind = page.kind,
       ordinal = page.ordinal,
@@ -127,9 +125,6 @@ class AnalysisResultPage {
 
   /// Compact immutable wire JSON, retaining decoded key order for checksums.
   String get serializedJson => _wireJson ?? jsonEncode(toJson());
-
-  /// Version of persisted derived records.
-  final int schemaVersion;
 
   /// Immutable generation ownership identity.
   final String generationId;
@@ -177,7 +172,6 @@ class AnalysisResultPage {
   Map<String, dynamic> toJson() => _wireJson != null
       ? (jsonDecode(_wireJson) as Map).cast<String, dynamic>()
       : {
-          'schemaVersion': schemaVersion,
           'generationId': generationId,
           'pageId': pageId,
           'kind': kind.name,
@@ -212,8 +206,7 @@ class AnalysisResultPage {
 
   /// Rejects unsupported/oversized pages; records are never silently truncated.
   factory AnalysisResultPage.fromJson(Map<String, dynamic> json) {
-    if (json['schemaVersion'] != analysisSchemaVersion ||
-        utf8.encode(jsonEncode(json)).length > analysisPageMaxBytes) {
+    if (utf8.encode(jsonEncode(json)).length > analysisPageMaxBytes) {
       throw const FormatException(
         'Unsupported or oversized analysis result page.',
       );

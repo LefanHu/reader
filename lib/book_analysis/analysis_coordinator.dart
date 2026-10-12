@@ -11,13 +11,14 @@ import 'analysis_protocol.dart';
 import 'analysis_source.dart';
 import 'analysis_source_models.dart';
 import 'analysis_validator.dart';
-import 'analysis_versions.dart';
+import 'analysis_model.dart';
 import 'api.dart';
 import 'book_analysis_state.dart';
 import 'store.dart';
 
 /// Single-flight noninteractive preprocessing, independent of reader opening.
 class BookAnalysisCoordinator {
+  /// Binds live catalog/account callbacks and fences writes to their current owner.
   BookAnalysisCoordinator({
     required this.api,
     required this.store,
@@ -43,15 +44,34 @@ class BookAnalysisCoordinator {
     }
   }
 
+  /// Noninteractive cloud boundary; background work must never prompt sign-in.
   final BookAnalysisApi api;
+
+  /// Persists local state and validated result pages behind ownership fences.
   final AnalysisStore store;
+
+  /// Reads the current catalog when draining or requeueing background work.
   final List<CatalogBook> Function() books;
+
+  /// Rejects work for deleted or replaced imports before publishing or writing.
   final bool Function(CatalogBook) isBookLive;
+
+  /// Applies the current account and consent policy before source upload.
   final bool Function(CatalogBook) uploadEligible;
+
+  /// Account-action epoch used to invalidate asynchronous work immediately.
   final int Function() accountGeneration;
+
+  /// Notifies the shared owner after observable analysis state changes.
   final void Function() changed;
+
+  /// Cleans up a cloud registration obtained after its local owner was invalidated.
   final Future<void> Function(String cloudBookId)? abandonRegistration;
+
+  /// Delay between polls while an admitted generation is making progress.
   final Duration activePollInterval;
+
+  /// Delay before retrying work blocked on account or connectivity.
   final Duration waitingPollInterval;
   final AnalysisSource _source;
   final Map<String, BookAnalysisState> _states = {};
@@ -59,7 +79,7 @@ class BookAnalysisCoordinator {
   final Map<String, (int, String)> _verifiedOwners = {};
   final Map<String, _Owner> _writeOwners = {};
   final Map<String, int> _bookEpochs = {};
-  final Set<String> _queued = LinkedHashSet<String>();
+  final Set<String> _queued = <String>{};
   final Map<String, DateTime> _retryAt = {};
   final Set<Future<void>> _writes = {};
   Timer? _timer;
@@ -70,31 +90,22 @@ class BookAnalysisCoordinator {
   bool _disposed = false;
   bool _restoring = false;
 
+  /// Read-only live view keyed by import hash; completeness still needs owner checks.
   Map<String, BookAnalysisState> get states => UnmodifiableMapView(_states);
 
+  /// Restores exact-import sidecars and queues every surviving book for reconciliation.
   Future<void> restore(List<CatalogBook> restored) async {
     _restoring = true;
     try {
       for (final book in restored) {
         final owner = _capture(book);
-        BookAnalysisState? state;
-        try {
-          state = await store.loadState(book);
-        } on FormatException {
-          state = BookAnalysisState(
-            bookHash: book.hash,
-            bookPath: book.path,
-            addedAt: book.addedAt,
-            status: BookAnalysisStatus.waitingService,
-            unavailable: true,
-            failureCategory: 'unsupportedSchema',
-          );
-        }
+        var state = await store.loadState(book);
         if (!_localCurrent(owner)) continue;
-        if (state == null || !state.matchesBook(book))
+        if (state == null || !state.matchesBook(book)) {
           state = BookAnalysisState.forBook(book);
+        }
         _states[book.hash] = state;
-        if (!state.unavailable) _queued.add(book.hash);
+        _queued.add(book.hash);
       }
       if (!_disposed) changed();
     } finally {
@@ -103,19 +114,20 @@ class BookAnalysisCoordinator {
     }
   }
 
+  /// Schedules a live import, discarding cached source identity and retry delay.
   void queue(CatalogBook book) {
     if (_disposed || !isBookLive(book)) return;
     final existing = _states[book.hash];
     if (existing == null || !existing.matchesBook(book)) {
       _states[book.hash] = BookAnalysisState.forBook(book);
     }
-    if (_states[book.hash]!.unavailable) return;
     _manifests.remove(book.hash);
     _retryAt.remove(book.hash);
     _queued.add(book.hash);
     _start();
   }
 
+  /// Requeues the current catalog after a background prerequisite changes.
   void nudge() {
     if (_disposed) return;
     for (final book in books()) {
@@ -123,6 +135,7 @@ class BookAnalysisCoordinator {
     }
   }
 
+  /// Suspends polling and invalidates writes, or requeues work when resumed.
   void setResumed(bool resumed) {
     if (_disposed || _resumed == resumed) return;
     _resumed = resumed;
@@ -149,15 +162,14 @@ class BookAnalysisCoordinator {
     // Retain old data until the server confirms the same/new owner or deletion.
     // It cannot be consumed while the account action fence is invalidated.
     for (final entry in _states.entries.toList()) {
-      if (!entry.value.unavailable) {
-        _states[entry.key] = entry.value.copyWith(
-          status: BookAnalysisStatus.waitingAccount,
-        );
-      }
+      _states[entry.key] = entry.value.copyWith(
+        status: BookAnalysisStatus.waitingAccount,
+      );
     }
     if (!_disposed) changed();
   }
 
+  /// Fences pending work for this import before its local deletion or replacement.
   void invalidateBook(CatalogBook book) {
     final state = _states[book.hash];
     if (state != null && !state.matchesBook(book)) return;
@@ -172,18 +184,21 @@ class BookAnalysisCoordinator {
     _armTimer();
   }
 
+  /// Fences and drains pending writes before removing account-owned local results.
   Future<void> clearAccountData(List<CatalogBook> retainedBooks) async {
     invalidateAccount();
     await flush();
     await store.clearAccountData(retainedBooks);
     if (_disposed) return;
     for (final book in retainedBooks) {
-      if (isBookLive(book))
+      if (isBookLive(book)) {
         _states[book.hash] = BookAnalysisState.forBook(book);
+      }
     }
     changed();
   }
 
+  /// Drains tracked persistence operations and the store's transaction tail.
   Future<void> flush() async {
     while (_writes.isNotEmpty) {
       await Future.wait(_writes.toList());
@@ -191,26 +206,27 @@ class BookAnalysisCoordinator {
     await store.flush();
   }
 
+  /// Requires finalized results verified for both this import and the current account.
   bool isComplete(CatalogBook book) {
     final state = _states[book.hash];
     final pointer = state?.finalized;
     return state != null &&
         state.matchesBook(book) &&
-        !state.unavailable &&
         state.status == BookAnalysisStatus.complete &&
         pointer != null &&
         _verifiedOwners[book.hash] ==
             (accountGeneration(), pointer.accountKey) &&
         state.accountKey == pointer.accountKey &&
-        state.documentVersion == pointer.documentVersion &&
         state.documentDigest == pointer.documentDigest;
   }
 
+  /// Returns the exact import's registration, without implying verified completeness.
   String? cloudBookIdFor(CatalogBook book) {
     final state = _states[book.hash];
     return state != null && state.matchesBook(book) ? state.cloudBookId : null;
   }
 
+  /// Stops scheduling and fences in-flight work; persistence is drained by [flush].
   void dispose() {
     if (_disposed) return;
     _disposed = true;
@@ -275,7 +291,7 @@ class BookAnalysisCoordinator {
   }
 
   Future<void> _save(_Owner owner, BookAnalysisState state) async {
-    if (!owner.current(this) || state.unavailable) return;
+    if (!owner.current(this)) return;
     _states[owner.book.hash] = state;
     final write = store.saveState(owner.book, state);
     _writes.add(write);
@@ -328,10 +344,7 @@ class BookAnalysisCoordinator {
       await _save(owner, state);
       if (!owner.current(this)) return;
     }
-    if (!config.enabled ||
-        config.schemaVersion != analysisSchemaVersion ||
-        config.analysisVersion != bookAnalysisVersion ||
-        config.model != analysisModel) {
+    if (!config.enabled || config.model != analysisModel) {
       _activeBook = null;
       await _save(
         owner,
@@ -344,11 +357,9 @@ class BookAnalysisCoordinator {
         _manifests[book.hash] ?? await _source.buildManifest(book.path);
     if (!owner.current(this)) return;
     _manifests[book.hash] = manifest;
-    if (state.documentDigest != manifest.documentDigest ||
-        state.documentVersion != manifest.documentVersion) {
+    if (state.documentDigest != manifest.documentDigest) {
       state = state.copyWith(
         documentDigest: manifest.documentDigest,
-        documentVersion: manifest.documentVersion,
         clearGeneration: true,
         clearFailure: true,
         status: BookAnalysisStatus.queued,
@@ -362,7 +373,6 @@ class BookAnalysisCoordinator {
       return;
     }
     if (state.finalized?.documentDigest == manifest.documentDigest &&
-        state.finalized?.documentVersion == manifest.documentVersion &&
         state.finalized?.accountKey == config.accountKey) {
       await _save(owner, state.copyWith(status: BookAnalysisStatus.complete));
       _activeBook = null;
@@ -423,7 +433,6 @@ class BookAnalysisCoordinator {
         progress.bookId != state.cloudBookId ||
         progress.accountKey != state.accountKey ||
         progress.documentDigest != manifest.documentDigest ||
-        progress.documentVersion != manifest.documentVersion ||
         progress.requiredChunks != manifest.chunkCount ||
         progress.processedChunks < 0 ||
         progress.processedChunks > progress.requiredChunks ||
@@ -497,8 +506,9 @@ class BookAnalysisCoordinator {
         receipt = await api.finalize(generation);
       }
       if (!owner.current(this)) return;
-      if (receipt.generationId != generation)
+      if (receipt.generationId != generation) {
         throw const FormatException('Invalid analysis receipt.');
+      }
       await _save(owner, _state(owner).copyWith(receipt: receipt));
       if (!owner.current(this)) return;
     }
@@ -512,8 +522,7 @@ class BookAnalysisCoordinator {
   ) async {
     final liveManifest = await _source.buildManifest(owner.book.path);
     if (!owner.current(this)) return;
-    if (liveManifest.documentDigest != manifest.documentDigest ||
-        liveManifest.documentVersion != manifest.documentVersion) {
+    if (liveManifest.documentDigest != manifest.documentDigest) {
       throw const FormatException(
         'Analysis source changed before publication.',
       );
@@ -541,8 +550,9 @@ class BookAnalysisCoordinator {
       isCurrent: () => owner.current(this),
     );
     for (final descriptor in progress.resultPages) {
-      if (!pageIds.add(descriptor.pageId))
+      if (!pageIds.add(descriptor.pageId)) {
         throw const FormatException('Duplicate analysis result page.');
+      }
       var page = await store.loadPage(
         owner.book,
         progress.generationId,
@@ -577,7 +587,6 @@ class BookAnalysisCoordinator {
           generationId: progress.generationId,
           revision: progress.finalizedRevision!,
           accountKey: progress.accountKey,
-          documentVersion: progress.documentVersion,
           documentDigest: progress.documentDigest,
           pages: List.unmodifiable(progress.resultPages),
         ),

@@ -108,8 +108,8 @@ variable "illustrations_bucket" {
   type        = string
 }
 
-variable "budget_amount_usd" {
-  description = "Budget amount consumed by the foundation stack."
+variable "budget_amount" {
+  description = "Monthly budget in budget_currency."
   type        = number
 }
 
@@ -127,12 +127,6 @@ variable "budget_currency" {
 variable "alert_email" {
   description = "Alert recipient consumed by the foundation stack."
   type        = string
-}
-
-variable "enable_existing_imports" {
-  description = "Migration switch consumed by the foundation stack."
-  type        = bool
-  default     = false
 }
 
 variable "narration_enabled" {

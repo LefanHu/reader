@@ -8,12 +8,12 @@ import {
 } from "./book-analysis-types.js";
 
 const spanFields: readonly (keyof AnalysisSpanDescriptor)[] = [
-  "version", "sectionOrdinal", "sectionId", "blockOrdinal", "blockId",
+  "sectionOrdinal", "sectionId", "blockOrdinal", "blockId",
   "startOffset", "endOffset", "blockLength", "hash",
 ];
 const chunkFields = ["ordinal", "hash", "primary", "overlap", "overlapHash"];
 const admissionFields = [
-  "schemaVersion", "analysisVersion", "promptVersion", "model", "documentVersion", "documentDigest",
+  "model", "documentDigest",
   "sectionCount", "blockCount", "chunkCount", "pageCount", "sections",
 ];
 const sectionFields = ["ordinal", "id", "blockCount"];
@@ -43,7 +43,7 @@ export function analysisJsonHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 }
 export function analysisSpanHash(span: AnalysisSourceSpan): string {
-  return analysisJsonHash([span.version, span.sectionOrdinal, span.sectionId, span.blockOrdinal,
+  return analysisJsonHash([span.sectionOrdinal, span.sectionId, span.blockOrdinal,
     span.blockId, span.startOffset, span.endOffset, span.text]);
 }
 export function analysisChunkHash(primary: readonly AnalysisSpanDescriptor[]): string {
@@ -66,7 +66,7 @@ export function validateAnalysisPageSize(value: unknown): number {
 }
 function spanDescriptor(value: unknown): asserts value is AnalysisSpanDescriptor {
   const span = record(value);
-  integer(span.version, 1); integer(span.sectionOrdinal); integer(span.blockOrdinal);
+  integer(span.sectionOrdinal); integer(span.blockOrdinal);
   identifier(span.sectionId); identifier(span.blockId);
   integer(span.startOffset); integer(span.endOffset); integer(span.blockLength); digest(span.hash);
   check(span.startOffset <= span.endOffset && span.endOffset <= span.blockLength);
@@ -101,14 +101,13 @@ export function validateAnalysisDescriptorPage(value: unknown): asserts value is
       (page.chunks[i - 1] as AnalysisChunkDescriptor).ordinal + 1);
   }
 }
-/** Validates immutable versions/counts before any prose or provider work is admitted. */
+/** Validates immutable model/counts before any prose or provider work is admitted. */
 export function validateAnalysisAdmission(value: unknown): asserts value is AnalysisGenerationAdmission {
   validateAnalysisPageSize(value);
   const admission = record(value);
   check(Object.keys(admission).every((key) => admissionFields.includes(key)));
-  check(admission.schemaVersion === 1 && admission.analysisVersion === 1 && admission.promptVersion === 1 &&
-    admission.model === ANALYSIS_MODEL);
-  integer(admission.documentVersion, 1); digest(admission.documentDigest);
+  check(admission.model === ANALYSIS_MODEL);
+  digest(admission.documentDigest);
   integer(admission.sectionCount); integer(admission.blockCount); integer(admission.chunkCount);
   integer(admission.pageCount);
   // Absolute bounds keep a tiny header from fanning out reads: 200 pages cover ~20,000 windows.
@@ -128,7 +127,7 @@ export function validateAnalysisAdmission(value: unknown): asserts value is Anal
     admission.chunkCount <= admission.pageCount * ANALYSIS_DESCRIPTOR_PAGE_MAX_CHUNKS);
 }
 function sameBlock(a: AnalysisSpanDescriptor, b: AnalysisSpanDescriptor): boolean {
-  return a.version === b.version && a.sectionOrdinal === b.sectionOrdinal && a.sectionId === b.sectionId &&
+  return a.sectionOrdinal === b.sectionOrdinal && a.sectionId === b.sectionId &&
     a.blockOrdinal === b.blockOrdinal && a.blockId === b.blockId && a.blockLength === b.blockLength;
 }
 /** Checks ordered exact-once primary coverage, including empty blocks and empty sections.
@@ -183,7 +182,7 @@ export function validateAnalysisSourceManifest(value: unknown): asserts value is
     }
     for (const span of chunk.primary) {
       const section = manifest.sections[sectionOrdinal];
-      check(section && span.version === manifest.documentVersion && span.sectionOrdinal === sectionOrdinal &&
+      check(section && span.sectionOrdinal === sectionOrdinal &&
         span.sectionId === section.id && span.blockOrdinal === blockOrdinal && span.startOffset === offset);
       if (active) check(sameBlock(active, span));
       else {
@@ -249,7 +248,7 @@ export function validateAnalysisChunkInput(
 export function validateAnalysisEvidenceSpan(span: AnalysisSpan, source: AnalysisSourceSpan, surface?: string): void {
   const start = record(record(span).start), end = record(record(span).end);
   integer(start.offset); integer(end.offset);
-  for (const position of [start, end]) check(position.version === source.version &&
+  for (const position of [start, end]) check(
     position.sectionId === source.sectionId && position.blockId === source.blockId);
   check(start.offset >= source.startOffset && end.offset <= source.endOffset && start.offset < end.offset);
   const boundaries = analysisGraphemeBoundaries(source.text);

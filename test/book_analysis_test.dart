@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/atomic_json_file.dart';
 import 'package:reader/book_analysis/analysis_protocol.dart';
 import 'package:reader/book_analysis/analysis_result.dart';
-import 'package:reader/book_analysis/analysis_versions.dart';
+import 'package:reader/book_analysis/analysis_limits.dart';
 import 'package:reader/book_analysis/book_analysis_state.dart';
 import 'package:reader/book_analysis/file_analysis_store.dart';
 import 'package:reader/catalog/catalog_book.dart';
@@ -127,45 +127,6 @@ void main() {
       expect(await store.loadPage(book, _generation, page.pageId), isNull);
     });
 
-    test('future state wins over supported backups and remains untouched on save or clear', () async {
-      final page = _page();
-      final supported = _state(book, page);
-      await store.saveState(book, supported);
-      final file = _stateFile(book);
-      await file.copy('${file.path}.bak');
-      final future = {...supported.toJson(), 'schemaVersion': 2};
-      final original = jsonEncode(future);
-      await file.writeAsString(original);
-      final restored = await store.loadState(book);
-      expect(restored!.unavailable, isTrue);
-      expect(restored.status, BookAnalysisStatus.waitingService);
-      await store.saveState(book, BookAnalysisState.forBook(book));
-      await store.clearAccountData([book]);
-      expect(await file.readAsString(), original);
-      expect(await File('${file.path}.bak').exists(), isTrue);
-    });
-
-    test(
-      'future page cannot be replaced or read through a supported backup',
-      () async {
-        final page = _page();
-        await store.saveState(book, _state(book, page));
-        await store.savePage(book, _generation, page.pageId, page);
-        final file = _pageFile(book, page);
-        await file.copy('${file.path}.bak');
-        final future = {..._envelope(book, page), 'schemaVersion': 2};
-        final original = jsonEncode(future);
-        await file.writeAsString(original);
-        expect(await store.loadPage(book, _generation, page.pageId), isNull);
-        await expectLater(
-          store.savePage(book, _generation, page.pageId, page),
-          throwsFormatException,
-        );
-        await store.clearAccountData([book]);
-        expect(await file.readAsString(), original);
-      },
-    );
-
     test('oversized pages reject rather than truncate and immutable content conflicts', () async {
       final page = _page();
       final oversized = {
@@ -241,7 +202,6 @@ void main() {
             generationId: 'f' * 64,
             bookId: _cloudBook,
             accountKey: _owner,
-            documentVersion: 1,
             documentDigest: _digest,
             status: AnalysisGenerationStatus.failed,
             stage: AnalysisStage.extract,
@@ -275,7 +235,7 @@ void main() {
       await store.saveState(book, state);
       final stateFile = _stateFile(book);
       store.setWriteEligibility(
-        state: (_, __) => !File('${stateFile.path}.tmp').existsSync(),
+        state: (_, _) => !File('${stateFile.path}.tmp').existsSync(),
       );
       await store.saveState(
         book,
@@ -288,15 +248,12 @@ void main() {
       expect(await File('${stateFile.path}.tmp').exists(), isFalse);
       final pageFile = _pageFile(book, page);
       store.setWriteEligibility(
-        page: (_, __) => !File('${pageFile.path}.tmp').existsSync(),
+        page: (_, _) => !File('${pageFile.path}.tmp').existsSync(),
       );
       await store.savePage(book, _generation, page.pageId, page);
       expect(await store.loadPage(book, _generation, page.pageId), isNull);
       expect(await File('${pageFile.path}.tmp').exists(), isFalse);
-      store.setWriteEligibility(
-        state: (_, __) => false,
-        page: (_, __) => false,
-      );
+      store.setWriteEligibility(state: (_, _) => false, page: (_, _) => false);
       await store.saveState(
         book,
         state.copyWith(status: BookAnalysisStatus.waitingAccount),
@@ -401,6 +358,7 @@ void main() {
 
 CatalogBook _book(String path, {String? hash, DateTime? addedAt}) =>
     CatalogBook(
+      wordCount: 0,
       hash: hash ?? '1' * 64,
       fileName: 'book.txt',
       path: path,
@@ -432,18 +390,13 @@ AnalysisResultPage _page() => AnalysisResultPage.fromJson({
       'entityId': 'entity',
       'id': 'mention',
       'span': {
-        'end': {'offset': 4, 'blockId': 'p0', 'sectionId': 's0', 'version': 1},
-        'start': {
-          'offset': 0,
-          'blockId': 'p0',
-          'sectionId': 's0',
-          'version': 1,
-        },
+        'end': {'offset': 4, 'blockId': 'p0', 'sectionId': 's0'},
+        'start': {'offset': 0, 'blockId': 'p0', 'sectionId': 's0'},
       },
     },
   ],
   'ordinal': 0, 'kind': 'mentions', 'pageId': 'mentions-0',
-  'generationId': _generation, 'schemaVersion': 1,
+  'generationId': _generation,
 });
 
 AnalysisResultPageDescriptor _descriptor(AnalysisResultPage page) {
@@ -472,7 +425,6 @@ AnalysisProgress _progress(AnalysisResultPage page, {String? owner}) =>
       generationId: _generation,
       bookId: _cloudBook,
       accountKey: owner ?? _owner,
-      documentVersion: 1,
       documentDigest: _digest,
       status: AnalysisGenerationStatus.complete,
       stage: AnalysisStage.publish,
@@ -492,7 +444,6 @@ BookAnalysisState _state(
   String? owner,
 }) => BookAnalysisState.forBook(book).copyWith(
   status: BookAnalysisStatus.finalizing,
-  documentVersion: 1,
   documentDigest: _digest,
   accountKey: owner ?? _owner,
   cloudBookId: _cloudBook,
@@ -507,7 +458,6 @@ BookAnalysisState _complete(BookAnalysisState state, AnalysisResultPage page) =>
         generationId: _generation,
         revision: _revision,
         accountKey: state.accountKey!,
-        documentVersion: 1,
         documentDigest: _digest,
         pages: [_descriptor(page)],
       ),
@@ -520,7 +470,6 @@ File _pageFile(CatalogBook book, AnalysisResultPage page) => File(
 );
 
 Map<String, dynamic> _envelope(CatalogBook book, AnalysisResultPage page) => {
-  'schemaVersion': 1,
   'bookHash': book.hash,
   'bookPath': book.path,
   'addedAt': book.addedAt.toUtc().toIso8601String(),

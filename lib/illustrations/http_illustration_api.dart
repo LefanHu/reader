@@ -43,7 +43,7 @@ class HttpIllustrationApi implements IllustrationApi {
   @override
   Future<IllustrationConfiguration> getConfiguration() async =>
       IllustrationConfiguration.fromJson(
-        await _json('GET', '/v1/illustrations/config'),
+        await _json('GET', '/api/illustrations/config'),
       );
 
   @override
@@ -51,7 +51,7 @@ class HttpIllustrationApi implements IllustrationApi {
     CatalogBook book, {
     required int chapterCount,
   }) async {
-    final keyJson = await _json('GET', '/v1/fingerprint-key');
+    final keyJson = await _json('GET', '/api/fingerprint-key');
     final encodedKey = keyJson['key'] as String?;
     if (encodedKey == null) {
       throw const IllustrationException('The server returned no book key.');
@@ -59,9 +59,8 @@ class HttpIllustrationApi implements IllustrationApi {
     final fingerprint = cloudBookFingerprint(book.hash, encodedKey);
     final json = await _json(
       'POST',
-      '/v1/books',
+      '/api/books',
       body: {
-        'schemaVersion': 2,
         'fingerprint': fingerprint,
         'title': book.title,
         'authors': book.authors,
@@ -92,14 +91,12 @@ class HttpIllustrationApi implements IllustrationApi {
   ) async {
     final json = await _json(
       'PUT',
-      '/v1/books/${_id(profile.cloudBookId)}/profile',
+      '/api/books/${_id(profile.cloudBookId)}/profile',
       body: {
-        'schemaVersion': 2,
         'providerId': profile.providerId,
         'style': profile.style,
         'density': profile.density,
         'expectedRevision': profile.revision,
-        'analysisVersion': profile.analysisVersion,
       },
     );
     return _profile(json, profile.cloudBookId);
@@ -112,22 +109,18 @@ class HttpIllustrationApi implements IllustrationApi {
   }) async {
     final response = await _json(
       'POST',
-      '/v1/books/${_id(profile.cloudBookId)}/chapters/'
+      '/api/books/${_id(profile.cloudBookId)}/chapters/'
           '${chapter.spineOrdinal}/jobs',
       body: {
-        'schemaVersion': 2,
         'href': chapter.href,
         'title': chapter.title,
         'language': chapter.language,
         'profileRevision': profile.revision,
-        'analysisVersion': profile.analysisVersion,
-        'documentVersion': chapter.documentVersion,
         'paragraphs': chapter.paragraphs
             .map(
               (paragraph) => {
                 'id': paragraph.id,
                 'text': paragraph.text,
-                'cssSelector': paragraph.cssSelector,
                 'ordinal': paragraph.ordinal,
                 'progression': paragraph.progression,
               },
@@ -140,7 +133,7 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<IllustrationJobResult> getJob(String jobId) async {
-    final json = await _json('GET', '/v1/jobs/${_id(jobId)}');
+    final json = await _json('GET', '/api/jobs/${_id(jobId)}');
     final scenes = (json['scenes'] as List<dynamic>? ?? const [])
         .whereType<Map>()
         .map((item) {
@@ -160,7 +153,7 @@ class HttpIllustrationApi implements IllustrationApi {
               'failed' => IllustrationSceneState.failed,
               _ => IllustrationSceneState.queued,
             },
-            generationVersion: value['generationVersion'] as int,
+            generation: value['generation'] as int,
             regenerating:
                 value['status'] == 'regenerating' ||
                 value['regenerating'] == true,
@@ -178,7 +171,7 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<UnlockedIllustration> unlockScene(String sceneId) async {
-    final json = await _json('POST', '/v1/scenes/${_id(sceneId)}/unlock');
+    final json = await _json('POST', '/api/scenes/${_id(sceneId)}/unlock');
     final imageMimeType = _mime(json['imageMimeType']);
     final thumbnailMimeType = _mime(json['thumbnailMimeType']);
     final thumbnailUsesOriginal = json['thumbnailUsesOriginal'] as bool;
@@ -196,7 +189,7 @@ class HttpIllustrationApi implements IllustrationApi {
       thumbnail: thumbnail,
       altText: json['altText'] as String? ?? 'Generated scene illustration',
       caption: json['caption'] as String? ?? '',
-      generationVersion: json['generationVersion'] as int,
+      generation: json['generation'] as int,
       imageMimeType: imageMimeType,
       thumbnailMimeType: thumbnailMimeType,
       thumbnailUsesOriginal: thumbnailUsesOriginal,
@@ -205,11 +198,11 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<void> regenerateScene(String sceneId) =>
-      _json('POST', '/v1/scenes/${_id(sceneId)}/regenerate');
+      _json('POST', '/api/scenes/${_id(sceneId)}/regenerate');
 
   @override
   Future<void> deleteScene(String sceneId) =>
-      _json('DELETE', '/v1/scenes/${_id(sceneId)}');
+      _json('DELETE', '/api/scenes/${_id(sceneId)}');
 
   @override
   Future<void> deleteBook(String cloudBookId, {bool interactive = true}) async {
@@ -218,7 +211,7 @@ class HttpIllustrationApi implements IllustrationApi {
     // A completed previous delete is success, including crash/retry recovery.
     await _http.json(
       'DELETE',
-      '/v1/books/$cloudBookId',
+      '/api/books/$cloudBookId',
       interactive: interactive,
       missingIsSuccess: true,
     );

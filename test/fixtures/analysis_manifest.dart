@@ -5,7 +5,6 @@ import 'package:reader/book_analysis/analysis_source_models.dart';
 /// surrounding whitespace, so hashes cover exact UTF-16 offsets.
 AnalysisChunkInput analysisFixtureChunk({String text = '  e\u0301😀\n\t'}) {
   final hash = analysisSpanHash(
-    version: 1,
     sectionOrdinal: 0,
     sectionId: 's0',
     blockOrdinal: 0,
@@ -19,7 +18,6 @@ AnalysisChunkInput analysisFixtureChunk({String text = '  e\u0301😀\n\t'}) {
     hash: analysisPrimitiveHash([hash]),
     primary: [
       AnalysisSourceSpan(
-        version: 1,
         sectionOrdinal: 0,
         sectionId: 's0',
         blockOrdinal: 0,
@@ -41,7 +39,6 @@ AnalysisChunkInput analysisFixtureChunk({String text = '  e\u0301😀\n\t'}) {
 AnalysisSourceManifest analysisFixtureManifest() {
   final chunk = analysisFixtureChunk();
   return AnalysisSourceManifest(
-    documentVersion: 1,
     documentDigest: analysisPrimitiveHash([
       [0, chunk.hash],
     ]),

@@ -7,7 +7,7 @@ import '../text/word_count_label.dart';
 String bookSemanticsLabel(CatalogBook book) => [
   book.title,
   book.authorLine,
-  if (book.wordCount != null) 'Approximately ${book.wordCount} words',
+  'Approximately ${book.wordCount} words',
   '${(book.progress * 100).round()}% read',
 ].join(', ');
 
@@ -44,17 +44,15 @@ class BookDetails extends StatelessWidget {
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        if (book.wordCount != null) ...[
-          const SizedBox(height: 6),
-          Text(
-            wordCountLabel(book.wordCount!),
-            style: TextStyle(
-              fontSize: 12,
-              height: 1.4,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+        const SizedBox(height: 6),
+        Text(
+          wordCountLabel(book.wordCount),
+          style: TextStyle(
+            fontSize: 12,
+            height: 1.4,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
-        ],
+        ),
       ],
     ),
   );

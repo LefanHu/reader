@@ -128,7 +128,7 @@ class IllustrationCoordinator {
   }) async {
     final ids = <String>{
       if (manifests[book.hash]?.profile?.cloudBookId case final String id) id,
-      if (analysisCloudBookId != null) analysisCloudBookId,
+      ?analysisCloudBookId,
     };
     for (final id in ids.where((id) => id.isNotEmpty)) {
       await _deletions.enqueue(id);
@@ -239,7 +239,6 @@ class IllustrationCoordinator {
           density: density,
           providerId: selection.providerId,
           revision: setup.currentProfile?.revision ?? 0,
-          analysisVersion: setup.currentProfile?.analysisVersion ?? 2,
           cloudBookId: setup.cloudBookId!,
         ),
       );
@@ -293,7 +292,6 @@ class IllustrationCoordinator {
           density: current.density,
           providerId: selection.providerId,
           revision: setup.currentProfile?.revision ?? 0,
-          analysisVersion: current.analysisVersion,
           cloudBookId: current.cloudBookId,
         ),
       );
@@ -303,7 +301,6 @@ class IllustrationCoordinator {
         density: response.density,
         providerId: response.providerId,
         revision: response.revision,
-        analysisVersion: response.analysisVersion,
         cloudBookId: current.cloudBookId,
       );
       if (_sameProfile(current, saved)) return;
@@ -349,7 +346,6 @@ class IllustrationCoordinator {
       first.providerId == second.providerId &&
       first.style == second.style &&
       first.density == second.density &&
-      first.analysisVersion == second.analysisVersion &&
       first.revision == second.revision;
 
   Object _safeFailure(Object failure) {
@@ -406,7 +402,7 @@ class IllustrationCoordinator {
           orElse: () => scene,
         )).copyWith(
           regenerating: true,
-          pendingGenerationVersion: null,
+          pendingGeneration: null,
           failureCategory: null,
         ),
       );
@@ -512,22 +508,25 @@ class IllustrationCoordinator {
   /// This also schedules an unopened book once preprocessing finishes.
   Future<void> nudge(CatalogBook book) async {
     if (_advancingIllustrations.contains(book.hash) ||
-        !manifestFor(book).enabled)
+        !manifestFor(book).enabled) {
       return;
+    }
     _advancingIllustrations.add(book.hash);
     try {
       final current = _currentBook(book);
       if (current == null ||
           current.path != book.path ||
-          current.addedAt != book.addedAt)
+          current.addedAt != book.addedAt) {
         return;
+      }
       final index = await _indexFor(book);
       final latest = _currentBook(book);
       if (latest == null ||
           latest.path != book.path ||
           latest.addedAt != book.addedAt ||
-          busy)
+          busy) {
         return;
+      }
       await _scheduleAhead(book, manifestFor(book), index, latest.lastPosition);
     } on Object catch (failure) {
       error = _safeFailure(failure).toString();
@@ -565,26 +564,25 @@ class IllustrationCoordinator {
       }
       for (final scene in List.of(manifestFor(book).scenes)) {
         if ((scene.state != IllustrationSceneState.readyLocked &&
-                scene.pendingGenerationVersion == null) ||
+                scene.pendingGeneration == null) ||
             !index.resolves(scene.anchor)) {
           continue;
         }
         final released = await api.unlockScene(scene.id);
-        if (released.generationVersion < scene.generationVersion ||
+        if (released.generation < scene.generation ||
             (scene.localImagePath != null &&
-                released.generationVersion == scene.generationVersion) ||
-            (scene.pendingGenerationVersion != null &&
-                released.generationVersion < scene.pendingGenerationVersion!)) {
+                released.generation == scene.generation) ||
+            (scene.pendingGeneration != null &&
+                released.generation < scene.pendingGeneration!)) {
           throw const IllustrationException(
             'The replacement illustration is not ready. Try again when connected.',
           );
         }
-        if (_replacementScene(book, scene, released.generationVersion) ==
-            null) {
-          await _discardUncommittedVersion(
+        if (_replacementScene(book, scene, released.generation) == null) {
+          await _discardUncommittedGeneration(
             book,
             scene.id,
-            released.generationVersion,
+            released.generation,
           );
           continue;
         }
@@ -593,7 +591,7 @@ class IllustrationCoordinator {
           scene.id,
           released.image,
           mimeType: released.imageMimeType,
-          generationVersion: released.generationVersion,
+          generation: released.generation,
         );
         final thumbnailPath = released.thumbnailUsesOriginal
             ? imagePath
@@ -602,19 +600,15 @@ class IllustrationCoordinator {
                 scene.id,
                 released.thumbnail,
                 mimeType: released.thumbnailMimeType,
-                generationVersion: released.generationVersion,
+                generation: released.generation,
                 thumbnail: true,
               );
-        final latest = _replacementScene(
-          book,
-          scene,
-          released.generationVersion,
-        );
+        final latest = _replacementScene(book, scene, released.generation);
         if (latest == null) {
-          await _discardUncommittedVersion(
+          await _discardUncommittedGeneration(
             book,
             scene.id,
-            released.generationVersion,
+            released.generation,
           );
           continue;
         }
@@ -629,27 +623,27 @@ class IllustrationCoordinator {
             localThumbnailPath: thumbnailPath,
             altText: released.altText,
             caption: released.caption,
-            generationVersion: released.generationVersion,
+            generation: released.generation,
             regenerating: false,
-            pendingGenerationVersion: null,
+            pendingGeneration: null,
             failureCategory: null,
           ),
         );
         if (!committed) {
-          await _discardUncommittedVersion(
+          await _discardUncommittedGeneration(
             book,
             scene.id,
-            released.generationVersion,
+            released.generation,
           );
           continue;
         }
         // Only a committed manifest transfers ownership away from old files.
         if (scene.localImagePath != null &&
-            scene.generationVersion != released.generationVersion) {
+            scene.generation != released.generation) {
           await store.deleteSceneFiles(
             book,
             scene.id,
-            generationVersion: scene.generationVersion,
+            generation: scene.generation,
           );
         }
       }
@@ -665,7 +659,7 @@ class IllustrationCoordinator {
   IllustrationScene? _replacementScene(
     CatalogBook book,
     IllustrationScene original,
-    int targetVersion,
+    int targetGeneration,
   ) {
     final manifest = manifests[book.hash];
     if (_currentBook(book) == null || manifest?.enabled != true) return null;
@@ -677,10 +671,10 @@ class IllustrationCoordinator {
         latest.anchor.href != original.anchor.href ||
         latest.anchor.spineOrdinal != original.anchor.spineOrdinal ||
         latest.anchor.paragraphId != original.anchor.paragraphId ||
-        latest.generationVersion > targetVersion ||
+        latest.generation > targetGeneration ||
         (latest.localImagePath != null &&
-            latest.generationVersion == targetVersion) ||
-        (latest.pendingGenerationVersion ?? 0) > targetVersion) {
+            latest.generation == targetGeneration) ||
+        (latest.pendingGeneration ?? 0) > targetGeneration) {
       return null;
     }
     return latest;
@@ -693,11 +687,7 @@ class IllustrationCoordinator {
   ) async {
     var wroteCandidate = false;
     while (true) {
-      final latest = _replacementScene(
-        book,
-        original,
-        replacement.generationVersion,
-      );
+      final latest = _replacementScene(book, original, replacement.generation);
       final snapshot = manifests[book.hash];
       if (latest == null || snapshot == null) {
         // If deletion/disable won while writing, restore its authoritative record.
@@ -728,24 +718,19 @@ class IllustrationCoordinator {
     }
   }
 
-  Future<void> _discardUncommittedVersion(
+  Future<void> _discardUncommittedGeneration(
     CatalogBook book,
     String sceneId,
-    int generationVersion,
+    int generation,
   ) async {
     final current = manifests[book.hash]?.scenes
         .where((scene) => scene.id == sceneId)
         .firstOrNull;
     // A competing local commit owns these files even if this completion is stale.
-    if (current?.localImagePath != null &&
-        current!.generationVersion == generationVersion) {
+    if (current?.localImagePath != null && current!.generation == generation) {
       return;
     }
-    await store.deleteSceneFiles(
-      book,
-      sceneId,
-      generationVersion: generationVersion,
-    );
+    await store.deleteSceneFiles(book, sceneId, generation: generation);
   }
 
   Future<void> _refreshIllustrationJobs(CatalogBook book) async {
@@ -787,7 +772,7 @@ class IllustrationCoordinator {
     IllustrationScene committed,
     IllustrationScene incoming,
   ) {
-    if (incoming.generationVersion < committed.generationVersion) {
+    if (incoming.generation < committed.generation) {
       return committed;
     }
     final generating =
@@ -798,27 +783,26 @@ class IllustrationCoordinator {
     if (committed.localImagePath == null) {
       return committed.copyWith(
         state: incoming.state,
-        generationVersion: incoming.generationVersion,
+        generation: incoming.generation,
         regenerating: incoming.regenerating,
-        pendingGenerationVersion: null,
+        pendingGeneration: null,
         failureCategory: incoming.failureCategory,
       );
     }
     if (generating) {
       return committed.copyWith(
         regenerating: true,
-        pendingGenerationVersion: null,
+        pendingGeneration: null,
         failureCategory: null,
       );
     }
-    if (ready && incoming.generationVersion > committed.generationVersion) {
+    if (ready && incoming.generation > committed.generation) {
       return committed.copyWith(
         regenerating: false,
-        pendingGenerationVersion:
-            (committed.pendingGenerationVersion ?? 0) >
-                incoming.generationVersion
-            ? committed.pendingGenerationVersion
-            : incoming.generationVersion,
+        pendingGeneration:
+            (committed.pendingGeneration ?? 0) > incoming.generation
+            ? committed.pendingGeneration
+            : incoming.generation,
         failureCategory: null,
       );
     }
@@ -831,13 +815,13 @@ class IllustrationCoordinator {
           'The replacement illustration could not be completed. '
           'Your previous artwork is still available.';
     }
-    if (!failed && ready && committed.pendingGenerationVersion != null) {
+    if (!failed && ready && committed.pendingGeneration != null) {
       // An older ready poll cannot discard a replacement already seen locally.
       return committed.copyWith(regenerating: false, failureCategory: null);
     }
     return committed.copyWith(
       regenerating: false,
-      pendingGenerationVersion: null,
+      pendingGeneration: null,
       failureCategory: incoming.failureCategory,
     );
   }

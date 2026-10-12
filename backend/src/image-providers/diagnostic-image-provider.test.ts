@@ -23,7 +23,7 @@ test("diagnostic source sends the exact prompt with an audience-bound ID token a
   assert.equal(result.mimeType, "image/png");
   assert.equal(fixture.requests.length, 1);
   const request = fixture.requests[0]!;
-  assert.equal(request.url, `${service}/v1/render`);
+  assert.equal(request.url, `${service}/render`);
   assert.equal(request.headers.get("authorization"), `Bearer token-for-${service}`);
   assert.deepEqual(request.body, { prompt, referenceCount: 1 });
 });

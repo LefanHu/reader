@@ -5,8 +5,8 @@ import 'narration_range.dart';
 import 'text_position.dart';
 import 'text_section.dart';
 
-/// Local-only batching policy; the cloud chunk protocol remains version 1.
-const appleSentenceNarrationPolicy = 'apple-sentence-v1';
+/// Local-only batching policy.
+const appleSentenceNarrationPolicy = 'apple-sentence';
 
 final _clauseDelimiter = RegExp(r'[,;:，；：、—–]');
 

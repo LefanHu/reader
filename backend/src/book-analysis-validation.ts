@@ -14,7 +14,7 @@ const choice = (...values: unknown[]): Schema => ({ type: values.includes(null) 
 const nullableId: Schema = { type: ["string", "null"], minLength: 1, maxLength: 256 };
 const array = (items: Schema, minItems = 0, maxItems = 2048): Schema => ({ type: "array", items, minItems, maxItems });
 const object = (properties: Record<string, Schema>): Schema => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
-const position = object({ version: { ...integer, minimum: 1 }, sectionId: id, blockId: id, offset: integer });
+const position = object({ sectionId: id, blockId: id, offset: integer });
 const span = object({ start: position, end: position });
 const evidence = array(span, 1, 64);
 const kind = choice("individual", "event", "group", "location", "item_artifact", "world");
@@ -56,12 +56,12 @@ function unique(ids: readonly string[]): void { check(new Set(ids).size === ids.
 export function validateAnalysisWindowResponse(value: unknown): void {
   bounded(value); validateSchema(value, BOOK_WINDOW_ANALYSIS_SCHEMA);
 }
-const positionKey = (p: AnalysisPosition) => JSON.stringify([p.version, p.sectionId, p.blockId, p.offset]);
-const evidenceSpanKey = (s: AnalysisSpan) => JSON.stringify([s.start.version, s.start.sectionId, s.start.blockId, s.start.offset, s.end.version, s.end.sectionId, s.end.blockId, s.end.offset]);
+const positionKey = (p: AnalysisPosition) => JSON.stringify([p.sectionId, p.blockId, p.offset]);
+const evidenceSpanKey = (s: AnalysisSpan) => JSON.stringify([s.start.sectionId, s.start.blockId, s.start.offset, s.end.sectionId, s.end.blockId, s.end.offset]);
 function positionShape(p: AnalysisPosition): void { validateSchema(p, position); }
 function evidenceShape(e: AnalysisEvidence): void {
   validateSchema(e, evidence);
-  for (const s of e) check(s.start.version === s.end.version && s.start.sectionId === s.end.sectionId && s.start.blockId === s.end.blockId && s.start.offset < s.end.offset);
+  for (const s of e) check(s.start.sectionId === s.end.sectionId && s.start.blockId === s.end.blockId && s.start.offset < s.end.offset);
 }
 function candidatesShape(candidates: AnalysisIdentityCandidate[]): void {
   check(Array.isArray(candidates) && candidates.length <= 64);
@@ -79,7 +79,7 @@ function candidatesShape(candidates: AnalysisIdentityCandidate[]): void {
 /** Applies to injected providers too, before any paid submission. */
 export function validateAnalysisWindowInput(input: AnalysisWindowInput): void {
   try {
-    check(input.model === ANALYSIS_MODEL && input.promptVersion === 1); validateSchema(input.generationId, id);
+    check(input.model === ANALYSIS_MODEL); validateSchema(input.generationId, id);
     const { primary, overlap, ...rest } = input.chunk;
     validateAnalysisChunkInput(input.chunk, {
       ...rest,
@@ -98,7 +98,7 @@ export function validateAnalysisWindowInput(input: AnalysisWindowInput): void {
 }
 export function validateEntityResolutionInput(input: EntityResolutionBatch): void {
   try {
-    check(input.model === ANALYSIS_MODEL && input.promptVersion === 1 && Number.isSafeInteger(input.ordinal) && input.ordinal >= 0);
+    check(input.model === ANALYSIS_MODEL && Number.isSafeInteger(input.ordinal) && input.ordinal >= 0);
     validateSchema(input.generationId, id); candidatesShape(input.candidates);
     check(JSON.stringify({ candidates: input.candidates, acceptedMappings: input.acceptedMappings }).length <= 16_000);
     check(Array.isArray(input.acceptedMappings));
@@ -135,7 +135,7 @@ export function validateAndNormalizeAnalysisWindow(input: AnalysisWindowInput, v
   const boundaryCache = new Map<typeof sources[number], Set<number>>();
   const locate = (s: AnalysisSpan, primaryOnly = false) => {
     validateSchema(s, span);
-    const source = (primaryOnly ? input.chunk.primary : sources).find(source => s.start.version === source.version && s.end.version === source.version && s.start.sectionId === source.sectionId && s.end.sectionId === source.sectionId && s.start.blockId === source.blockId && s.end.blockId === source.blockId && s.start.offset >= source.startOffset && s.end.offset <= source.endOffset && s.start.offset < s.end.offset);
+    const source = (primaryOnly ? input.chunk.primary : sources).find(source => s.start.sectionId === source.sectionId && s.end.sectionId === source.sectionId && s.start.blockId === source.blockId && s.end.blockId === source.blockId && s.start.offset >= source.startOffset && s.end.offset <= source.endOffset && s.start.offset < s.end.offset);
     check(source);
     let boundaries = boundaryCache.get(source);
     if (!boundaries) { boundaries = analysisGraphemeBoundaries(source.text); boundaryCache.set(source, boundaries); }
@@ -143,7 +143,7 @@ export function validateAndNormalizeAnalysisWindow(input: AnalysisWindowInput, v
     return source;
   };
   const compare = (a: AnalysisPosition, b: AnalysisPosition) => {
-    const source = (p: AnalysisPosition) => sources.find(s => s.version === p.version && s.sectionId === p.sectionId && s.blockId === p.blockId)!;
+    const source = (p: AnalysisPosition) => sources.find(s => s.sectionId === p.sectionId && s.blockId === p.blockId)!;
     const aa = source(a), bb = source(b); check(aa && bb);
     return aa.sectionOrdinal - bb.sectionOrdinal || aa.blockOrdinal - bb.blockOrdinal || a.offset - b.offset;
   };
@@ -208,7 +208,7 @@ export function validateAndNormalizeAnalysisWindow(input: AnalysisWindowInput, v
   const known = (input.knownTimes ?? []).map(t => ({ ...t, beforeIds: t.beforeIds.filter(id => timeIds.has(id)), afterIds: t.afterIds.filter(id => timeIds.has(id)) }));
   validateAnalysisTimeGraph([...known, ...output.times]);
   const mappings = new Map<string, string>();
-  const stable = (local: string, recordKind: string, anchor: AnalysisPosition) => `ba_${analysisJsonHash([input.generationId, anchor.version, anchor.sectionId, anchor.blockId, anchor.offset, recordKind, local])}`;
+  const stable = (local: string, recordKind: string, anchor: AnalysisPosition) => `ba_${analysisJsonHash([input.generationId, anchor.sectionId, anchor.blockId, anchor.offset, recordKind, local])}`;
   const primaryAnchor = (e: AnalysisEvidence) => validateEvidence(e).find(s => { try { locate(s, true); return true; } catch { return false; } })!.start;
   for (const e of output.entities) mappings.set(e.id, reusedEntityIds.has(e.id) ? e.id : stable(e.id, e.kind, e.firstIntroduction));
   for (const m of output.mentions) mappings.set(m.id, stable(m.id, "mention", m.span.start));
@@ -268,7 +268,7 @@ export function validateEntityResolution(input: EntityResolutionBatch, value: un
     // Cross-block order is not encoded by these IDs; retain the selected supported endpoint.
     check(d.evidence.some(s => positionKey(s.end) === positionKey(d.revealAt)));
     const first = d.evidence[0]!.end;
-    if (d.evidence.every(s => s.end.version === first.version && s.end.sectionId === first.sectionId && s.end.blockId === first.blockId)) {
+    if (d.evidence.every(s => s.end.sectionId === first.sectionId && s.end.blockId === first.blockId)) {
       d.revealAt = structuredClone(d.evidence.reduce((latest, s) => s.end.offset > latest.offset ? s.end : latest, first));
     } else d.revealAt = structuredClone(d.evidence.find(s => positionKey(s.end) === positionKey(d.revealAt))!.end);
   }

@@ -34,7 +34,7 @@ export class ResponsesBookAnalysisProvider implements BookAnalysisProvider {
     try {
       let response: Record<string, unknown>;
       try {
-        response = await operation.postJson("https://api.openai.com/v1/responses", { authorization: `Bearer ${this.key}` }, {
+        response = await operation.postJson("https://api.openai.com/api/responses", { authorization: `Bearer ${this.key}` }, {
           model, store: false, reasoning: { effort: "none" }, tools: [], max_output_tokens: 16384,
           instructions,
           input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify(input) }] }],

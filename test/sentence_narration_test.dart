@@ -88,7 +88,7 @@ void main() {
       expect(units.first.sentence.end.offset, first.length);
       expect(units.last.chunk.end.offset, text.length);
       expect(units.every((u) => u.chunk.text.trim().isNotEmpty), isTrue);
-      expect(appleSentenceNarrationPolicy, 'apple-sentence-v1');
+      expect(appleSentenceNarrationPolicy, 'apple-sentence');
     },
   );
 
@@ -124,7 +124,6 @@ void main() {
           unit.chunk.end.offset,
         );
         expect(unit.sentence, units.first.sentence);
-        expect(unit.chunk.start.version, textDocumentVersion);
         expect(unit.chunk.start.sectionId, 's');
         expect(unit.chunk.start.blockId, 'p');
       }

@@ -32,7 +32,6 @@ const _anchor = SceneAnchor(
   href: 's0',
   spineOrdinal: 0,
   paragraphId: 'p1',
-  cssSelector: '',
   fallbackProgression: .5,
 );
 
@@ -102,7 +101,6 @@ void main() {
               href: 's0',
               spineOrdinal: 0,
               paragraphId: 'p9',
-              cssSelector: '',
               fallbackProgression: 1,
             ),
             state: IllustrationSceneState.hidden,

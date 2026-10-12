@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/catalog/catalog_session.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
-import 'package:reader/file_cloud_deletion_outbox.dart';
 import 'package:reader/importing/book_importer.dart';
 import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/importing/import_result.dart';
@@ -17,7 +16,6 @@ import 'package:reader/text/text_position.dart';
 
 import 'fixtures/catalog_book.dart';
 import 'support/fake_picker.dart';
-import 'support/fake_word_counter.dart';
 import 'support/memory_catalog_store.dart';
 import 'support/test_controller.dart';
 
@@ -50,7 +48,6 @@ void main() {
     await File('${root.path}/catalog.json').writeAsString('{broken');
     await File('${root.path}/catalog.json.tmp').writeAsString(
       jsonEncode({
-        'version': 2,
         'books': [book.toJson()],
       }),
     );
@@ -65,70 +62,6 @@ void main() {
   });
 
   test(
-    'legacy reset queues cloud deletions before removing owned book files',
-    () async {
-      final book = await importTxt();
-      final directory = File(book.path).parent;
-      await Directory('${directory.path}/visuals').create();
-      await File('${directory.path}/visuals/manifest.json').writeAsString(
-        jsonEncode({
-          'profile': {'cloudBookId': 'old-cloud'},
-        }),
-      );
-      await File('${root.path}/catalog.json').writeAsString(
-        jsonEncode({
-          'version': 1,
-          'books': [book.toJson()],
-        }),
-      );
-      final narration = Directory('${directory.path}/narration');
-      await narration.create();
-      await File('${narration.path}/manifest.json.tmp')
-          .writeAsString(jsonEncode({'cloudBookId': 'c' * 64}));
-      final narrationOutbox = FileCloudDeletionOutbox(
-        root,
-        fileName: 'narration-deletions.json',
-      );
-      final outbox = FileCloudDeletionOutbox(
-        root,
-        fileName: 'illustration-deletions.json',
-      );
-      await outbox.enqueue('already-pending');
-      final store = FileCatalogStore(root);
-      expect(await store.load(), isEmpty);
-      expect(await directory.exists(), isFalse);
-      expect((await narrationOutbox.load()).single.cloudBookId, 'c' * 64);
-      expect(
-        (await outbox.load()).map((item) => item.cloudBookId),
-        containsAll(['old-cloud', 'already-pending']),
-      );
-      expect(
-        jsonDecode(
-          await File('${root.path}/catalog.json').readAsString(),
-        )['version'],
-        2,
-      );
-      expect(await store.load(), isEmpty);
-    },
-  );
-
-  test(
-    'reset resumes after new catalog commits but before directory cleanup',
-    () async {
-      final book = await importTxt();
-      await File('${root.path}/legacy-reset.json').writeAsString(
-        jsonEncode({
-          'hashes': [book.hash, '../outside'],
-        }),
-      );
-      await FileCatalogStore(root).save([]);
-      expect(await FileCatalogStore(root).load(), isEmpty);
-      expect(await File(book.path).exists(), isFalse);
-      expect(await File('${root.path}/legacy-reset.json').exists(), isFalse);
-    },
-  );
-
-  test(
     'catalog deletion refuses paths and symlinks outside owned storage',
     () async {
       final outside = await Directory.systemTemp.createTemp('outside_reader');
@@ -141,6 +74,7 @@ void main() {
         path: file.path,
         title: 'Book',
         authors: const [],
+        wordCount: 0,
         addedAt: DateTime.utc(2026),
       );
       final store = FileCatalogStore(root);
@@ -153,6 +87,7 @@ void main() {
         path: '${root.path}/books/${book.hash}/book.txt',
         title: book.title,
         authors: book.authors,
+        wordCount: 0,
         addedAt: book.addedAt,
       );
       await expectLater(store.deleteFiles(linked), throwsFormatException);
@@ -238,7 +173,6 @@ void main() {
       store: store,
       importer: BookImporter(root: root),
       picker: FakePicker(const []),
-      wordCounter: FakeWordCounter(),
       changed: () {},
     );
     await session.load();

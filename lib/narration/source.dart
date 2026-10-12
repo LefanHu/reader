@@ -28,7 +28,7 @@ abstract interface class NarrationSource {
   /// File-format policy; local PCM keeps the native rate/channel layout.
   String get format;
 
-  /// Source-specific batching identity, not the server's chunk protocol version.
+  /// Source-specific batching identity.
   String get segmentationPolicy;
 
   /// Provider or OS build identity that fences incompatible cached offsets.

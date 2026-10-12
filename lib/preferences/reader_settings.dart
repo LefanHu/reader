@@ -66,7 +66,7 @@ class ReaderSettings {
     librarySort: librarySort ?? this.librarySort,
   );
 
-  /// Serializes settings into the versioned value stored by [SettingsStore].
+  /// Serializes settings into the value stored by [SettingsStore].
   Map<String, dynamic> toJson() => {
     'mode': mode.name,
     'theme': theme.name,

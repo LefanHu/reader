@@ -33,7 +33,7 @@ test("HTTP contract returns base64 PNG and rejects malformed requests without re
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const address = server.address();
   assert(address && typeof address === "object");
-  const post = (body: string) => fetch(`http://127.0.0.1:${address.port}/v1/render`, {
+  const post = (body: string) => fetch(`http://127.0.0.1:${address.port}/render`, {
     method: "POST", headers: { "content-type": "application/json" }, body,
   });
   const ok = await post(JSON.stringify({ prompt: "hello", referenceCount: 0 }));

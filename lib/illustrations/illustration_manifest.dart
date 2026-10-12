@@ -11,17 +11,12 @@ class IllustrationManifest {
     this.profile,
     this.chapterJobs = const {},
     this.scenes = const [],
-    this.visualBibleVersion = 0,
-    this.version = 2,
   });
 
-  /// Illustration-only cutover discriminator; old consent/artwork is discarded.
-  final int version;
   final String bookHash;
   final IllustrationProfile? profile;
   final Map<int, String> chapterJobs;
   final List<IllustrationScene> scenes;
-  final int visualBibleVersion;
 
   bool get enabled => profile?.enabled ?? false;
   List<IllustrationScene> get unlockedScenes =>
@@ -31,30 +26,24 @@ class IllustrationManifest {
     IllustrationProfile? profile,
     Map<int, String>? chapterJobs,
     List<IllustrationScene>? scenes,
-    int? visualBibleVersion,
   }) => IllustrationManifest(
-    version: version,
     bookHash: bookHash,
     profile: profile ?? this.profile,
     chapterJobs: chapterJobs ?? this.chapterJobs,
     scenes: scenes ?? this.scenes,
-    visualBibleVersion: visualBibleVersion ?? this.visualBibleVersion,
   );
 
   Map<String, dynamic> toJson() => {
-    'version': version,
     'bookHash': bookHash,
     if (profile != null) 'profile': profile!.toJson(),
     'chapterJobs': chapterJobs.map(
       (key, value) => MapEntry(key.toString(), value),
     ),
     'scenes': scenes.map((scene) => scene.toJson()).toList(),
-    'visualBibleVersion': visualBibleVersion,
   };
 
   factory IllustrationManifest.fromJson(Map<String, dynamic> json) =>
       IllustrationManifest(
-        version: json['version'] as int,
         bookHash: json['bookHash'] as String,
         profile: json['profile'] == null
             ? null
@@ -71,6 +60,5 @@ class IllustrationManifest {
                   IllustrationScene.fromJson(item.cast<String, dynamic>()),
             )
             .toList(),
-        visualBibleVersion: (json['visualBibleVersion'] as num?)?.round() ?? 0,
       );
 }

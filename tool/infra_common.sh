@@ -91,42 +91,6 @@ require_google_credentials() {
   [ -n "$TF_VAR_google_client_secret" ] || die "Google client secret cannot be empty"
 }
 
-# Recover transition credentials without printing state or asking for obsolete
-# Apple secrets. Never remove users: this retires only the OAuth provider config.
-prepare_apple_retirement() {
-  apple_state="$WORK_DIR/apple-retirement-state.json"
-  if ! terraform -chdir="$INFRA_DIR/foundation" state pull >"$apple_state" 2>"$WORK_DIR/apple-state-error"; then
-    if grep -q 'No state file was found' "$WORK_DIR/apple-state-error"; then
-      printf '{"resources":[]}' >"$apple_state"
-    else
-      die "unable to inspect existing authentication state safely; check remote-state access before deployment"
-    fi
-  fi
-  rm -f "$WORK_DIR/apple-state-error"
-  apple_record="$WORK_DIR/apple-retirement-record.json"
-  jq '[.resources[]? | select(.module == "module.foundation" and .type == "google_identity_platform_default_supported_idp_config" and .name == "apple") | .instances[]?.attributes] | first // null' "$apple_state" >"$apple_record"
-  rm -f "$apple_state"
-  APPLE_RETIREMENT_REQUIRED=false
-  export APPLE_RETIREMENT_REQUIRED
-  if [ "$(jq -r '. != null' "$apple_record")" = true ]; then
-    TF_VAR_apple_client_id=$(jq -r '.client_id // empty' "$apple_record")
-    TF_VAR_apple_client_secret=$(jq -r '.client_secret // empty' "$apple_record")
-    [ -n "$TF_VAR_apple_client_id" ] && [ -n "$TF_VAR_apple_client_secret" ] || die "existing Apple provider state is missing transition credentials; recover protected state before retirement"
-    export TF_VAR_apple_client_id TF_VAR_apple_client_secret
-    if [ "$(jq -r '.enabled == true or .deletion_policy != "DELETE"' "$apple_record")" = true ]; then
-      APPLE_RETIREMENT_REQUIRED=true
-    fi
-  fi
-  rm -f "$apple_record"
-}
-
-plan_apple_retirement() {
-  plan="$WORK_DIR/apple-retirement.tfplan"
-  terraform -chdir="$INFRA_DIR/foundation" plan -var-file="$ENV_VARS" \
-    -var=retain_legacy_apple_provider=true -out="$plan"
-  assert_safe_plan foundation "$plan"
-}
-
 # Reject destructive changes to durable data in every infrastructure stack.
 assert_safe_plan() {
   stack=$1
@@ -241,12 +205,6 @@ prepare_workspace() {
   trap 'rm -rf "$WORK_DIR"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-}
-
-# Never apply the split configuration while feature resources still belong to core.
-assert_migrated() {
-  python3 "$READER_ROOT/tool/migrate_illustration_state.py" --check-state "$INFRA_DIR" || \
-    die "run tool/migrate_backend_state $ENVIRONMENT before deploying or planning"
 }
 
 require_core() {

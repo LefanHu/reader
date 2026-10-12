@@ -1,4 +1,4 @@
-// DTO fields mirror the server-owned schema-2 configuration contract.
+// DTO fields mirror the server-owned configuration contract.
 // ignore_for_file: public_member_api_docs
 
 import 'illustration_provider_option.dart';
@@ -25,11 +25,8 @@ class IllustrationConfiguration {
   bool get hasAvailableProvider =>
       providers.any((provider) => provider.available);
 
-  /// Rejects unsupported wire schemas before exposing generation controls.
+  /// Reads server configuration before exposing generation controls.
   factory IllustrationConfiguration.fromJson(Map<String, dynamic> json) {
-    if (json['schemaVersion'] != 2) {
-      throw const FormatException('Unsupported illustration configuration.');
-    }
     return IllustrationConfiguration(
       enabled: json['enabled'] as bool,
       defaultProviderId: json['defaultProviderId'] as String,

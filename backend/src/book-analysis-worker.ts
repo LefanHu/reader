@@ -37,7 +37,7 @@ class Work {
       const ref = this.store.recordReference(this.claim.generationId, "work", name);
       const prior = (await tx.get(ref)).data();
       const data = change(prior?.data as Row | undefined ?? null);
-      const value = { schemaVersion: 1, recordType: "work", uid: this.claim.uid, bookId: this.claim.bookId,
+      const value = { recordType: "work", uid: this.claim.uid, bookId: this.claim.bookId,
         generationId: this.claim.generationId, key: name, data };
       validateAnalysisPageSize(value);
       tx.set(ref, value);
@@ -57,7 +57,7 @@ class Work {
       for (const [ref, recordKey, data] of [
         [headRef, name, { count: count + 1 }], [memberRef, memberName, { present: true }],
         [shardRef, shardName, { ids: [...(shard?.ids ?? []), id] }],
-      ] as const) tx.set(ref, { schemaVersion: 1, recordType: "work", uid: this.claim.uid, bookId: this.claim.bookId,
+      ] as const) tx.set(ref, { recordType: "work", uid: this.claim.uid, bookId: this.claim.bookId,
         generationId: this.claim.generationId, key: recordKey, data });
     });
   }
@@ -65,7 +65,7 @@ class Work {
     await this.store.db.runTransaction(async tx => {
       await this.store.liveClaim(tx, this.claim);
       for (const { name, data } of records) {
-        const value = { schemaVersion: 1, recordType: "work", uid: this.claim.uid, bookId: this.claim.bookId,
+        const value = { recordType: "work", uid: this.claim.uid, bookId: this.claim.bookId,
           generationId: this.claim.generationId, key: name, data };
         validateAnalysisPageSize(value);
         tx.set(this.store.recordReference(this.claim.generationId, "work", name), value);
@@ -130,7 +130,7 @@ async function extraction(store: BookAnalysisStore, g: StoredAnalysisGeneration,
   return output;
 }
 function page(g: StoredAnalysisGeneration, kind: AnalysisResultPageKind, ordinal: number, data: Row): AnalysisResultPage {
-  return { schemaVersion: 1, generationId: g.generationId, pageId: `${kind}-${ordinal}`, kind, ordinal, ...data };
+  return { generationId: g.generationId, pageId: `${kind}-${ordinal}`, kind, ordinal, ...data };
 }
 /** Pack across windows: sparse/large books do not pay one descriptor per empty kind/window.
  * Bytes stay bounded, and buffer+input receipts+catalog move atomically after immutable pages are durable.
@@ -331,7 +331,7 @@ async function resolveBatch(store: BookAnalysisStore, work: Work, g: StoredAnaly
       evidence: prior?.mapping?.evidence ?? candidate.evidence, revealAt: prior?.mapping?.revealAt ?? candidate.firstIntroduction });
   }
   // Accepted mappings are context, not a new disclosure claim. Never exceed the provider's fixed bound.
-  const batch: EntityResolutionBatch = { generationId: g.generationId, model: g.admission.model, promptVersion: 1,
+  const batch: EntityResolutionBatch = { generationId: g.generationId, model: g.admission.model,
     ordinal: g.cursor.ordinal, candidates, acceptedMappings };
   while (JSON.stringify(batch).length > 16_000 && batch.acceptedMappings.length) batch.acceptedMappings.pop();
   if (JSON.stringify(batch).length > 16_000) throw new Error("resolution_context_overflow");
@@ -553,7 +553,7 @@ export function bookAnalysisWorkerRouter(deps: { db: Firestore; provider: BookAn
       if (operation === "extract") {
         const chunk = await store.readInput(claim);
         if (!chunk) { await store.releaseMissingInput(claim); res.status(204).end(); return; }
-        const input: AnalysisWindowInput = { generationId: g.generationId, model: g.admission.model, promptVersion: 1, chunk,
+        const input: AnalysisWindowInput = { generationId: g.generationId, model: g.admission.model, chunk,
           ...await candidates(work, g, chunk) };
         validateAnalysisWindowInput(input);
         if (!await store.beginProviderSubmission(claim)) { res.status(204).end(); return; }

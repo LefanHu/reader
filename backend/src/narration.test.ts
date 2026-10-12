@@ -30,8 +30,6 @@ const input = (text = "Hello 👩🏽‍🚀.") => ({
   digest: hash(text),
   chunkId: hash("anchor"),
   voice: "marin",
-  documentVersion: 1,
-  chunkVersion: 1,
 });
 
 async function harness(enabled = true) {
@@ -81,7 +79,7 @@ async function harness(enabled = true) {
   const app = express();
   app.use(express.json());
   app.use(
-    ["/v1/narration", "/v1/account"],
+    ["/api/narration", "/api/account"],
     authenticateAccount(
       async (token) => {
         if (token === "verified-user") return { uid: "user" };
@@ -93,9 +91,9 @@ async function harness(enabled = true) {
       },
     ),
   );
-  app.use("/v1/narration", backend.api());
+  app.use("/api/narration", backend.api());
   app.use(
-    "/v1/account",
+    "/api/account",
     accountDeletionRouter({
       db: db.firestore,
       storage: backend.dependencies.storage,
@@ -124,7 +122,7 @@ async function harness(enabled = true) {
     if (token !== null) headers.authorization = `Bearer ${token}`;
     if (appCheck !== null) headers["x-firebase-appcheck"] = appCheck;
     const response = await fetch(
-      `http://127.0.0.1:${address.port}/v1/narration${path}`,
+      `http://127.0.0.1:${address.port}/api/narration${path}`,
       {
         method,
         headers,
@@ -149,7 +147,7 @@ async function harness(enabled = true) {
     if (token !== null) headers.authorization = `Bearer ${token}`;
     if (appCheck !== null) headers["x-firebase-appcheck"] = appCheck;
     const response = await fetch(
-      `http://127.0.0.1:${address.port}/v1/account${options.query ?? ""}`,
+      `http://127.0.0.1:${address.port}/api/account${options.query ?? ""}`,
       {
         method: "DELETE",
         headers,
@@ -283,8 +281,6 @@ test("account HTTP deletion stays available with rollout disabled and ignores sp
       "illustrationJobs",
       "illustrationJobInputs",
       "creditReservations",
-      "worldRevisions",
-      "worldReferences",
       "bookAnalysisJobs",
       "bookAnalysisRecords",
       "bookAnalysisInputs",
@@ -436,7 +432,6 @@ test("bounded Unicode input validates UTF-16 counts and exact text digests", () 
     input("\uD800"),
     { ...input(), digest: hash("wrong") },
     { ...input(), voice: "unknown" },
-    { ...input(), documentVersion: 2 },
     input("\0"),
   ])
     assert.throws(() => validateNarrationInput(value));
@@ -550,6 +545,18 @@ test("jobs require ownership and validate input; duplicate creation reserves all
     const first = await app.request(`/books/${id}/jobs`, "POST", input());
     const second = await app.request(`/books/${id}/jobs`, "POST", input());
     assert.equal(first.body.id, second.body.id);
+    assert.equal(
+      first.body.id,
+      hash(JSON.stringify({
+        uid: "user",
+        bookId: id,
+        digest: input().digest,
+        chunkId: input().chunkId,
+        voice: input().voice,
+        model: "gpt-realtime-2.1-mini",
+        format: "pcm-24000-mono",
+      })),
+    );
     assert.equal(
       (await app.request("/config")).body.remaining,
       500000 - input().text.length,

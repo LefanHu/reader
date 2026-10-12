@@ -2,7 +2,7 @@ import '../text/text_position.dart';
 
 /// Durable per-book registration and interrupted playback, independent of catalogs.
 class NarrationManifest {
-  /// Local playback needs no registration; legacy sidecars remain cloud-owned.
+  /// Local playback needs no registration.
   const NarrationManifest({
     this.account,
     this.cloudBookId,
@@ -10,7 +10,7 @@ class NarrationManifest {
     this.speed = 1,
     this.engine = 'openai-realtime',
     this.synthesisFingerprint = 'gpt-realtime-2.1-mini',
-    this.segmentationPolicy = 'cloud-paragraph-v1',
+    this.segmentationPolicy = 'cloud-paragraph',
     this.anchor,
     this.chunkId,
     this.chunkStart,
@@ -26,8 +26,8 @@ class NarrationManifest {
   /// Voice identifying cached audio and resume offsets, not a book preference.
   final String voice;
 
-  /// Legacy resume multiplier retained for sidecar compatibility; global
-  /// preferences are authoritative when attaching this book.
+  /// Playback multiplier mirrored from global preferences, which stay
+  /// authoritative when attaching this book.
   final double speed;
 
   /// Actual synthesis engine; old cloud offsets never become local clip offsets.
@@ -135,9 +135,8 @@ class NarrationManifest {
     );
   }
 
-  /// Versioned sidecar representation; all position components are retained.
+  /// Sidecar representation; all position components are retained.
   Map<String, dynamic> toJson() => {
-    'version': 2,
     'account': account,
     'cloudBookId': cloudBookId,
     'voice': voice,
@@ -153,21 +152,12 @@ class NarrationManifest {
 
   /// Rejects incompatible sidecars instead of interpreting partial anchors.
   factory NarrationManifest.fromJson(Map<String, dynamic> json) {
-    if (json['version'] != 1 && json['version'] != 2) {
-      throw const FormatException('Unknown narration version');
-    }
     final voice = json['voice'] as String;
     final speed = (json['speed'] as num).toDouble();
     final offset = json['offsetMs'] as int;
-    final engine = json['version'] == 1
-        ? 'openai-realtime'
-        : json['engine'] as String;
-    final fingerprint = json['version'] == 1
-        ? 'gpt-realtime-2.1-mini'
-        : json['synthesisFingerprint'] as String;
-    final policy = json['version'] == 1
-        ? 'cloud-paragraph-v1'
-        : json['segmentationPolicy'] as String;
+    final engine = json['engine'] as String;
+    final fingerprint = json['synthesisFingerprint'] as String;
+    final policy = json['segmentationPolicy'] as String;
     final validVoice =
         ['marin', 'cedar'].contains(voice) ||
         (voice.startsWith('apple:') && voice.length > 6);
@@ -175,8 +165,8 @@ class NarrationManifest {
         !['openai-realtime', 'apple-avspeech'].contains(engine) ||
         policy !=
             (engine == 'apple-avspeech'
-                ? 'apple-sentence-v1'
-                : 'cloud-paragraph-v1') ||
+                ? 'apple-sentence'
+                : 'cloud-paragraph') ||
         fingerprint.isEmpty ||
         !speed.isFinite ||
         speed < .75 ||

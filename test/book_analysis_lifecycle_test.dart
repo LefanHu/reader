@@ -271,7 +271,7 @@ void main() {
       final baseUri = DevApiEnvironment.instance.baseUri;
       final book = devBook();
       final hold = client.hold(
-        (r) => r.method == 'POST' && r.url.path == '/v1/book-analysis/books',
+        (r) => r.method == 'POST' && r.url.path == '/api/book-analysis/books',
       );
       final h = _Harness(
         book: book,
@@ -291,7 +291,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
       final registration = client.exchanges.singleWhere(
-        (e) => e.method == 'POST' && e.path == '/v1/book-analysis/books',
+        (e) => e.method == 'POST' && e.path == '/api/book-analysis/books',
       );
       expect(registration.status, 200);
       final bookId =
@@ -384,30 +384,11 @@ void main() {
       expect(h.book.progress, .25);
     },
   );
-
-  test('unsupported future state stays untouched and unavailable', () async {
-    final h = _Harness();
-    addTearDown(h.dispose);
-    final future = BookAnalysisState(
-      bookHash: h.book.hash,
-      bookPath: h.book.path,
-      addedAt: h.book.addedAt,
-      schemaVersion: 99,
-      unavailable: true,
-      status: BookAnalysisStatus.waitingService,
-    );
-    h.store.states[h.book.hash] = future;
-    await h.start();
-    h.coordinator.nudge();
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    expect(h.state.unavailable, isTrue);
-    expect(h.store.states[h.book.hash], same(future));
-    expect(h.api.configCalls, 0);
-  });
 }
 
 const _anchor = TextPosition(sectionId: 's0', blockId: 'p0', offset: 5);
 CatalogBook _book(String hashCharacter, {DateTime? addedAt}) => CatalogBook(
+  wordCount: 0,
   hash: hashCharacter * 64,
   fileName: 'fixture.txt',
   path: '/books/$hashCharacter/fixture.txt',

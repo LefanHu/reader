@@ -7,7 +7,7 @@ runtime_region       = "us-east1"
 apple_bundle_id      = "com.leafmealone.reader"
 apple_team_id        = "2X6DR5784V"
 illustrations_bucket = "reader-35ca1-illustrations"
-budget_amount_usd    = 25
+budget_amount        = 25
 budget_currency      = "CAD"
 alert_email          = "lefanhu1@gmail.com"
 # Dev-API tests (flutter test) mint test identities by signing as the Admin SDK account.
@@ -16,7 +16,6 @@ state_bucket        = "reader-iac-35ca1-tfstate"
 # Dev-only generation smoke testing; native rollout checks remain required for production.
 illustrations_enabled       = true
 narration_enabled           = true
-enable_existing_imports     = true
 image_test_provider_enabled = true
 
 # Supply the Google web OAuth client privately through TF_VAR_google_client_id

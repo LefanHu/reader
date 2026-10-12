@@ -1,15 +1,3 @@
-/// Persisted and wire schema of book analysis records.
-const analysisSchemaVersion = 1;
-
-/// Extraction/reconciliation semantics; independent of document normalization.
-const bookAnalysisVersion = 1;
-
-/// Immutable extraction instructions captured by generation admission.
-const analysisPromptVersion = 1;
-
-/// Extraction model captured by admission, never inferred from image settings.
-const analysisModel = 'gpt-6-luna';
-
 /// Maximum UTF-8 JSON size of descriptor and finalized result pages.
 const analysisPageMaxBytes = 128 * 1024;
 

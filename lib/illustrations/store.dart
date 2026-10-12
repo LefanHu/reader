@@ -14,24 +14,24 @@ abstract interface class IllustrationStore {
   Future<BookTextIndex?> loadIndex(CatalogBook book);
   Future<void> saveIndex(CatalogBook book, BookTextIndex index);
 
-  /// Saves one native-MIME asset to a scene/version-owned path. A derived
+  /// Saves one native-MIME asset to a scene/generation-owned path. A derived
   /// thumbnail must be WebP; an original preview aliases the original save.
-  /// This does not commit the version: save all assets, then the manifest.
+  /// This does not commit the generation: save all assets, then the manifest.
   Future<String> saveImage(
     CatalogBook book,
     String sceneId,
     Uint8List bytes, {
     required String mimeType,
-    required int generationVersion,
+    required int generation,
     bool thumbnail,
   });
 
   /// Deletes only validated files belonging to this scene, never stored paths.
-  /// After replacement manifest commit, pass the obsolete version; otherwise
-  /// omit it to remove every owned version during scene/book privacy cleanup.
+  /// After replacement manifest commit, pass the obsolete generation; otherwise
+  /// omit it to remove every owned generation during scene/book privacy cleanup.
   Future<void> deleteSceneFiles(
     CatalogBook book,
     String sceneId, {
-    int? generationVersion,
+    int? generation,
   });
 }

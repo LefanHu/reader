@@ -5,14 +5,13 @@ import 'text_position.dart';
 /// This is presentation geometry only; it never resolves or commits progress.
 bool narrationTargetVisible({
   required TextPosition target,
-  required int documentVersion,
   required String sectionId,
   required SectionLayout layout,
   required int? page,
   required double scrollOffset,
   required double viewportExtent,
 }) {
-  if (target.version != documentVersion || target.sectionId != sectionId) {
+  if (target.sectionId != sectionId) {
     return false;
   }
   final block = layout.blocks

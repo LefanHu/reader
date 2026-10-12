@@ -27,7 +27,7 @@ class NarrationCue {
   /// Native text marker category, serialized as `word` or `sentence`.
   final NarrationCueKind kind;
 
-  /// Version-1 timing companion cue representation.
+  /// Timing companion cue representation.
   Map<String, dynamic> toJson() => {
     'kind': kind.name,
     'timeUs': time.inMicroseconds,

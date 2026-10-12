@@ -94,7 +94,7 @@ export function createImageTestProviderApp(): express.Express {
   const app = express();
   app.use(express.json({ limit: "256kb" }));
   app.get("/health", (_req, res) => { res.json({ ok: true }); });
-  app.post("/v1/render", async (req: Request, res: Response) => {
+  app.post("/render", async (req: Request, res: Response) => {
     const request = parseRequest(req.body);
     if (!request) {
       res.status(400).json({ error: "Invalid render request." });

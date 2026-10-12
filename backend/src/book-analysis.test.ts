@@ -86,22 +86,22 @@ test("actual routers extract every section, reconcile evidence identities, and p
     for (const input of provider.resolutionInputs) { assert(input.candidates.length <= 64); assert(JSON.stringify({ candidates: input.candidates, acceptedMappings: input.acceptedMappings }).length <= 16000); }
     const repeat = await h.extract(generationId, 0); assert(repeat.jobId); assert.equal(provider.extractionInputs.length, 2);
     assert.equal((await h.finalize(generationId)).finalizedRevision, state.finalizedRevision);
-    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}/pages/${pages[0]!.pageId}`, "GET", undefined, "intruder")).status, 404);
+    assert.equal((await h.request(`/api/book-analysis/generations/${generationId}/pages/${pages[0]!.pageId}`, "GET", undefined, "intruder")).status, 404);
   }, provider);
 });
 
 test("incomplete extraction and missing immutable shards cannot publish a baseline", async () => {
   await withHarness(async h => {
     const { generationId } = await h.admit();
-    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}/chunks/1`, "POST", h.fixture.chunks[1])).status, 409);
+    assert.equal((await h.request(`/api/book-analysis/generations/${generationId}/chunks/1`, "POST", h.fixture.chunks[1])).status, 409);
     await h.extract(generationId, 0);
-    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}/finalize`, "POST")).status, 409);
-    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}/pages/entities-0`)).status, 404);
+    assert.equal((await h.request(`/api/book-analysis/generations/${generationId}/finalize`, "POST")).status, 409);
+    assert.equal((await h.request(`/api/book-analysis/generations/${generationId}/pages/entities-0`)).status, 404);
     await h.extract(generationId, 1);
     await h.store.recordReference(generationId, "extraction", "assertions-0").delete();
     const state = await h.finalize(generationId);
     assert.equal(state.status, "failed"); assert.equal(state.finalizedRevision, null); assert.deepEqual(state.resultPages, []);
-    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}/pages/world_baselines-0`)).status, 404);
+    assert.equal((await h.request(`/api/book-analysis/generations/${generationId}/pages/world_baselines-0`)).status, 404);
   });
 });
 
@@ -152,12 +152,12 @@ test("a previously finalized pointer survives a failed replacement generation", 
     replacement.manifest.chunks = replacement.chunks.map(c => ({ ...c, primary: c.primary.map(({ text: _text, ...s }) => s), overlap: c.overlap.map(({ text: _text, ...s }) => s) }));
     replacement.manifest.documentDigest = analysisDocumentDigest(replacement.manifest.chunks);
     const { chunks: _chunks, ...admission } = replacement.manifest;
-    const response = await h.request(`/v1/book-analysis/books/${previous.bookId}/generations`, "POST", admission);
+    const response = await h.request(`/api/book-analysis/books/${previous.bookId}/generations`, "POST", admission);
     assert.equal(response.status, 200); const receipt = await response.json() as AnalysisReceipt;
     assert.notEqual(receipt.generationId, previous.generationId);
-    assert.equal((await h.request(`/v1/book-analysis/generations/${receipt.generationId}/manifest-pages/0`, "PUT", { chunks: replacement.manifest.chunks })).status, 204);
+    assert.equal((await h.request(`/api/book-analysis/generations/${receipt.generationId}/manifest-pages/0`, "PUT", { chunks: replacement.manifest.chunks })).status, 204);
     replacing = true;
-    const submission = await h.request(`/v1/book-analysis/generations/${receipt.generationId}/chunks/0`, "POST", replacement.chunks[0]);
+    const submission = await h.request(`/api/book-analysis/generations/${receipt.generationId}/chunks/0`, "POST", replacement.chunks[0]);
     const job = await submission.json() as AnalysisReceipt;
     assert.equal((await h.request(`/internal/book-analysis/extract/${job.jobId}`, "POST")).status, 204);
     assert.equal((await h.progress(receipt.generationId)).error?.category, "provider_incomplete");
@@ -172,7 +172,7 @@ test("missing unsubmitted TTL input releases a claim until exact chunk restorati
   const provider = bookAnalysisFixtureProvider();
   await withHarness(async h => {
     const { generationId } = await h.admit();
-    const response = await h.request(`/v1/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0]);
+    const response = await h.request(`/api/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0]);
     const receipt = await response.json() as AnalysisReceipt;
     await h.store.inputReference(receipt.jobId!).update({ expiresAt: Timestamp.fromMillis(0) });
     assert.equal((await h.request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST")).status, 204);
@@ -193,18 +193,18 @@ test("tombstone-first real deletion purges prose and derived shards and fences a
     const storage = { bucket: () => ({ deleteFiles: async () => {} }) } as unknown as Storage;
     h.app.delete("/fixture/books/:bookId", illustrationBookDeletion({ db: h.memory.firestore, storage, bucket: "fixture" }));
     const { generationId, bookId } = await h.admit();
-    const response = await h.request(`/v1/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0]);
+    const response = await h.request(`/api/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0]);
     const receipt = await response.json() as AnalysisReceipt;
     const delayed = h.request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST");
     await started;
     assert.equal((await h.request(`/fixture/books/${bookId}`, "DELETE")).status, 204);
     release(); assert.equal((await delayed).status, 204);
     assert(![...h.memory.values.values()].some(v => v.bookId === bookId && v.generationId === generationId));
-    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}`)).status, 404);
+    assert.equal((await h.request(`/api/book-analysis/generations/${generationId}`)).status, 404);
     // The purge finished, so the same source may register again as a fresh book...
-    assert.equal((await h.request("/v1/book-analysis/books", "POST", { schemaVersion: 2, fingerprint: "temporal-fixture", title: "Reimport", chapterCount: 2 })).status, 200);
+    assert.equal((await h.request("/api/book-analysis/books", "POST", { fingerprint: "temporal-fixture", title: "Reimport", chapterCount: 2 })).status, 200);
     // ...without resurrecting the purged generation.
-    assert.equal((await h.request(`/v1/book-analysis/generations/${generationId}`)).status, 404);
+    assert.equal((await h.request(`/api/book-analysis/generations/${generationId}`)).status, 404);
   }, provider);
 });
 
@@ -217,7 +217,7 @@ test("active duplicates adopt 204; owned expired claims return 409 without retry
   const provider: BookAnalysisProvider = { ...base, async extractAnalysisWindow(input) { calls++; submitted(); await barrier; return base.extractAnalysisWindow(input); } };
   await withHarness(async h => {
     const { generationId } = await h.admit();
-    const response = await h.request(`/v1/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0]);
+    const response = await h.request(`/api/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0]);
     const receipt = await response.json() as AnalysisReceipt;
     const delayed = h.request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST");
     await started;

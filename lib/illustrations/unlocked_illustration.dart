@@ -10,7 +10,7 @@ class UnlockedIllustration {
     required this.thumbnail,
     required this.altText,
     required this.caption,
-    required this.generationVersion,
+    required this.generation,
     required this.imageMimeType,
     required this.thumbnailMimeType,
     required this.thumbnailUsesOriginal,
@@ -21,8 +21,8 @@ class UnlockedIllustration {
   final String altText;
   final String caption;
 
-  /// Version to commit only after both assets and the local manifest are saved.
-  final int generationVersion;
+  /// Generation to commit only after both assets and the local manifest are saved.
+  final int generation;
 
   /// Verified native PNG/JPEG/WebP MIME of the byte-preserved original.
   final String imageMimeType;

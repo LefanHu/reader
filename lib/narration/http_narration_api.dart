@@ -41,16 +41,16 @@ class HttpNarrationApi implements NarrationApi {
 
   @override
   Future<Map<String, dynamic>> configuration() =>
-      _json('GET', '/v1/narration/config');
+      _json('GET', '/api/narration/config');
   @override
   Future<NarrationRegistration> register(CatalogBook book) async {
     await identity.signIn();
-    final key = await _json('GET', '/v1/fingerprint-key');
+    final key = await _json('GET', '/api/fingerprint-key');
     // Reuse the privacy-preserving account-specific fingerprint protocol.
     final fingerprint = cloudBookFingerprint(book.hash, key['key'] as String);
     final json = await _json(
       'POST',
-      '/v1/narration/books',
+      '/api/narration/books',
       body: {'fingerprint': fingerprint},
     );
     _bookId(json['id'] as String);
@@ -72,13 +72,11 @@ class HttpNarrationApi implements NarrationApi {
     if (!isCurrent()) throw const NarrationCancelled();
     final job = await _json(
       'POST',
-      '/v1/narration/books/$bookId/jobs',
+      '/api/narration/books/$bookId/jobs',
       body: {
         'text': chunk.text,
         'digest': chunk.digest,
         'chunkId': chunk.id,
-        'chunkVersion': narrationChunkVersion,
-        'documentVersion': chunk.start.version,
         'voice': voice,
       },
     );
@@ -86,7 +84,7 @@ class HttpNarrationApi implements NarrationApi {
       if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(job['id'] as String)) {
         throw const FormatException('Invalid narration job identity.');
       }
-      final result = await _json('GET', '/v1/narration/jobs/${job['id']}');
+      final result = await _json('GET', '/api/narration/jobs/${job['id']}');
       if (!isCurrent()) break;
       if (result['status'] == 'ready') {
         final uri = Uri.parse(result['url'] as String);
@@ -120,7 +118,7 @@ class HttpNarrationApi implements NarrationApi {
     _bookId(bookId);
     await _json(
       'DELETE',
-      '/v1/narration/books/$bookId',
+      '/api/narration/books/$bookId',
       missingIsSuccess: true,
     );
   }

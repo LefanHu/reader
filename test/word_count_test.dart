@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -14,27 +13,10 @@ import 'package:reader/importing/import_result.dart';
 import 'package:reader/text/text_block.dart';
 import 'package:reader/text/text_position.dart';
 import 'package:reader/text/text_section.dart';
-import 'package:reader/text/book_word_counter.dart';
-import 'package:reader/text/file_book_word_counter.dart';
 import 'package:reader/text/word_count.dart';
 import 'package:reader/text/word_count_label.dart';
 
 import 'fixtures/catalog_book.dart';
-import 'support/memory_catalog_store.dart';
-import 'support/test_controller.dart';
-
-/// Controls worker completion to verify merges against live catalog records.
-class _DelayedCounter implements BookWordCounter {
-  final pending = <Completer<int>>[];
-  @override
-  Future<int> count(String sourcePath) {
-    final result = Completer<int>();
-    pending.add(result);
-    return result.future;
-  }
-}
-
-Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
   test(
@@ -58,7 +40,7 @@ void main() {
     },
   );
 
-  test('imports store the same estimate as normalized section backfill for EPUB and TXT', () async {
+  test('imports store a positive word count for EPUB and TXT', () async {
     final root = await Directory.systemTemp.createTemp('reader_word_count');
     addTearDown(() => root.delete(recursive: true));
     final importer = BookImporter(root: root);
@@ -82,10 +64,6 @@ void main() {
       expect(result.result.status, ImportStatus.imported);
       final book = result.book!;
       expect(book.wordCount, greaterThan(0));
-      expect(await FileBookWordCounter().count(book.path), book.wordCount);
-      // Backfill only consumes normalized text, never reparses a source file.
-      await File(book.path).delete();
-      expect(await FileBookWordCounter().count(book.path), book.wordCount);
     }
   });
 
@@ -104,133 +82,18 @@ void main() {
     );
   });
 
-  test(
-    'word counts persist and survive reading updates without a migration',
-    () {
-      final book = testBook().copyWith(wordCount: 52430);
-      final restored = CatalogBook.fromJson(book.toJson());
-      final updated = restored.copyWith(
-        progress: .5,
-        lastPosition: const TextPosition(
-          sectionId: 's0',
-          blockId: 'p0',
-          offset: 8,
-        ),
-      );
-      expect(updated.wordCount, 52430);
-      expect(updated.lastPosition?.offset, 8);
-      expect(CatalogBook.fromJson(testBook().toJson()).wordCount, isNull);
-      expect(
-        CatalogBook.fromJson({...book.toJson(), 'wordCount': -1}).wordCount,
-        isNull,
-      );
-    },
-  );
-
-  test(
-    'backfill merges current reading state and saves the completed count',
-    () async {
-      final counter = _DelayedCounter();
-      final controller = await testController(
-        books: [testBook()],
-        wordCounter: counter,
-      );
-      addTearDown(controller.dispose);
-      expect(counter.pending, hasLength(1));
-      await controller.markOpened(controller.catalog.books.single);
-      await controller.savePosition(
-        controller.catalog.books.single,
-        const TextPosition(sectionId: 's0', blockId: 'p0', offset: 8),
-        .5,
-      );
-      final opened = controller.catalog.books.single.lastOpenedAt;
-      counter.pending.single.complete(100);
-      await _settle();
-      expect(controller.catalog.books.single.wordCount, 100);
-      expect(controller.catalog.books.single.lastOpenedAt, opened);
-      expect(controller.catalog.books.single.lastPosition?.offset, 8);
-      expect(controller.catalog.books.single.progress, .5);
-      expect(
-        (controller.catalog.store as MemoryCatalogStore).books.single.wordCount,
-        100,
-      );
-    },
-  );
-
-  test(
-    'opening through a stale UI record preserves a backfilled count',
-    () async {
-      final original = testBook();
-      final controller = await testController(books: [original]);
-      addTearDown(controller.dispose);
-      await _settle();
-      expect(controller.catalog.books.single.wordCount, 42);
-      await controller.markOpened(original);
-      expect(controller.catalog.books.single.wordCount, 42);
-    },
-  );
-
-  test('deletion during counting never resurrects a book', () async {
-    final counter = _DelayedCounter();
-    final controller = await testController(
-      books: [testBook()],
-      wordCounter: counter,
+  test('word counts persist and survive reading updates', () {
+    final book = testBook().copyWith(wordCount: 52430);
+    final restored = CatalogBook.fromJson(book.toJson());
+    final updated = restored.copyWith(
+      progress: .5,
+      lastPosition: const TextPosition(
+        sectionId: 's0',
+        blockId: 'p0',
+        offset: 8,
+      ),
     );
-    addTearDown(controller.dispose);
-    await controller.delete(controller.catalog.books.single);
-    counter.pending.single.complete(100);
-    await _settle();
-    expect(controller.catalog.books, isEmpty);
-    expect((controller.catalog.store as MemoryCatalogStore).books, isEmpty);
+    expect(updated.wordCount, 52430);
+    expect(updated.lastPosition?.offset, 8);
   });
-
-  test(
-    'interrupted backfill stays missing and retries after restart',
-    () async {
-      final counter = _DelayedCounter();
-      final controller = await testController(
-        books: [testBook()],
-        wordCounter: counter,
-      );
-      final store = controller.catalog.store as MemoryCatalogStore;
-      controller.dispose();
-      counter.pending.single.complete(100);
-      await _settle();
-      expect(store.books.single.wordCount, isNull);
-      final restarted = await testController(books: store.books);
-      addTearDown(restarted.dispose);
-      await _settle();
-      expect(restarted.catalog.books.single.wordCount, 42);
-    },
-  );
-
-  test(
-    'backfill is sequential and a failed count does not stop later books',
-    () async {
-      final counter = _DelayedCounter();
-      final second = CatalogBook(
-        hash: 'b' * 64,
-        fileName: 'b.txt',
-        path: '/b.txt',
-        title: 'B',
-        authors: const [],
-        addedAt: DateTime.utc(2026),
-      );
-      final controller = await testController(
-        books: [testBook(), second],
-        wordCounter: counter,
-      );
-      addTearDown(controller.dispose);
-      expect(counter.pending, hasLength(1));
-      counter.pending.first.completeError(
-        const FormatException('Missing section'),
-      );
-      await _settle();
-      expect(counter.pending, hasLength(2));
-      expect(controller.catalog.books.first.wordCount, isNull);
-      counter.pending.last.complete(5);
-      await _settle();
-      expect(controller.catalog.books.last.wordCount, 5);
-    },
-  );
 }

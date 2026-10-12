@@ -18,7 +18,6 @@ import 'package:reader/narration/player.dart';
 import 'package:reader/narration/source.dart';
 import 'package:reader/narration/store.dart';
 import 'package:reader/preferences/settings_store.dart';
-import 'package:reader/text/book_word_counter.dart';
 import 'package:reader/text/document_store.dart';
 
 import 'cloud_identity_fake.dart';
@@ -27,7 +26,6 @@ import 'fake_narration_api.dart';
 import 'fake_narration_player.dart';
 import 'fake_picker.dart';
 import 'fake_text_indexer.dart';
-import 'fake_word_counter.dart';
 import 'memory_catalog_store.dart';
 import 'memory_cloud_deletion_outbox.dart';
 import 'memory_document_store.dart';
@@ -46,7 +44,6 @@ Future<ReaderController> testController({
   CatalogStore? catalogStore,
   List<ImportCandidate> files = const [],
   SettingsStore? settingsStore,
-  BookWordCounter? wordCounter,
   Directory? root,
   IllustrationStore? illustrationStore,
   TextIndexer? textIndexer,
@@ -75,7 +72,6 @@ Future<ReaderController> testController({
     picker: FakePicker(files),
     illustrationStore: illustrationStore ?? MemoryIllustrationStore(),
     textIndexer: textIndexer ?? FakeTextIndexer(),
-    wordCounter: wordCounter ?? FakeWordCounter(),
     illustrationApi: illustrationApi ?? FakeIllustrationApi(),
     illustrationDeletionOutbox:
         illustrationDeletionOutbox ?? MemoryCloudDeletionOutbox(),

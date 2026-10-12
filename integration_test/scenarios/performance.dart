@@ -53,16 +53,13 @@ void registerPerformanceTests(IntegrationTestWidgetsFlutterBinding binding) {
       dart_isolate.Isolate.current,
     )!;
     final view = tester.view;
-    // Versioned report metadata identifies workload, settings, and frame budget.
+    // Report metadata identifies workload, settings, and frame budget.
     // Actual window/display dimensions are recorded rather than silently resized.
     binding.reportData = {
-      'schema_version': 1,
       'complete': false,
       'metadata': {
-        'fixture_version': performanceFixtureVersion,
         'paragraph_count': performanceParagraphCount,
         'source_hash': book.hash,
-        'document_version': document.version,
         'platform': Platform.operatingSystem,
         'os_version': Platform.operatingSystemVersion,
         'dart_version': Platform.version,

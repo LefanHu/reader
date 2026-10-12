@@ -26,7 +26,7 @@ export async function resolveIllustrationContext(db: Firestore, args: {
   if (typeof generationId !== "string") return null;
   const generation = (await db.collection(ANALYSIS_COLLECTIONS.records).doc(generationId).get()).data() as StoredAnalysisGeneration | undefined;
   if (!generation || generation.uid !== args.uid || generation.bookId !== args.bookId || generation.status !== "complete" ||
-    !generation.finalizedRevision || generation.admission.documentVersion !== args.sceneStart.version) return null;
+    !generation.finalizedRevision) return null;
   const store = new BookAnalysisStore(db);
 
   // Narrative order comes from admitted descriptors, never from lexical block IDs.
@@ -138,7 +138,7 @@ export async function resolveIllustrationContext(db: Firestore, args: {
       category: a.worldCategory, evidence: a.evidence, revealAt: a.revealAt }));
   const subjects = [...subjectIds].sort().map(id => ({ id, kind: entities.get(id)?.kind ?? "world", names: nameOf(id, args.sceneEnd) }))
     .filter(s => s.names.length > 0);
-  const context: IllustrationContext = { schemaVersion: 1, analysisRevision: generation.finalizedRevision, generationId,
+  const context: IllustrationContext = { analysisRevision: generation.finalizedRevision, generationId,
     sceneStart: args.sceneStart, sceneEnd: args.sceneEnd, subjects, facts: [] };
   for (const fact of facts) {
     const next = { ...context, facts: [...context.facts, fact] };

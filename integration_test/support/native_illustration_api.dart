@@ -93,7 +93,7 @@ class NativeIllustrationApi implements IllustrationApi {
       IllustrationProviderOption(
         id: 'diagnostic',
         label: 'Pipeline test',
-        model: 'text-image-diagnostic-v1',
+        model: 'text-image-diagnostic',
         available: true,
         recommended: false,
         costTier: 'free',
@@ -140,8 +140,7 @@ class NativeIllustrationApi implements IllustrationApi {
     if (saved != null &&
         saved.style == proposed.style &&
         saved.providerId == proposed.providerId &&
-        saved.density == proposed.density &&
-        saved.analysisVersion == proposed.analysisVersion) {
+        saved.density == proposed.density) {
       return saved;
     }
     if (proposed.revision != (saved?.revision ?? 0)) {
@@ -156,7 +155,6 @@ class NativeIllustrationApi implements IllustrationApi {
       providerId: proposed.providerId,
       revision: (saved?.revision ?? 0) + 1,
       density: proposed.density,
-      analysisVersion: proposed.analysisVersion,
     );
     profile = confirmed;
     confirmations.add(confirmed);
@@ -182,7 +180,6 @@ class NativeIllustrationApi implements IllustrationApi {
           href: chapter.href,
           spineOrdinal: chapter.spineOrdinal,
           paragraphId: paragraph.id,
-          cssSelector: paragraph.cssSelector,
           fallbackProgression: paragraph.progression,
         ),
         state: IllustrationSceneState.readyLocked,
@@ -220,7 +217,7 @@ class NativeIllustrationApi implements IllustrationApi {
         scene.state != IllustrationSceneState.readyLocked) {
       throw const IllustrationException('The replacement is not ready.');
     }
-    final replacement = scene.generationVersion > 1;
+    final replacement = scene.generation > 1;
     final original = replacement ? illustrationJpeg() : illustrationPng();
     final alias = replacement && regenerations.last.providerId == 'flux';
     final mime = replacement ? 'image/jpeg' : 'image/png';
@@ -230,9 +227,9 @@ class NativeIllustrationApi implements IllustrationApi {
       imageMimeType: mime,
       thumbnailMimeType: alias ? mime : 'image/webp',
       thumbnailUsesOriginal: alias,
-      altText: 'Native fixture landscape version ${scene.generationVersion}',
-      caption: 'The quiet room, version ${scene.generationVersion}',
-      generationVersion: scene.generationVersion,
+      altText: 'Native fixture landscape version ${scene.generation}',
+      caption: 'The quiet room, version ${scene.generation}',
+      generation: scene.generation,
     );
   }
 
@@ -262,7 +259,7 @@ class NativeIllustrationApi implements IllustrationApi {
           ? IllustrationSceneState.readyLocked
           : IllustrationSceneState.failed,
       regenerating: false,
-      generationVersion: entry.value.generationVersion + (success ? 1 : 0),
+      generation: entry.value.generation + (success ? 1 : 0),
       failureCategory: success ? null : 'generation_failed',
     );
   }

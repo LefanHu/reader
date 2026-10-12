@@ -37,7 +37,7 @@ class HttpAccountApi implements AccountApi {
       );
     }
     try {
-      final json = await _http.json('GET', '/v1/account/usage');
+      final json = await _http.json('GET', '/api/account/usage');
       return AccountUsage.fromJson(json);
     } on AccountUsageException {
       rethrow;
@@ -91,7 +91,7 @@ class HttpAccountApi implements AccountApi {
   @override
   Future<void> deleteAccount() async {
     await identity.reauthenticate();
-    await _http.json('DELETE', '/v1/account');
+    await _http.json('DELETE', '/api/account');
     await identity.deleteAccount();
   }
 }

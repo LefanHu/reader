@@ -246,12 +246,12 @@ Future<HttpNarrationApi> _devApi(
 );
 
 bool _isRegistration(http.BaseRequest request) =>
-    request.method == 'POST' && request.url.path == '/v1/narration/books';
+    request.method == 'POST' && request.url.path == '/api/narration/books';
 
 /// Statuses of narration registrations, null for injected network loss.
 List<int?> _registrationStatuses(DevApiClient client) => [
   for (final exchange in client.exchanges)
-    if (exchange.method == 'POST' && exchange.path == '/v1/narration/books')
+    if (exchange.method == 'POST' && exchange.path == '/api/narration/books')
       exchange.status,
 ];
 

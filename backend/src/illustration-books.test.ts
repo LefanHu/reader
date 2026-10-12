@@ -20,7 +20,7 @@ async function fixture(action: (values: Map<string, MemoryData>, register: (fing
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = "owner"; next(); });
-  app.post("/v1/books", illustrationBookRegistration({ db, pilotCredits: 100 }));
+  app.post("/api/books", illustrationBookRegistration({ db, pilotCredits: 100 }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error instanceof HttpError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Failed" });
   });
@@ -29,9 +29,9 @@ async function fixture(action: (values: Map<string, MemoryData>, register: (fing
   const address = server.address();
   assert(address && typeof address === "object");
   try {
-    await action(values, fingerprint => fetch(`http://127.0.0.1:${address.port}/v1/books`, {
+    await action(values, fingerprint => fetch(`http://127.0.0.1:${address.port}/api/books`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ schemaVersion: 2, fingerprint, title: "A courtyard", chapterCount: 1 }),
+      body: JSON.stringify({ fingerprint, title: "A courtyard", chapterCount: 1 }),
     }));
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -90,7 +90,7 @@ test("purged illustration book registers again as a fresh book without regrantin
 
 test("preprocessing registration preserves profiles and balances without initializing image credit", async () => {
   const memory = new MemoryFirestore();
-  const metadata = { schemaVersion: 2, fingerprint: "source", title: "Book", chapterCount: 2 };
+  const metadata = { fingerprint: "source", title: "Book", chapterCount: 2 };
   const first = await registerOwnedBook({ db: memory.firestore, uid: "owner", metadata });
   assert.equal(memory.values.has("users/owner"), false);
   const path = `users/owner/books/${first.bookId}`;
@@ -148,7 +148,7 @@ test("book deletion purges every analysis generation and staging page while isol
 test("preprocessing-only registration follows book tombstone lifecycle and honors account tombstones", async () => {
   const memory = new MemoryFirestore();
   const args = { db: memory.firestore, uid: "owner",
-    metadata: { schemaVersion: 2, fingerprint: "fenced", title: "Book" } };
+    metadata: { fingerprint: "fenced", title: "Book" } };
   const { bookId } = await registerOwnedBook(args);
   const path = `users/owner/books/${bookId}`;
   const fresh = { uid: "owner", deleted: true, deletedAt: Timestamp.now() };

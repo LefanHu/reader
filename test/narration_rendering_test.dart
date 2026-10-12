@@ -426,7 +426,6 @@ void main() {
 
       for (final unrelated in [
         _range('other-section', 'p1', 0, 4),
-        _range('s0', 'p1', 0, 4, version: 99),
         _range('s0', 'missing-block', 0, 4),
         _range('s0', 'p1', 0, 999),
       ]) {
@@ -462,7 +461,6 @@ void main() {
       for (final page in layout.pages) {
         final slices = textPageSlices(
           page,
-          documentVersion: 1,
           sectionId: 's0',
           activeNarrationRange: range,
         ).cast<BlockSlice>();
@@ -501,7 +499,6 @@ void main() {
     addTearDown(layout.dispose);
     TextSelection? offsets(NarrationRange range) => narrationBlockRange(
       range: range,
-      documentVersion: 1,
       sectionId: 's0',
       block: layout.blocks.single,
     );
@@ -535,7 +532,6 @@ void main() {
       bool visible({int? page, double scroll = 0, double extent = 90}) =>
           narrationTargetVisible(
             target: target,
-            documentVersion: 1,
             sectionId: 's0',
             layout: layout,
             page: page,
@@ -552,7 +548,6 @@ void main() {
       expect(
         narrationTargetVisible(
           target: const text.TextPosition(sectionId: 's0', blockId: 'missing'),
-          documentVersion: 1,
           sectionId: 's0',
           layout: layout,
           page: null,
@@ -680,26 +675,11 @@ Future<ReaderController> _controller(
   narrationDocuments: documents,
 );
 
-NarrationRange _range(
-  String section,
-  String block,
-  int start,
-  int end, {
-  int version = 1,
-}) => NarrationRange(
-  text.TextPosition(
-    sectionId: section,
-    blockId: block,
-    offset: start,
-    version: version,
-  ),
-  text.TextPosition(
-    sectionId: section,
-    blockId: block,
-    offset: end,
-    version: version,
-  ),
-);
+NarrationRange _range(String section, String block, int start, int end) =>
+    NarrationRange(
+      text.TextPosition(sectionId: section, blockId: block, offset: start),
+      text.TextPosition(sectionId: section, blockId: block, offset: end),
+    );
 
 class _DelayedFollowDocuments extends MemoryDocumentStore {
   _DelayedFollowDocuments()

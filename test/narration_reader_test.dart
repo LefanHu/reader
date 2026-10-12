@@ -74,7 +74,8 @@ void main() {
       expect(find.byType(NarrationSheet), findsOneWidget);
       final registrations = client.exchanges.where(
         (exchange) =>
-            exchange.method == 'POST' && exchange.path == '/v1/narration/books',
+            exchange.method == 'POST' &&
+            exchange.path == '/api/narration/books',
       );
       expect(registrations.map((exchange) => exchange.status), [200]);
       expect(cloudBookId, matches(RegExp(r'^[a-f0-9]{64}$')));

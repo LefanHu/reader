@@ -268,6 +268,7 @@ class LocalNarrationSessionFixture {
       path: path,
       title: name,
       authors: const [],
+      wordCount: 0,
       addedAt: DateTime.utc(2026),
     );
   }

@@ -36,20 +36,20 @@ export type BookAnalysisFixture = { manifest: AnalysisSourceManifest; chunks: An
 export function bookAnalysisFixture(): BookAnalysisFixture {
   const chunks: AnalysisChunkInput[] = BOOK_ANALYSIS_FIXTURE_SECTIONS.map((blocks, sectionOrdinal) => {
     const primary: AnalysisSourceSpan[] = blocks.map((text, blockOrdinal) => {
-      const span = { version: 1, sectionOrdinal, sectionId: `s${sectionOrdinal + 1}`, blockOrdinal,
+      const span = { sectionOrdinal, sectionId: `s${sectionOrdinal + 1}`, blockOrdinal,
         blockId: `b${blockOrdinal + 1}`, startOffset: 0, endOffset: text.length, blockLength: text.length, hash: "", text };
       span.hash = analysisSpanHash(span); return span;
     });
     const previous = sectionOrdinal === 0 ? [] : BOOK_ANALYSIS_FIXTURE_SECTIONS[0].slice(-1).map((text, i) => {
-      const span = { version: 1, sectionOrdinal: 0, sectionId: "s1", blockOrdinal: BOOK_ANALYSIS_FIXTURE_SECTIONS[0].length - 1 + i,
+      const span = { sectionOrdinal: 0, sectionId: "s1", blockOrdinal: BOOK_ANALYSIS_FIXTURE_SECTIONS[0].length - 1 + i,
         blockId: `b${BOOK_ANALYSIS_FIXTURE_SECTIONS[0].length + i}`, startOffset: 0, endOffset: text.length, blockLength: text.length, hash: "", text };
       span.hash = analysisSpanHash(span); return span;
     });
     return { ordinal: sectionOrdinal, hash: analysisChunkHash(primary), primary, overlap: previous, overlapHash: analysisOverlapHash(previous) };
   });
   const descriptors = chunks.map(c => ({ ...c, primary: c.primary.map(({ text: _text, ...s }) => s), overlap: c.overlap.map(({ text: _text, ...s }) => s) }));
-  const position = (section: number, block: number, offset = 0): AnalysisPosition => ({ version: 1, sectionId: `s${section + 1}`, blockId: `b${block + 1}`, offset });
-  return { chunks, manifest: { schemaVersion: 1, analysisVersion: 1, promptVersion: 1, model: "gpt-6-luna", documentVersion: 1,
+  const position = (section: number, block: number, offset = 0): AnalysisPosition => ({ sectionId: `s${section + 1}`, blockId: `b${block + 1}`, offset });
+  return { chunks, manifest: { model: "gpt-6-luna", 
     documentDigest: analysisDocumentDigest(descriptors), sectionCount: 2, blockCount: BOOK_ANALYSIS_FIXTURE_SECTIONS.reduce((n, s) => n + s.length, 0),
     chunkCount: 2, pageCount: 1, sections: BOOK_ANALYSIS_FIXTURE_SECTIONS.map((s, ordinal) => ({ ordinal, id: `s${ordinal + 1}`, blockCount: s.length })), chunks: descriptors },
     position, span(section, block, surface, occurrence = 0) {
@@ -182,7 +182,7 @@ export async function startBookAnalysisFixtureHarness(options: { provider?: Book
   const app = express();
   app.use(express.json({ limit: "1mb" }));
   app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = req.header("x-test-owner") ?? "owner"; next(); });
-  app.use("/v1/book-analysis", bookAnalysisApiRouter({ db: memory.firestore, fingerprintSecret: "fixture-secret",
+  app.use("/api/book-analysis", bookAnalysisApiRouter({ db: memory.firestore, fingerprintSecret: "fixture-secret",
     requireFeature: (_req, _res, next) => next(), enqueue: async (path, payload, taskId) => { tasks.push({ path, payload, taskId }); } }));
   app.use("/internal/book-analysis", bookAnalysisWorkerRouter({ db: memory.firestore, provider }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -200,19 +200,19 @@ export async function startBookAnalysisFixtureHarness(options: { provider?: Book
     if (!response.ok) throw new Error(`Fixture HTTP ${response.status}: ${await response.text()}`);
     return response.json() as Promise<T>;
   };
-  const progress = (generationId: string) => json<AnalysisProgress>(`/v1/book-analysis/generations/${generationId}`);
+  const progress = (generationId: string) => json<AnalysisProgress>(`/api/book-analysis/generations/${generationId}`);
   return { fixture, provider, memory, store, tasks, app, server, baseUrl, request, progress,
     async close() { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); },
     async admit(fingerprint = "temporal-fixture") {
-      const registration = await json<{ bookId: string }>("/v1/book-analysis/books", "POST", { schemaVersion: 2, fingerprint, title: "Temporal fixture", chapterCount: 2 });
+      const registration = await json<{ bookId: string }>("/api/book-analysis/books", "POST", { fingerprint, title: "Temporal fixture", chapterCount: 2 });
       const { chunks: _chunks, ...admission } = fixture.manifest;
-      const receipt = await json<AnalysisReceipt>(`/v1/book-analysis/books/${registration.bookId}/generations`, "POST", admission);
-      const response = await request(`/v1/book-analysis/generations/${receipt.generationId}/manifest-pages/0`, "PUT", { chunks: fixture.manifest.chunks });
+      const receipt = await json<AnalysisReceipt>(`/api/book-analysis/books/${registration.bookId}/generations`, "POST", admission);
+      const response = await request(`/api/book-analysis/generations/${receipt.generationId}/manifest-pages/0`, "PUT", { chunks: fixture.manifest.chunks });
       if (response.status !== 204) throw new Error(`Fixture manifest HTTP ${response.status}.`);
       return { bookId: registration.bookId, generationId: receipt.generationId };
     },
     async extract(generationId: string, ordinal: number) {
-      const receipt = await json<AnalysisReceipt>(`/v1/book-analysis/generations/${generationId}/chunks/${ordinal}`, "POST", fixture.chunks[ordinal]);
+      const receipt = await json<AnalysisReceipt>(`/api/book-analysis/generations/${generationId}/chunks/${ordinal}`, "POST", fixture.chunks[ordinal]);
       const response = await request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST");
       if (response.status !== 204) throw new Error(`Fixture extraction HTTP ${response.status}.`);
       return receipt;
@@ -221,7 +221,7 @@ export async function startBookAnalysisFixtureHarness(options: { provider?: Book
       for (let n = 0; n < 1000; n++) {
         const state = await progress(generationId);
         if (state.status === "complete" || state.status === "failed") return state;
-        const receipt = await json<AnalysisReceipt>(`/v1/book-analysis/generations/${generationId}/finalize`, "POST");
+        const receipt = await json<AnalysisReceipt>(`/api/book-analysis/generations/${generationId}/finalize`, "POST");
         const response = await request(`/internal/book-analysis/finalize/${receipt.jobId}`, "POST");
         if (response.status !== 204) throw new Error(`Fixture finalization HTTP ${response.status}.`);
       }
@@ -230,7 +230,7 @@ export async function startBookAnalysisFixtureHarness(options: { provider?: Book
     async pages(generationId: string): Promise<AnalysisResultPage[]> {
       const state = await progress(generationId);
       const pages: AnalysisResultPage[] = [];
-      for (const descriptor of state.resultPages) pages.push(await json<AnalysisResultPage>(`/v1/book-analysis/generations/${generationId}/pages/${descriptor.pageId}`));
+      for (const descriptor of state.resultPages) pages.push(await json<AnalysisResultPage>(`/api/book-analysis/generations/${generationId}/pages/${descriptor.pageId}`));
       return pages;
     },
   };

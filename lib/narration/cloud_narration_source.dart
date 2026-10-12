@@ -25,9 +25,9 @@ class CloudNarrationSource implements NarrationSource {
   @override
   String get model => 'gpt-realtime-2.1-mini';
   @override
-  String get format => 'pcm-24000-mono-v1';
+  String get format => 'pcm-24000-mono';
   @override
-  String get segmentationPolicy => 'cloud-paragraph-v1';
+  String get segmentationPolicy => 'cloud-paragraph';
   @override
   String get synthesisFingerprint => 'gpt-realtime-2.1-mini';
   @override
@@ -63,13 +63,8 @@ class CloudNarrationSource implements NarrationSource {
         return NarrationPlaybackUnit(
           chunk: chunk,
           sentence: NarrationRange(
+            TextPosition(sectionId: section.id, blockId: block.id),
             TextPosition(
-              version: chunk.start.version,
-              sectionId: section.id,
-              blockId: block.id,
-            ),
-            TextPosition(
-              version: chunk.start.version,
               sectionId: section.id,
               blockId: block.id,
               offset: block.text.length,

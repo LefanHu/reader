@@ -5,10 +5,10 @@ import type { ChapterInput } from "./types.js";
 
 const story = (count: number, length = 60) => Array.from({ length: count }, (_, ordinal) => ({
   id: `id${ordinal}`, text: `${"x".repeat(length - 2)}${String(ordinal).padStart(2, "0")}`,
-  cssSelector: `p:nth-of-type(${ordinal + 1})`, ordinal, progression: ordinal / count,
+  ordinal, progression: ordinal / count,
 }));
 const chapterOf = (paragraphs: ChapterInput["paragraphs"], density = 1): ChapterInput => ({
-  href: "one.xhtml", profileRevision: 1, analysisVersion: 2, documentVersion: 1, density, paragraphs,
+  href: "one.xhtml", profileRevision: 1, density, paragraphs,
 });
 const recorder = (answer: (body: Record<string, any>, index: number) => unknown) => {
   const bodies: Array<Record<string, any>> = [];
@@ -18,7 +18,7 @@ const recorder = (answer: (body: Record<string, any>, index: number) => unknown)
 
 test("copyright-only chapters resolve to none after one request", async () => {
   const { bodies, request } = recorder(() => ({ answers: [{ name: "scene", type: "choice", choice: "none" }] }));
-  const chapter = chapterOf([{ id: "c", cssSelector: "p", ordinal: 0, progression: 0,
+  const chapter = chapterOf([{ id: "c", ordinal: 0, progression: 0,
     text: "Copyright © 2024 Example Press. All rights reserved. No part of this book may be reproduced." }]);
   assert.deepEqual(await selectScenes(chapter, 1, request), []);
   assert.equal(bodies.length, 1);

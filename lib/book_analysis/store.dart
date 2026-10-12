@@ -4,7 +4,7 @@ import 'book_analysis_state.dart';
 
 /// Durable prose-free preprocessing receipts and immutable derived result pages.
 abstract interface class AnalysisStore {
-  /// Restores only the exact import, with unsupported state reported unavailable.
+  /// Restores only the exact import; corrupt state returns null.
   Future<BookAnalysisState?> loadState(CatalogBook book);
 
   /// Persists a state snapshot before advancing its admitted operation.

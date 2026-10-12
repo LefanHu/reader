@@ -7,7 +7,7 @@ import 'narration_timing.dart';
 
 /// Atomic app-owned narration sidecars and a bounded, pinned local audio cache.
 abstract interface class NarrationStore {
-  /// Recovers committed, temporary, then backup manifests for older catalogs.
+  /// Recovers committed, temporary, then backup manifests.
   Future<NarrationManifest> load(CatalogBook book);
 
   /// Serializes complete registration and resume state; never changes the catalog.

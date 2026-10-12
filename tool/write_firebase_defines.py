@@ -10,10 +10,8 @@ import tempfile
 
 def native_callback_contents(config):
     """Validate the native OAuth client before it becomes an Xcode build setting."""
-    client_id = config.get("CLIENT_ID", "")
-    reversed_id = config.get("REVERSED_CLIENT_ID", "")
-    if not client_id and not reversed_id:
-        return None
+    client_id = config["CLIENT_ID"]
+    reversed_id = config["REVERSED_CLIENT_ID"]
     if not client_id or reversed_id != ".".join(reversed(client_id.split("."))):
         raise ValueError("Google callback must match its native OAuth client")
     if not all(character.isalnum() or character in ".-" for character in reversed_id):
@@ -53,8 +51,7 @@ def write_defines(config_file, output, api_url="", macos_config_file="", google_
     output = Path(output)
     previous = json.loads(output.read_text()) if output.exists() else {}
     same_project = previous.get("FIREBASE_PROJECT_ID") == values["FIREBASE_PROJECT_ID"]
-    if config.get("CLIENT_ID"):
-        values["FIREBASE_GOOGLE_CLIENT_ID"] = config["CLIENT_ID"]
+    values["FIREBASE_GOOGLE_CLIENT_ID"] = config["CLIENT_ID"]
     if google_server_client_id:
         values["FIREBASE_GOOGLE_SERVER_CLIENT_ID"] = google_server_client_id
     if config.get("STORAGE_BUCKET"):
@@ -65,8 +62,7 @@ def write_defines(config_file, output, api_url="", macos_config_file="", google_
             raise ValueError("Apple Firebase registrations must share a project")
         values["FIREBASE_MACOS_APP_ID"] = macos_config["GOOGLE_APP_ID"]
         values["FIREBASE_MACOS_API_KEY"] = macos_config["API_KEY"]
-        if macos_config.get("CLIENT_ID"):
-            values["FIREBASE_GOOGLE_MACOS_CLIENT_ID"] = macos_config["CLIENT_ID"]
+        values["FIREBASE_GOOGLE_MACOS_CLIENT_ID"] = macos_config["CLIENT_ID"]
     if same_project and not macos_config_file and previous.get("FIREBASE_MACOS_APP_ID"):
         values["FIREBASE_MACOS_APP_ID"] = previous["FIREBASE_MACOS_APP_ID"]
         for key in ["FIREBASE_MACOS_API_KEY", "FIREBASE_GOOGLE_MACOS_CLIENT_ID"]:
@@ -96,8 +92,8 @@ def write_defines(config_file, output, api_url="", macos_config_file="", google_
     for platform, contents in callbacks.items():
         callback_file = output.parent / f"{platform}.xcconfig"
         if contents is None:
-            # Explicit missing OAuth configuration and project switches fail
-            # closed instead of leaving an unrelated native callback registered.
+            # An omitted platform on a project switch must not retain an
+            # unrelated native callback.
             callback_file.unlink(missing_ok=True)
         else:
             atomic_write(callback_file, contents)

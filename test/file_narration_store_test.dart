@@ -81,27 +81,24 @@ void main() {
     store = FileNarrationStore(root);
   });
 
-  test(
-    'publishes PCM WAV and versioned timing as one owned cache entry',
-    () async {
-      final timing = _timing(key);
-      await generate(key, timing: timing);
-      final asset = (await store.cached(book, key))!;
-      expect(asset.path, audio(key).path);
-      expect(asset.timing!.toJson(), timing.toJson());
-      expect(jsonDecode(await companion(key).readAsString()), timing.toJson());
-      expect(await File('${audio(key).path}.tmp').exists(), isFalse);
-      expect(await File('${companion(key).path}.tmp').exists(), isFalse);
-      expect(
-        await store.cachedBytes(book),
-        testWav().length + await companion(key).length(),
-      );
+  test('publishes PCM WAV and timing as one owned cache entry', () async {
+    final timing = _timing(key);
+    await generate(key, timing: timing);
+    final asset = (await store.cached(book, key))!;
+    expect(asset.path, audio(key).path);
+    expect(asset.timing!.toJson(), timing.toJson());
+    expect(jsonDecode(await companion(key).readAsString()), timing.toJson());
+    expect(await File('${audio(key).path}.tmp').exists(), isFalse);
+    expect(await File('${companion(key).path}.tmp').exists(), isFalse);
+    expect(
+      await store.cachedBytes(book),
+      testWav().length + await companion(key).length(),
+    );
 
-      // A new owner reads persisted timing; it is not a process-memory cursor.
-      final reopened = await FileNarrationStore(root).cached(book, key);
-      expect(reopened!.timing!.toJson(), timing.toJson());
-    },
-  );
+    // A new owner reads persisted timing; it is not a process-memory cursor.
+    final reopened = await FileNarrationStore(root).cached(book, key);
+    expect(reopened!.timing!.toJson(), timing.toJson());
+  });
 
   test(
     'missing, corrupt and incompatible companions preserve playable audio',
@@ -110,7 +107,6 @@ void main() {
       final valid = _timing(key).toJson();
       final invalid = <Object>[
         '{not-json',
-        {...valid, 'version': 99},
         {...valid, 'audioKey': 'b' * 64},
         {...valid, 'chunkId': ''},
         {...valid, 'sourceDigest': 'not-a-source-digest'},

@@ -2,6 +2,7 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reader/book_analysis/analysis_model.dart';
 import 'package:reader/book_analysis/analysis_protocol.dart';
 import 'package:reader/book_analysis/http_book_analysis_api.dart';
 import 'package:reader/illustrations/http_illustration_api.dart';
@@ -33,14 +34,12 @@ void main() {
     );
   });
 
-  test(
-    'configuration accepts the pinned schema, analysis and model versions',
-    () async {
-      final configuration = await api.getConfiguration();
+  test('configuration accepts the pinned model', () async {
+    final configuration = await api.getConfiguration();
+    expect(configuration.model, analysisModel);
 
-      expect(configuration.accountKey, matches(RegExp(r'^[a-f0-9]{64}$')));
-    },
-  );
+    expect(configuration.accountKey, matches(RegExp(r'^[a-f0-9]{64}$')));
+  });
 
   test('analysis registration shares the illustration cloud book id', () async {
     final book = devBook();

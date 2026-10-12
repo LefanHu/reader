@@ -10,7 +10,7 @@ variables {
   storage_rules        = "rules_version = '2'; service firebase.storage { match /b/{bucket}/o { match /{object=**} { allow read, write: if false; } } }"
   firestore_indexes_json = jsonencode({
     indexes = [
-      for collection in ["illustrationJobs", "illustrationScenes", "creditReservations", "worldRevisions", "worldReferences"] : {
+      for collection in ["illustrationJobs", "illustrationScenes", "creditReservations"] : {
         collectionGroup = collection
         queryScope      = "COLLECTION"
         fields = [
@@ -31,8 +31,8 @@ variables {
 run "illustrations_preserves_privacy_retention_and_capacity" {
   command = plan
   assert {
-    condition     = length(google_firestore_index.composite) == 5
-    error_message = "All five composite indexes must come from the shared Firebase index specification."
+    condition     = length(google_firestore_index.composite) == 3
+    error_message = "All three composite indexes must come from the shared Firebase index specification."
   }
   assert {
     condition     = google_firestore_field.ttl["illustrationJobInputs.expiresAt"].collection == "illustrationJobInputs"

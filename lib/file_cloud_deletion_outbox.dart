@@ -18,7 +18,7 @@ class FileCloudDeletionOutbox implements CloudDeletionOutbox {
   @override
   Future<List<PendingBookDeletion>> load() async {
     final stored = await _file.read((json) {
-      if (json['version'] != 1 || json['items'] is! List) return null;
+      if (json['items'] is! List) return null;
       return (json['items'] as List<dynamic>)
           .whereType<Map>()
           .map(
@@ -49,7 +49,6 @@ class FileCloudDeletionOutbox implements CloudDeletionOutbox {
   });
 
   Map<String, dynamic> _json(List<PendingBookDeletion> items) => {
-    'version': 1,
     'items': items.map((item) => item.toJson()).toList(),
   };
 }

@@ -133,11 +133,7 @@ void main() {
   ) async {
     final layout = _layout({'a', 'c'});
     var total = 0.0;
-    for (final widget in scrollSectionSlices(
-      layout,
-      documentVersion: 1,
-      sectionId: 's0',
-    )) {
+    for (final widget in scrollSectionSlices(layout, sectionId: 's0')) {
       total += switch (widget) {
         BlockSlice() => widget.height + widget.bottomPadding,
         Padding(padding: final EdgeInsets padding, child: SizedBox box) =>

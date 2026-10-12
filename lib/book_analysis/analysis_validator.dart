@@ -9,10 +9,11 @@ import 'analysis_entity.dart';
 import 'analysis_result.dart';
 import 'analysis_source.dart';
 import 'analysis_source_models.dart';
-import 'analysis_versions.dart';
+import 'analysis_limits.dart';
 
 /// Checks immutable bytes and exact normalized anchors, never snapping ranges.
 class AnalysisValidator {
+  /// Creates one validation session spanning a generation's complete page set.
   AnalysisValidator({
     required this.documents,
     required this.sourcePath,
@@ -20,22 +21,31 @@ class AnalysisValidator {
     required this.isCurrent,
   });
 
+  /// Shared normalized storage used to verify exact evidence text and bounds.
   final TextDocumentStore documents;
+
+  /// Exact local import whose source anchors must resolve.
   final String sourcePath;
+
+  /// Admitted coverage and ordering against which every anchor is checked.
   final AnalysisSourceManifest manifest;
+
+  /// Lifecycle fence checked after source I/O to reject stale validation work.
   final bool Function() isCurrent;
   final Map<String, Set<String>> _ids = {};
   final List<(String, String)> _references = [];
   final Map<String, Set<String>> _timeEdges = {};
 
+  /// Checks page bytes, ownership and source anchors before collecting references.
+  ///
+  /// Call once per page, then [finish] after the complete set is validated.
   Future<void> validate(
     AnalysisResultPage page,
     AnalysisResultPageDescriptor descriptor,
     String generationId,
   ) async {
     final bytes = utf8.encode(page.serializedJson);
-    if (page.schemaVersion != analysisSchemaVersion ||
-        page.generationId != generationId ||
+    if (page.generationId != generationId ||
         page.pageId != descriptor.pageId ||
         page.kind != descriptor.kind ||
         page.ordinal != descriptor.ordinal ||
@@ -75,8 +85,7 @@ class AnalysisValidator {
     void collect(Object? value) {
       if (value is Map) {
         final map = value.cast<String, dynamic>();
-        if (map.containsKey('version') &&
-            map.containsKey('sectionId') &&
+        if (map.containsKey('sectionId') &&
             map.containsKey('blockId') &&
             map.containsKey('offset')) {
           positions.add(map);
@@ -84,8 +93,9 @@ class AnalysisValidator {
           final evidence = map['evidence'];
           final reveal = map['revealAt'];
           if (reveal is Map && evidence is List) {
-            if (evidence.isEmpty)
+            if (evidence.isEmpty) {
               throw const FormatException('Missing analysis reveal evidence.');
+            }
             final ends =
                 evidence.map((span) => (span as Map)['end'] as Map).toList()
                   ..sort(comparePositions);
@@ -131,7 +141,7 @@ class AnalysisValidator {
       if (!isCurrent()) return;
       final id = position['sectionId'];
       final ordinal = sectionOrdinals[id];
-      if (position['version'] != manifest.documentVersion || ordinal == null) {
+      if (ordinal == null) {
         throw const FormatException('Invalid analysis evidence section.');
       }
       if (section?.id != id) {
@@ -147,8 +157,9 @@ class AnalysisValidator {
       final blockOrdinal = section!.blocks.indexWhere(
         (block) => block.id == blockId,
       );
-      if (blockOrdinal < 0)
+      if (blockOrdinal < 0) {
         throw const FormatException('Invalid analysis evidence block.');
+      }
       final block = section.blocks[blockOrdinal];
       final offset = position['offset'];
       if (offset is! int ||
@@ -169,7 +180,6 @@ class AnalysisValidator {
                 span.startOffset < 0 ||
                 span.endOffset > block.text.length ||
                 analysisSpanHash(
-                      version: span.version,
                       sectionOrdinal: ordinal,
                       sectionId: id as String,
                       blockOrdinal: blockOrdinal,
@@ -210,8 +220,7 @@ class AnalysisValidator {
     for (final span in spans) {
       final start = (span['start'] as Map).cast<String, dynamic>();
       final end = (span['end'] as Map).cast<String, dynamic>();
-      if (start['version'] != end['version'] ||
-          start['sectionId'] != end['sectionId'] ||
+      if (start['sectionId'] != end['sectionId'] ||
           start['blockId'] != end['blockId'] ||
           (end['offset'] as int) <= (start['offset'] as int)) {
         throw const FormatException('Invalid analysis evidence range.');
@@ -231,8 +240,9 @@ class AnalysisValidator {
     for (final mention in page.mentions ?? const []) {
       _add('mention', mention.id);
       _references.add(('entity', mention.entityId));
-      if (!sourceText.containsKey(mention.id))
+      if (!sourceText.containsKey(mention.id)) {
         throw const FormatException('Missing mention source.');
+      }
     }
     for (final entry in page.entries ?? const []) {
       _add('entry', entry.id);
@@ -250,8 +260,9 @@ class AnalysisValidator {
     for (final assertion in page.assertions ?? const []) {
       _add('assertion', assertion.id);
       _references.add(('entity', assertion.subjectId));
-      if (assertion.objectEntityId != null)
+      if (assertion.objectEntityId != null) {
         _references.add(('entity', assertion.objectEntityId!));
+      }
       for (final id in [
         assertion.validFromTimeId,
         assertion.validUntilTimeId,
@@ -318,6 +329,7 @@ class AnalysisValidator {
     }
   }
 
+  /// Rejects dangling cross-page references and cycles in the story-time graph.
   void finish() {
     for (final (kind, id) in _references) {
       if (!(_ids[kind]?.contains(id) ?? false)) {
@@ -327,8 +339,9 @@ class AnalysisValidator {
     final visited = <String>{};
     final active = <String>{};
     void visit(String id) {
-      if (active.contains(id))
+      if (active.contains(id)) {
         throw const FormatException('Cyclic analysis time graph.');
+      }
       if (!visited.add(id)) return;
       active.add(id);
       for (final next in _timeEdges[id] ?? const <String>{}) {

@@ -4,9 +4,6 @@ import 'package:crypto/crypto.dart';
 
 import 'text_position.dart';
 
-/// Increment when chunking rules change; cached speech must match exact prose.
-const narrationChunkVersion = 1;
-
 /// Hard UTF-16 bound for one narration clip; one larger grapheme is rejected.
 const maxNarrationClipUnits = 3000;
 
@@ -33,7 +30,6 @@ class NarrationChunk {
       .convert(
         utf8.encode(
           jsonEncode({
-            'version': narrationChunkVersion,
             'start': start.toJson(),
             'end': end.toJson(),
             'digest': digest,

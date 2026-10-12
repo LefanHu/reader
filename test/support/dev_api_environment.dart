@@ -17,7 +17,7 @@ class DevApiEnvironment {
   /// Lazily loaded once per test isolate; throws [StateError] when missing.
   static final DevApiEnvironment instance = _load();
 
-  /// Dev API origin (`ILLUSTRATION_API_BASE_URL`); clients resolve `/v1/...`.
+  /// Dev API origin (`ILLUSTRATION_API_BASE_URL`); clients resolve `/api/...`.
   final Uri baseUri;
 
   /// Public Firebase web API key used for Identity Toolkit REST calls.
