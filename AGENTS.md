@@ -59,6 +59,14 @@ Before any external release, revisit: App Check, deletion/privacy guarantees, co
 - `NativeNarrationPlayer.create` keeps one engine-lifetime service; never reinitialize `AudioService`.
 - The App Attest entitlement is iOS-only; macOS profiles reject it. Keep macOS Keychain/network entitlements and development signing.
 
+## Subagents
+
+- Exploration subagents (searching, reading, mapping code, answering "where/how does X work") run on Sonnet 5.5 (`model: sonnet`, `claude-sonnet-5-5`), not Opus. Use Opus only for subagents that implement changes or need hard reasoning (design, review, debugging).
+- Give each subagent a self-contained prompt: goal, files or areas it owns, constraints from this file, the validation it must run, and the report format.
+- Parallel subagents own disjoint files. A worktree subagent must branch from the current working branch, not `main`; confirm with `git merge-base` before merging its work.
+- Review every subagent diff and rerun the validation yourself before applying it. Subagent reports are claims, not evidence.
+- Subagents never deploy, apply cloud changes, push, or commit to the working branch; the main session does that when asked.
+
 ## Comments
 
 - Document non-trivial types, public members, service boundaries and persisted fields. Comments explain why, invariants, lifecycle and ordering that is easy to break; never narrate syntax. Update them in the same change.
