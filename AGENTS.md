@@ -1,100 +1,77 @@
 # Repository guidance
 
-## Development stage
+## Purpose and priorities
 
-- The app is in development: no real users, no production data, everything changes. Never add versions of anything: no schema/format/protocol/API-path/report version fields, version checks, versioned identifiers, keys or salts, and no "v2" copies of files, types or endpoints. Change things in place.
-- No legacy support of any kind: no migrations, compatibility readers, fallback defaults for old data, future-version guards, transition flags or cleanup of old formats. When a format changes, old local or dev data that no longer parses is treated as absent.
+- Personal development project: no real users, no production data, everything may change.
+- Priorities, in order: **robust and reliable**, then **simple and lightweight**, then everything else. Security and privacy are deliberately minimal for now (see below).
+- Prefer deleting code to adding it. No speculative abstractions, options, feature flags or defensive layers for problems that do not exist yet. A new abstraction must remove duplication that exists today.
+- Change things in place. No versions of anything (schema/format/protocol/API-path fields, versioned identifiers, "v2" copies), no migrations, compatibility readers, legacy fallbacks or transition flags. Old local or dev data that no longer parses is treated as absent. Exception: Terraform `moved` blocks, deleted once dev has applied them.
+- Important notes belong in this file. Keep it short; it states rules, not implementation detail the code already shows.
 
-## Comments and documentation
+## Robustness
 
-- Document every new or materially changed non-trivial type, public member, service boundary, and persisted field.
-- Comments explain purpose, invariants, lifecycle, platform constraints, security decisions, or why; never narrate obvious syntax. Keep them next to the code and update them in the same change.
-- Preserve documentation of EPUB trust boundaries, atomic catalog writes, complete text-position persistence, and platform support; these are product guarantees.
-- Add short comments in complex private flows where cleanup, ordering, recovery, accessibility, or responsive breakpoints are easy to break.
-- Test names state behavior; comment inside tests only to protect a non-obvious regression.
-- Important notes belong in this file.
+- Expect failure from the network, cloud services, model providers and disk. Auxiliary features (illustrations, analysis, narration, accounts) never interrupt reading or crash the app; they show a retryable error.
+- Persist with `AtomicJsonFile` (atomic replace, serialized per file). A malformed record drops only that record, never the whole file.
+- Async work that can outlive its owner (book deleted, account changed, newer request) captures a `GenerationFence` ticket and checks it after every await before writing state.
+- Background work never prompts sign-in; it uses an existing session or waits.
+- Bound everything that can grow: imported file and archive sizes, request bodies, provider output, timeouts, retries, queue depth and caches.
+- Book files (EPUB/TXT) are arbitrary input: parse off the UI isolate, enforce size/encoding limits, reject what cannot be rendered, and commit only fully validated imports (staged, SHA-256 deduplicated).
+- Backend workers are idempotent. A busy lease answers 409 (never 204, which drops the only retry). `WORKER_LEASE_MS` exceeds the worker request timeout, dispatch deadlines equal it (`backend/src/fences.ts`), and queue retry backoff outlasts the lease.
+- Fix root causes, and add a regression test for every bug fixed.
 
-## Dart organization
+## Security and privacy (relaxed for development)
 
-- Keep every handwritten Dart file under 1,000 lines with headroom. Only `lib/text/direction.dart` (generated Unicode table) is exempt; do not split it or alter its generator.
-- One focused declaring file per component. Pair widgets with their private State; owned enums, typedefs, helpers and small single-test fixtures may sit beside their owner. Use direct imports: no barrels, compatibility exports, or `part` splits.
-- `ReaderController` is the cross-feature transaction owner. Catalog, preferences, and illustration coordinators own authoritative state and live callbacks; they never import the controller, UI, or each other.
-- `SectionLayout` owns measured painters; `PageTurn` owns its two-or-zero images. Navigation attaches live callbacks only during viewport lifecycle transitions and detaches only the identical owner. Borrowed targets, lines, slices and painters never dispose these resources.
+Keep — cheap, and protects keys and money:
+- Secrets are never committed, printed, logged or bundled. OAuth credentials live in the Git-ignored `.credentials/`; the OpenAI key exists only on the worker.
+- Firebase Auth on every user-specific route; users only reach their own data.
+- Spend limits on paid generation (illustration credits, narration allowance), and `DevApiClient` blocks paid routes in tests.
 
-## Reader and interface invariants
+Not required — do not add, and simplify or remove when touching the code:
+- App Check/App Attest gating, per-component symlink hardening beyond simple containment in the app directory, deletion tombstones and privacy outboxes, server-first deletion ordering, consent ceremonies, rollout flags, sanitized-logging rules beyond secrets.
 
-- Rendering and illustration indexing consume the same normalized `TextDocument` text and stable block IDs. Extraction and normalization live in `lib/text/`; no second text pipeline.
-- Persist the complete `TextPosition`: section ID, block ID, UTF-16 offset at an extended grapheme boundary. Reflow and mode changes restore the committed logical anchor, not pixels or pages; Scroll restores before its first painted frame.
-- Curl previews never advance positions, progress, or persistence. Commit only completed turns; cancel unfinished turns on reflow, chapter navigation, suspension and exit. Keep the two-section-layout and two-texture limits, including disposal and stale-load rejection.
-- Inline figure slots are part of section layout identity; a page starting at a figure reports the anchor block's end offset and restores to that block's last text line. Curl textures paint figures as flat placeholders.
-- Reserve the toolbar's 60px and bottom navigation's 62px when controls are hidden; visibility changes leave the viewport stationary. Every toolbar button stays visible; the chapter title is centered independently of them.
-- Honor reduced motion, paragraph semantics, keyboard navigation, and RTL logical navigation. Hidden controls immediately stop receiving pointer, focus, and accessibility actions.
-- Library presentation: macOS cover grids with hover/focus metadata; every iOS width uses list rows. Overlay reveals are stationary, pinned while menus are open, and keep metadata semantics when hidden. The 700px breakpoint controls only the sidebar.
-- `CatalogBook.wordCount` is computed at import from normalized blocks, never markup or widget builds.
-- Use `lib/theme.dart` and the active `ColorScheme` everywhere. The saved reading theme is app-wide; font preferences affect book text only. Support large accessibility text.
-- Settings are device-local and global. Library filter/sort defaults ignore temporary choices. Settings and listening-sheet voice/speed controls write the same preferences; never restore per-book overrides from narration sidecars.
-- A global voice change pauses playback, fences callbacks, and invalidates the old audio offset without advancing text or generating. Speed applies immediately without generating. Sidecar voice is audio/resume identity only; reuse offsets only for the matching global voice.
-- Preference reset preserves account, books, illustration consent, narration registrations and caches. Clearing narration audio stops playback, fences pending writes, keeps committed text anchors, and invalidates removed audio offsets. Delete only validated app-owned files.
+Before any external release, revisit: App Check, deletion/privacy guarantees, consent, and the rollout flags.
 
-## Import, persistence, and cloud boundaries
+## Architecture
 
-- EPUB and TXT are untrusted. Keep encoding validation, archive/markup limits, traversal protection, and rejection of DRM, scripted, fixed-layout, or remote-resource EPUBs. Parse off the UI isolate; commit only validated imports via private staging and SHA-256 deduplication.
-- Keep serialized atomic writes and restartable recovery.
-- Importing and reading stay offline and account-free. Illustration identity is shared on iOS/macOS; startup deletion retries use an existing session and never prompt sign-in. Keep illustration consent and the remote rollout flag.
-- Illustration scenes are chosen by the OpenAI Decisions API over density-sized chapter windows; only the selected paragraphs reach image generation. Art downloads as soon as it is ready and renders inline after its anchor paragraph; confirmed generations show a same-size progress placeholder there; anchors that do not resolve in the normalized index never download or render. Cloud failures never interrupt reading or block local deletion; retain failed deletions for retry and treat already-deleted books as success.
-- Every imported and existing book is preprocessed by default (`lib/book_analysis/`, backend `book-analysis-*`): evidence-anchored timeline, entities/mentions, world baselines and textual map. It is background-only, reuses an existing session, never prompts for sign-in, and never starts image generation or spends credits. Image intents wait for the book's latest generation to be complete; scene context carries only facts applicable at the depicted story time and revealed by the scene end (vetted world facts may be retroactive). Model accuracy is unmeasured without a paid live run.
+- Dart: keep handwritten files under 1,000 lines with headroom (`lib/text/direction.dart` is generated and exempt). One focused file per component; owned private helpers may sit beside it. Direct imports only: no barrels or `part` files.
+- `ReaderController` owns cross-feature transactions. Feature coordinators (catalog, preferences, illustrations, analysis, narration) own their state and never import the controller, the UI or each other. `createProductionController` (`lib/app/production_controller.dart`) is the only composition root.
+- One text pipeline: `lib/text/` produces the normalized `TextDocument` with stable block IDs that rendering, narration, illustrations and analysis all consume.
+- Reading positions are complete `TextPosition`s (section ID, block ID, UTF-16 offset on a grapheme boundary). Reflow and mode changes restore the logical anchor, never pixels or page numbers.
+- Backend (Express on Cloud Run, Firestore, Cloud Tasks): reuse `http.ts` (`HttpError`, `httpErrorHandler`, `require*`), `openai-client.ts`, `signed-urls.ts`, `durations.ts` and `fences.ts` rather than adding parallel helpers.
+- Infrastructure: one Terraform owner per resource and API enablement. Stacks are `bootstrap`, `foundation` (core, auth, shared data, monitoring), `illustrations` (feature resources) and `runtime` (API/worker deployments). Use `tool/deploy_backend <env> --scope core|illustrations|all` and `tool/plan_infra`; a scope never destroys an omitted stack.
 
-## Backend infrastructure
+## Product behavior
 
-- One environment project, Firebase Auth service, and Firestore database. `foundation` owns core/auth/shared data/monitoring; `illustrations` owns feature infrastructure; `runtime` owns API/worker deployments; bootstrap is separate.
-- Use `tool/deploy_backend <environment> --scope core|illustrations|all` and matching `tool/plan_infra` scopes (default all). Core works without OpenAI credentials or Node. Scope never destroys an omitted stack and is independent of illustration rollout.
-- Each API enablement and resource has one Terraform owner.
-- Worker claims: a busy lease answers 409 (never 204, which would drop the only task able to resume a crashed worker's job), checked after obsolete-job exits. `WORKER_LEASE_MS` exceeds the worker request timeout, task dispatch deadlines equal that timeout (`backend/src/fences.ts`), and every queue's retry backoff must outlast the lease. Book analysis has its own queue.
-- After infra/tooling changes run `python3 -m unittest discover -s tool/tests -v`, Terraform validation/mocked tests, formatting checks, and ShellCheck. Validation never applies cloud infrastructure changes; dev-API tests write only test-uid data in dev.
+- Reading works offline and without an account.
+- Page turns: curl previews never change position, progress or persistence; only completed turns commit. Unfinished turns cancel on reflow, navigation, suspension and exit. At most two section layouts and two page textures exist.
+- Hidden toolbar (60px) and bottom bar (62px) keep their space, so showing or hiding them never moves the text. Hidden controls take no pointer, focus or accessibility input.
+- Honor reduced motion, paragraph semantics, keyboard navigation, RTL logical navigation and large accessibility text. Colors come from `lib/theme.dart` and the active `ColorScheme`.
+- Library: macOS uses cover grids, iOS uses list rows at every width; the 700px breakpoint only controls the sidebar.
+- Settings are device-global. Settings and the listening sheet edit the same voice/speed preferences.
+- Narration: one app-lifetime audio handler. Only natural completion of a chunk commits reading progress; starting, seeking or "Read from here" never does. Segment only the normalized text (`lib/text/narration.dart` for cloud, `lib/text/sentence_narration.dart` for Apple). Cloud narration is the default; on-device Apple narration is behind `--dart-define=ON_DEVICE_NARRATION_ENABLED=true`. Cached replay is free.
+- Illustrations: the Decisions API picks scenes per chapter window; only those paragraphs reach image generation. Art renders inline after its anchor paragraph; anchors that do not resolve in the normalized text never render.
+- Book analysis runs in the background for every book, never prompts sign-in and never spends credits; illustration requests wait for a book's analysis to complete.
 
-## Integration tests
+## Platform notes
 
-- `integration_test/reader_test.dart` only registers feature groups; scenarios live in `integration_test/scenarios/`, named for focused `--plain-name` runs.
-- Each scenario runs independently with a fresh catalog and preferences, using `integration_test/support/native_test_app.dart` for setup, navigation, screenshots and teardown. Reusable document builders go in `test/fixtures/`; never import another `*_test.dart`.
-- Register cleanup before initialization, unmount the app before the final persistence flush, delete only the fixture's temp directory, and release gestures and captured images even on failure.
-- Use `NativeTestApp.runWithFrames` for native actions awaiting logical viewport restoration. Keep the macOS test app frontmost; use iOS `--no-uninstall` to keep screenshots.
-- Widget fixtures with narration unmount before `disposeControllerWithFrames` (`test/support/controller_lifecycle.dart`); do not keep idle completed fake-zone futures in shared queues.
-- Native scenarios cover complete flows with real import, storage and rendering; parsing and layout edge cases belong in unit/widget tests.
-- Performance runs are opt-in (`integration_test/performance_test.dart`, `test_driver/performance_test.dart`) via `flutter drive --profile --no-dds` on macOS or physical iOS. Compare matching fixture/device/window/settings metadata and phase names, preserve reset-to-start anchors, exclude setup/artifact I/O, mark failed captures incomplete, and keep every sampled stack's function attribution in CPU compaction.
+- Initialize Firebase and Google sign-in lazily; Google is the only sign-in. Google sign-out clears Firebase even if native logout fails.
+- Narration storage checks start at the OS-provided app home; never `lstat` above it (a physical device may deny it and fail startup).
+- `NativeNarrationPlayer.create` keeps one engine-lifetime service; never reinitialize `AudioService`.
+- The App Attest entitlement is iOS-only; macOS profiles reject it. Keep macOS Keychain/network entitlements and development signing.
 
-## Validation
+## Comments
 
-- After Dart changes run `dart format lib test integration_test`, `flutter analyze`, and `flutter test`.
-- `flutter test` includes dev-API tests against the deployed dev backend. Prerequisites: `.dart-defines/dev.json`, `gcloud auth application-default login`, membership in `api_test_principals`, and Node deps in `backend/`. Deploy backend changes to dev before expecting them to pass. Dart tests never use `MockClient` or fake APIs for free backend routes; fakes exist only for paid generation flows. `DevApiClient` blocks paid routes.
-- For shared reader/library changes run affected native scenarios on an iOS simulator when available; for platform integration changes build or run the platform. macOS native scenarios are not required while the build host cannot build the macOS target.
-- Behavioral changes (selection, dictionary lookup) are checked by automated native interaction, clipboard, platform-call and committed-position assertions, not screenshots or screen recording.
-- After intentional visual changes regenerate and inspect affected goldens (Paper, Sepia, Dark; iOS lists and desktop grids, including revealed overlays); never accept baselines just because tests pass.
-- Run `npm run build` and `npm test` in `backend/` when backend behavior changes.
-- On feature completion give a copyable `qrencode -t ANSIUTF8 '<OTA installation-page URL>'` command using the latest successfully built and hosted installer; if none is fresh, state that instead of presenting an old build.
+- Document non-trivial types, public members, service boundaries and persisted fields. Comments explain why, invariants, lifecycle and ordering that is easy to break; never narrate syntax. Update them in the same change.
+- Test names state behavior.
 
-## Cloud identity
+## Testing and validation
 
-- Google is the only interactive sign-in. The library account action is independent of illustration consent, narration registration and feature API availability; core-only builds authenticate without an OpenAI key or worker.
-- Initialize Firebase and Google lazily. Sign-in does not need App Check; protected feature requests need a Firebase ID token and App Check token. Google sign-out clears Firebase even if native logout fails.
-- Native Google callbacks must match the platform OAuth client and Firebase project. Generated client IDs and callback settings are public config in ignored private files; the OAuth web secret never enters Dart defines, bundles or committed files.
-- Keep OAuth credentials in the Git-ignored `.credentials/` directory, owner-only. Pass secrets privately to deployment; never print them or log them.
-- Reauthenticate the same Firebase user before server account deletion. Purge remote feature data before deleting the Firebase identity or clearing local consent, registrations and audio. Preserve local books and reading positions.
-
-## Narration
-
-- Provider choice is `selectNarrationProvider` in `lib/narration/narration_provider.dart`. Apple on-device narration is off by default (voices judged too poor); iOS uses cloud like macOS. Re-enable with `--dart-define=ON_DEVICE_NARRATION_ENABLED=true`. Startup rewrites a saved `apple:` voice to the cloud default when cloud is active. Native integration scenarios build the Apple source directly, independent of the switch.
-- Cloud narration is gated server-side by `NARRATION_ENABLED` (default false); cloud controls register books when needed and require Google sign-in and valid App Check. Production macOS cloud narration needs macOS 14+ and an installation that produces valid App Check tokens; verify distribution before rollout. Unsupported installs keep local reading and cached audio.
-- On-device (when enabled): installed ordinary Apple voices, no authentication, App Check, registration, quota, or cloud fallback; no Personal Voice, recording, or speech-recognition permission. Local iOS listening omits cloud account/allowance controls; Settings keeps privacy actions. Switching to Apple must not erase cloud receipts, deletion outboxes, or server-first deletion.
-- Keep the App Attest entitlement in iOS only; macOS profiles reject it. Preserve macOS Keychain/network entitlements and development signing. Protected generation fails closed without valid attestation.
-- Segment only the normalized `TextDocument`: cloud paragraph chunks in `lib/text/narration.dart`, Apple sentence units in `lib/text/sentence_narration.dart`. Preserve exact prose, block identities, complete start/end positions and grapheme boundaries. Local clips: 300 UTF-16 soft target, 3,000-unit hard bound; reject an oversized grapheme; never invent silent clips or completion.
-- One app-lifetime audio handler. Returning to the library or locking preserves playback; opening another book or manual navigation pauses it. Read from here starts at offset zero of the paragraph containing the first selected character, replaces prior playback, and continues through the book. Selecting or starting playback never commits the catalog anchor; persist a separate complete playback start. Only natural chunk completion commits progress; seeking never grants completion (replay from the committed anchor first). Suppress viewport writes while listening; await silent viewport restoration on pause. Never persist page numbers, pixels or partial anchors.
-- `NativeNarrationPlayer.create` keeps one engine-lifetime service; session disposal stops/unbinds it and never reinitializes `AudioService`. Speed-only changes update native playback-state speed immediately.
-- Apple synthesis: one engine-owned buffer synthesizer; stream PCM16 WAV at source rate/channels to validated private staging (explicit WAVE for `.wav.tmp`); bound jobs, output, timeout and queue depth; cancel native work outside store serialization and fence late callbacks. Word/sentence timing comes only from verified utterance-relative Apple markers expanded to complete graphemes, else sentence fallback; never estimate word times. The reader owns one cue-boundary timer on the actual player clock and clears presentation on pause, stall, background, library exit or detachment. Cue following never commits or turns pages.
-- Narration storage validation starts at the OS-provided app home and checks every app-controlled component below it. Never `lstat` ancestors above the sandbox (a physical device may deny them and fail initialization before the first frame). Keep private-root containment and per-component symlink rejection.
-- Sidecars keep cloud receipts, engine/synthesis/segmentation and voice identity, speed, committed anchor, playback start, chunk identity and audio offset. Global settings govern playback; restored missing Apple voices stay unavailable without blocking other settings. Identity mismatch invalidates audio offsets, never text anchors. Local keys include clip/sentence/source/voice/OS/synthesis identity, never UID or speed. WAV and timing companions share ownership and the global 250 MiB LRU; pin at most the active plus two buffered clips. Missing timing never invalidates playable audio. Serialize preparation/publication and manifests, not speculative synthesis. Fence writes, callbacks, registration and deletion with session generations; await persistence before removing book directories.
-- Cloud narration is `/api/narration` behind Firebase Auth and App Check, independent of illustration credits, using `gpt-realtime-2.1-mini` via the worker's isolated, tool-free Realtime provider. Bound requests, output and timeouts; publish only bounded, nonempty, aligned 24 kHz mono WAV after successful completion. Ignore transcript metadata. The service does not verify spoken-text fidelity or acoustic quality.
-- Allowance defaults: 500,000 UTF-16 units per user per UTC month, 200,000 per environment per UTC day (`NARRATION_MONTHLY_CHARACTERS`, `NARRATION_DAILY_CHARACTERS`). Cached replay is free; every submitted provider attempt consumes allowance, including failures. Release pre-submission failures, fence duplicate worker claims, cap at two attempts per chunk.
-- Cloud audio is private, expires after 30 days, and uses ten-minute download URLs. Remove temporary prose on terminal completion; abandoned inputs have a 24-hour TTL. Allowance reads reclaim expired unsubmitted reservations even with rollout disabled. Book deletions stay available with rollout disabled and use existing sessions on startup. Book/account tombstones stop delayed workers from publishing deleted assets.
-- Account actions use the shared native identity on both platforms. Delete cloud data before the Firebase user; clear local registrations/audio only after successful server deletion; a missing account endpoint fails closed. Preserve books and positions and reflect actual identity even if local cleanup fails. Purge UID-owned jobs, orphan inputs and monthly usage only after releasing unsubmitted reservations; keep the account tombstone and shared daily charges.
-- Account usage reads need existing Firebase Auth and App Check, ignore rollout flags, and never register books, initialize credits, reclaim reservations or submit generation. Include outstanding reservations in remaining allowance. Account changes invalidate pending snapshots; never substitute estimated balances.
-- Narration reuses the existing feature stack (API ownership, identities, storage, secrets, runtime deployments) and the `core|illustrations|all` scopes and resource addresses. Never apply cloud changes during validation. Before rollout verify signed-device Auth/App Check, background/media controls, interruptions and headphone removal, and listen to multilingual prose, dialogue, numbers and instruction-like passages.
+- Dart changes: `dart format lib test integration_test`, `flutter analyze`, `flutter test`.
+- `flutter test` includes dev-API tests against the deployed dev backend (needs `.dart-defines/dev.json`, `gcloud auth application-default login`, membership in `api_test_principals`, and Node deps in `backend/`). Deploy backend changes to dev before expecting them to pass; those tests write only test-uid data.
+- Prefer the real dev backend over fakes. Fakes are fine for paid generation and for UI states that are impractical to produce against dev (held responses, failures).
+- Backend changes: `npm run build` and `npm test` in `backend/`.
+- Infra/tooling changes: `python3 -m unittest discover -s tool/tests -v`, `terraform fmt`, `terraform validate` and mocked `terraform test`, and ShellCheck. Validation never applies cloud changes; deploy only when asked.
+- Shared reader/library changes: run the affected native scenarios on an iOS simulator (`integration_test/reader_test.dart` registers groups for `--plain-name`; scenarios live in `integration_test/scenarios/` and use `integration_test/support/native_test_app.dart`). Each scenario starts fresh and cleans up after itself even on failure. macOS native runs are not required while the host cannot build macOS.
+- Check behavior with automated assertions (positions, clipboard, platform calls), not screenshots. After intentional visual changes, regenerate and inspect the affected goldens (Paper, Sepia, Dark; iOS lists and desktop grids); never accept baselines just because tests pass.
+- Performance runs are opt-in: `flutter drive --profile --no-dds` with `integration_test/performance_test.dart`; compare only runs with matching fixture, device and settings.
+- On feature completion, give a copyable `qrencode -t ANSIUTF8 '<OTA installation-page URL>'` for the latest successfully built and hosted installer, or say that none is fresh.
