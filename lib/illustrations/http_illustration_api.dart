@@ -43,7 +43,7 @@ class HttpIllustrationApi implements IllustrationApi {
   @override
   Future<IllustrationConfiguration> getConfiguration() async =>
       IllustrationConfiguration.fromJson(
-        await _json('GET', '/api/illustrations/config'),
+        await _json('GET', '/api/illustrations/config', interactive: true),
       );
 
   @override
@@ -51,7 +51,11 @@ class HttpIllustrationApi implements IllustrationApi {
     CatalogBook book, {
     required int chapterCount,
   }) async {
-    final keyJson = await _json('GET', '/api/fingerprint-key');
+    final keyJson = await _json(
+      'GET',
+      '/api/fingerprint-key',
+      interactive: true,
+    );
     final encodedKey = keyJson['key'] as String?;
     if (encodedKey == null) {
       throw const IllustrationException('The server returned no book key.');
@@ -60,6 +64,7 @@ class HttpIllustrationApi implements IllustrationApi {
     final json = await _json(
       'POST',
       '/api/books',
+      interactive: true,
       body: {
         'fingerprint': fingerprint,
         'title': book.title,
@@ -92,6 +97,7 @@ class HttpIllustrationApi implements IllustrationApi {
     final json = await _json(
       'PUT',
       '/api/books/${_id(profile.cloudBookId)}/profile',
+      interactive: true,
       body: {
         'providerId': profile.providerId,
         'style': profile.style,
@@ -111,6 +117,8 @@ class HttpIllustrationApi implements IllustrationApi {
       'POST',
       '/api/books/${_id(profile.cloudBookId)}/chapters/'
           '${chapter.spineOrdinal}/jobs',
+      // Scheduled ahead of the reader in the background; never prompts.
+      interactive: false,
       body: {
         'href': chapter.href,
         'title': chapter.title,
@@ -133,7 +141,12 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<IllustrationJobResult> getJob(String jobId) async {
-    final json = await _json('GET', '/api/jobs/${_id(jobId)}');
+    final json = await _json(
+      'GET',
+      '/api/jobs/${_id(jobId)}',
+      // Polled by a timer while reading; never prompts.
+      interactive: false,
+    );
     final scenes = (json['scenes'] as List<dynamic>? ?? const [])
         .whereType<Map>()
         .map((item) {
@@ -171,7 +184,12 @@ class HttpIllustrationApi implements IllustrationApi {
 
   @override
   Future<UnlockedIllustration> unlockScene(String sceneId) async {
-    final json = await _json('POST', '/api/scenes/${_id(sceneId)}/unlock');
+    final json = await _json(
+      'POST',
+      '/api/scenes/${_id(sceneId)}/unlock',
+      // Art downloads automatically once ready; never prompts.
+      interactive: false,
+    );
     final imageMimeType = _mime(json['imageMimeType']);
     final thumbnailMimeType = _mime(json['thumbnailMimeType']);
     final thumbnailUsesOriginal = json['thumbnailUsesOriginal'] as bool;
@@ -197,12 +215,15 @@ class HttpIllustrationApi implements IllustrationApi {
   }
 
   @override
-  Future<void> regenerateScene(String sceneId) =>
-      _json('POST', '/api/scenes/${_id(sceneId)}/regenerate');
+  Future<void> regenerateScene(String sceneId) => _json(
+    'POST',
+    '/api/scenes/${_id(sceneId)}/regenerate',
+    interactive: true,
+  );
 
   @override
   Future<void> deleteScene(String sceneId) =>
-      _json('DELETE', '/api/scenes/${_id(sceneId)}');
+      _json('DELETE', '/api/scenes/${_id(sceneId)}', interactive: true);
 
   @override
   Future<void> deleteBook(String cloudBookId, {bool interactive = true}) async {
@@ -238,11 +259,13 @@ class HttpIllustrationApi implements IllustrationApi {
     throw const FormatException('Invalid illustration identity.');
   }
 
+  /// [interactive] is explicit per route: only user-initiated actions may
+  /// present sign-in; background scheduling, polling and downloads never do.
   Future<Map<String, dynamic>> _json(
     String method,
     String path, {
+    required bool interactive,
     Map<String, dynamic>? body,
-    bool interactive = true,
   }) => _http.json(
     method,
     path,

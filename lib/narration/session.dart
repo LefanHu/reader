@@ -44,6 +44,8 @@ enum NarrationStatus {
 /// callbacks; at most the active chunk plus two prefetched files are pinned.
 class NarrationSession {
   /// Controller callbacks own catalog persistence and viewport restoration.
+  /// [highlightChanged] publishes cue-boundary highlight moves, which happen
+  /// at every spoken word, apart from [changed]; it defaults to [changed].
   NarrationSession({
     required this.api,
     required this.source,
@@ -52,6 +54,7 @@ class NarrationSession {
     required this.changed,
     required this.commit,
     required this.currentPosition,
+    void Function()? highlightChanged,
     TextDocumentStore? documents,
     this.abandonRegistration,
     ReaderSettings Function()? preferences,
@@ -60,7 +63,10 @@ class NarrationSession {
        preferences = preferences ?? (() => const ReaderSettings()),
        documents = documents ?? TextDocumentStore() {
     player.bind(play: play, pause: pause, stop: stop, seek: seek);
-    _highlight = NarrationHighlightTracker(player: player, changed: changed);
+    _highlight = NarrationHighlightTracker(
+      player: player,
+      changed: highlightChanged ?? changed,
+    );
     _subscription = player.completed.listen((token) {
       unawaited(
         _finished(token).catchError((Object failure) {
@@ -477,7 +483,9 @@ class NarrationSession {
     );
     status = NarrationStatus.playing;
     _resumeTimer?.cancel();
-    _resumeTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    // Pause, suspension and exit flush exactly; this periodic write only
+    // bounds lost offset after a crash, so it need not run every few seconds.
+    _resumeTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       unawaited(flush().catchError((Object _) {}));
     });
     changed();

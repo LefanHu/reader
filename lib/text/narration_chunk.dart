@@ -26,7 +26,9 @@ class NarrationChunk {
   final String digest;
 
   /// Stable identity includes anchors as equal prose can occur more than once.
-  String get id => sha256
+  ///
+  /// Computed once: playback, highlighting and cache keys read it repeatedly.
+  late final String id = sha256
       .convert(
         utf8.encode(
           jsonEncode({

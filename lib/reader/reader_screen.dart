@@ -77,6 +77,8 @@ class _ReaderScreenState extends State<ReaderScreen>
     super.initState();
     publication = _open();
     widget.controller.addListener(_controllerChanged);
+    // Following the spoken passage reacts to highlight moves too.
+    widget.controller.highlightChanges.addListener(_controllerChanged);
     WidgetsBinding.instance.addObserver(this);
     _narration.attach();
     // Generation finishes while the reader rests on one anchor; polling uses
@@ -261,6 +263,7 @@ class _ReaderScreenState extends State<ReaderScreen>
   void dispose() {
     pollTimer?.cancel();
     widget.controller.removeListener(_controllerChanged);
+    widget.controller.highlightChanges.removeListener(_controllerChanged);
     _narration.dispose();
     WidgetsBinding.instance.removeObserver(this);
     widget.controller.flush();
@@ -349,7 +352,11 @@ class _ReaderScreenState extends State<ReaderScreen>
                         child: ConstrainedBox(
                           // Long lines reduce readability, especially on iPad.
                           constraints: const BoxConstraints(maxWidth: 680),
-                          child: _readerView(pub),
+                          // Spoken-word highlights rebuild only the viewport.
+                          child: ListenableBuilder(
+                            listenable: widget.controller.highlightChanges,
+                            builder: (context, _) => _readerView(pub),
+                          ),
                         ),
                       ),
                     ),
@@ -361,24 +368,32 @@ class _ReaderScreenState extends State<ReaderScreen>
                           ReaderControlsTransition(
                             visible: controls,
                             hiddenOffset: const Offset(0, .15),
-                            child: ReaderNavigationBar(
-                              listeningStatus: controls
-                                  ? _narrationStatus()
-                                  : null,
-                              progress:
-                                  widget.controller.catalog
-                                      .find(widget.book)
-                                      ?.progress ??
-                                  widget.book.progress,
-                              foreground: _foreground,
-                              pages:
-                                  widget.controller.preferences.settings.mode !=
-                                  ReadingMode.scroll,
-                              rightToLeft: navigation.rightToLeft,
-                              onPrevious: navigation.previous,
-                              onNext: navigation.next,
-                              onPreviousChapter: navigation.previousSection,
-                              onNextChapter: navigation.nextSection,
+                            // Position saves rebuild only the progress bar.
+                            child: ListenableBuilder(
+                              listenable: widget.controller.positionChanges,
+                              builder: (context, _) => ReaderNavigationBar(
+                                listeningStatus: controls
+                                    ? _narrationStatus()
+                                    : null,
+                                progress:
+                                    widget.controller.catalog
+                                        .find(widget.book)
+                                        ?.progress ??
+                                    widget.book.progress,
+                                foreground: _foreground,
+                                pages:
+                                    widget
+                                        .controller
+                                        .preferences
+                                        .settings
+                                        .mode !=
+                                    ReadingMode.scroll,
+                                rightToLeft: navigation.rightToLeft,
+                                onPrevious: navigation.previous,
+                                onNext: navigation.next,
+                                onPreviousChapter: navigation.previousSection,
+                                onNextChapter: navigation.nextSection,
+                              ),
                             ),
                           ),
                           if (!controls)

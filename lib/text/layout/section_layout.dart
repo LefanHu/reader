@@ -43,6 +43,11 @@ class SectionLayout {
       final measured = MeasuredBlock(block, painter);
       blocks.add(measured);
       final metrics = painter.computeLineMetrics();
+      // Segment each multi-line block once; snapping every line end with a
+      // scan from offset zero made long blocks quadratic on the UI isolate.
+      final boundaries = metrics.length > 1
+          ? text.GraphemeBoundaries(block.text)
+          : null;
       var start = 0;
       for (var i = 0; i < metrics.length; i++) {
         final metric = metrics[i];
@@ -53,7 +58,7 @@ class SectionLayout {
         final boundary = painter.getLineBoundary(probe);
         var end = i == metrics.length - 1
             ? block.text.length
-            : text.graphemeFloor(block.text, boundary.end);
+            : boundaries!.floor(boundary.end);
         if (end < block.text.length && block.text[end] == '\n') end++;
         // LineMetrics.height is rounded; use measured top-to-top distances so
         // fractional font sizes cannot accumulate into page overflow.

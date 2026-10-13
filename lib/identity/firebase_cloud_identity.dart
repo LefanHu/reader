@@ -135,6 +135,27 @@ class FirebaseCloudIdentity implements CloudIdentity {
     return FirebaseAppCheck.instance.getToken();
   }
 
+  /// Raw SDK failures never escape the identity boundary, so every caller can
+  /// classify token and attestation errors as retryable waits, not corruption.
+  static CloudIdentityException _identityFailure(FirebaseException error) {
+    if (error.code == 'network-request-failed') {
+      return const CloudIdentityException(
+        CloudFailureKind.offline,
+        'Connect to the internet to use cloud features.',
+      );
+    }
+    if (error.plugin == 'firebase_app_check') {
+      return const CloudIdentityException(
+        CloudFailureKind.attestation,
+        'Could not attest this app for cloud features.',
+      );
+    }
+    return const CloudIdentityException(
+      CloudFailureKind.signedOut,
+      'Sign in again to use cloud features.',
+    );
+  }
+
   @override
   Future<bool> hasSession() async {
     if (!configured) return false;
@@ -170,21 +191,31 @@ class FirebaseCloudIdentity implements CloudIdentity {
 
   @override
   Future<Map<String, String>> authorizationHeaders({
-    bool interactive = true,
+    required bool interactive,
   }) async {
     if (interactive) {
       await signIn();
     } else {
       await _initialize();
     }
-    final idToken = await _auth.currentUser?.getIdToken();
+    final String? idToken;
+    try {
+      idToken = await _auth.currentUser?.getIdToken();
+    } on FirebaseException catch (error) {
+      throw _identityFailure(error);
+    }
     if (idToken == null || idToken.isEmpty) {
       throw const CloudIdentityException(
         CloudFailureKind.signedOut,
         'Sign in to use cloud features.',
       );
     }
-    final appCheck = await _appCheckToken();
+    final String? appCheck;
+    try {
+      appCheck = await _appCheckToken();
+    } on FirebaseException catch (error) {
+      throw _identityFailure(error);
+    }
     if (appCheck == null || appCheck.isEmpty) {
       throw const CloudIdentityException(
         CloudFailureKind.attestation,

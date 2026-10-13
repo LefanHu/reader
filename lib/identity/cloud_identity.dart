@@ -15,8 +15,9 @@ abstract interface class CloudIdentity {
   /// Verifies the same Firebase user before destructive cloud-account actions.
   Future<void> reauthenticate();
 
-  /// Feature requests additionally require App Check; retries remain noninteractive.
-  Future<Map<String, String>> authorizationHeaders({bool interactive = true});
+  /// Feature requests additionally require App Check. Only user-initiated
+  /// requests pass [interactive]; background work must never prompt sign-in.
+  Future<Map<String, String>> authorizationHeaders({required bool interactive});
 
   /// Ends both Firebase and native Google sessions, retaining local books.
   Future<void> signOut();

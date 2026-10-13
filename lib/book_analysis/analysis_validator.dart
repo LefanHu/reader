@@ -36,6 +36,30 @@ class AnalysisValidator {
   final List<(String, String)> _references = [];
   final Map<String, Set<String>> _timeEdges = {};
 
+  // Manifest indexes shared by every page of the session. Building them per
+  // page, and scanning every chunk for each newly seen block, made validation
+  // blocks x spans.
+  late final Map<String, int> _sectionOrdinals = {
+    for (final section in manifest.sections) section.id: section.ordinal,
+  };
+  late final Map<String, int> _blockOrdinals = {
+    for (final chunk in manifest.chunks)
+      for (final span in chunk.primary)
+        _blockKey(span.sectionId, span.blockId): span.blockOrdinal,
+  };
+  late final Map<String, List<AnalysisSpanDescriptor>> _primaryByBlock = () {
+    final result = <String, List<AnalysisSpanDescriptor>>{};
+    for (final chunk in manifest.chunks) {
+      for (final span in chunk.primary) {
+        (result[_blockKey(span.sectionId, span.blockId)] ??= []).add(span);
+      }
+    }
+    return result;
+  }();
+
+  static String _blockKey(Object? sectionId, Object? blockId) =>
+      '$sectionId\u0000$blockId';
+
   /// Checks page bytes, ownership and source anchors before collecting references.
   ///
   /// Call once per page, then [finish] after the complete set is validated.
@@ -59,14 +83,17 @@ class AnalysisValidator {
     final json = page.toJson();
     final positions = <Map<String, dynamic>>[];
     final spans = <Map<String, dynamic>>[];
-    final sectionOrdinals = {
-      for (final section in manifest.sections) section.id: section.ordinal,
-    };
-    final blockOrdinals = <String, int>{
-      for (final chunk in manifest.chunks)
-        for (final span in chunk.primary)
-          '${span.sectionId}\u0000${span.blockId}': span.blockOrdinal,
-    };
+    final sectionOrdinals = _sectionOrdinals;
+    final blockOrdinals = _blockOrdinals;
+    final mentionsByBlock = <String, List<AnalysisMention>>{};
+    for (final mention in page.mentions ?? const <AnalysisMention>[]) {
+      (mentionsByBlock[_blockKey(
+                mention.span.start.sectionId,
+                mention.span.start.blockId,
+              )] ??=
+              [])
+          .add(mention);
+    }
     int comparePositions(Map a, Map b) {
       final section = (sectionOrdinals[a['sectionId']] ?? -1).compareTo(
         sectionOrdinals[b['sectionId']] ?? -1,
@@ -134,6 +161,7 @@ class AnalysisValidator {
       ),
     );
     TextSection? section;
+    var blockIndex = <String, int>{};
     final boundaries = <String, GraphemeBoundaries>{};
     final sourceText = <String, String>{};
     final checkedBlocks = <String>{};
@@ -148,19 +176,21 @@ class AnalysisValidator {
         section = await documents.loadSection(sourcePath, id as String);
         if (!isCurrent()) return;
         boundaries.clear();
+        blockIndex = {
+          for (var i = 0; i < section.blocks.length; i++)
+            section.blocks[i].id: i,
+        };
         if (section.id != id ||
             section.blocks.length != manifest.sections[ordinal].blockCount) {
           throw const FormatException('Analysis evidence source changed.');
         }
       }
       final blockId = position['blockId'];
-      final blockOrdinal = section!.blocks.indexWhere(
-        (block) => block.id == blockId,
-      );
-      if (blockOrdinal < 0) {
+      final blockOrdinal = blockIndex[blockId];
+      if (blockOrdinal == null) {
         throw const FormatException('Invalid analysis evidence block.');
       }
-      final block = section.blocks[blockOrdinal];
+      final block = section!.blocks[blockOrdinal];
       final offset = position['offset'];
       if (offset is! int ||
           offset < 0 ||
@@ -170,51 +200,40 @@ class AnalysisValidator {
           )).contains(offset)) {
         throw const FormatException('Invalid analysis evidence grapheme.');
       }
-      final key = '$id\u0000$blockId';
-      if (checkedBlocks.add(key)) {
-        for (final chunk in manifest.chunks) {
-          for (final span in chunk.primary) {
-            if (span.sectionId != id || span.blockId != blockId) continue;
-            if (span.blockOrdinal != blockOrdinal ||
-                span.blockLength != block.text.length ||
-                span.startOffset < 0 ||
-                span.endOffset > block.text.length ||
-                analysisSpanHash(
-                      sectionOrdinal: ordinal,
-                      sectionId: id as String,
-                      blockOrdinal: blockOrdinal,
-                      blockId: block.id,
-                      startOffset: span.startOffset,
-                      endOffset: span.endOffset,
-                      text: block.text.substring(
-                        span.startOffset,
-                        span.endOffset,
-                      ),
-                    ) !=
-                    span.hash) {
-              throw const FormatException(
-                'Analysis evidence source hash changed.',
-              );
-            }
-          }
+      final key = _blockKey(id, blockId);
+      if (!checkedBlocks.add(key)) continue;
+      for (final span in _primaryByBlock[key] ?? const []) {
+        if (span.blockOrdinal != blockOrdinal ||
+            span.blockLength != block.text.length ||
+            span.startOffset < 0 ||
+            span.endOffset > block.text.length ||
+            analysisSpanHash(
+                  sectionOrdinal: ordinal,
+                  sectionId: id as String,
+                  blockOrdinal: blockOrdinal,
+                  blockId: block.id,
+                  startOffset: span.startOffset,
+                  endOffset: span.endOffset,
+                  text: block.text.substring(span.startOffset, span.endOffset),
+                ) !=
+                span.hash) {
+          throw const FormatException('Analysis evidence source hash changed.');
         }
       }
-      // Retain only exact mention substrings, not whole loaded blocks.
-      for (final mention in page.mentions ?? const []) {
-        if (mention.span.start.sectionId == id &&
-            mention.span.start.blockId == blockId) {
-          if (mention.span.end.offset > block.text.length ||
-              block.text.substring(
-                    mention.span.start.offset,
-                    mention.span.end.offset,
-                  ) !=
-                  mention.surface) {
-            throw const FormatException(
-              'Analysis mention surface differs from source.',
-            );
-          }
-          sourceText[mention.id] = mention.surface;
+      // Retain only exact mention substrings, not whole loaded blocks. Each
+      // block's mentions are checked once, when the block is first seen.
+      for (final mention in mentionsByBlock[key] ?? const <AnalysisMention>[]) {
+        if (mention.span.end.offset > block.text.length ||
+            block.text.substring(
+                  mention.span.start.offset,
+                  mention.span.end.offset,
+                ) !=
+                mention.surface) {
+          throw const FormatException(
+            'Analysis mention surface differs from source.',
+          );
         }
+        sourceText[mention.id] = mention.surface;
       }
     }
     for (final span in spans) {

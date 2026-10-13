@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import '../identity/cloud_book_fingerprint.dart';
 import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
+import '../catalog/book_storage.dart';
 import '../catalog/catalog_book.dart';
 import '../text/narration_chunk.dart';
 import 'api.dart';
@@ -80,10 +81,10 @@ class HttpNarrationApi implements NarrationApi {
         'voice': voice,
       },
     );
+    if (!_cloudId.hasMatch(job['id'] as String)) {
+      throw const FormatException('Invalid narration job identity.');
+    }
     for (var attempt = 0; attempt < 120 && isCurrent(); attempt++) {
-      if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(job['id'] as String)) {
-        throw const FormatException('Invalid narration job identity.');
-      }
       final result = await _json('GET', '/api/narration/jobs/${job['id']}');
       if (!isCurrent()) break;
       if (result['status'] == 'ready') {
@@ -107,15 +108,20 @@ class HttpNarrationApi implements NarrationApi {
     throw StateError('Narration is buffering. Retry when connected.');
   }
 
+  /// Server-issued narration book and job identities are SHA-256 hex digests.
+  static final _cloudId = RegExp(sha256HexPattern);
+
   void _bookId(String value) {
-    if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(value)) {
+    if (!_cloudId.hasMatch(value)) {
       throw const FormatException('Invalid narration book identity.');
     }
   }
 
   @override
   Future<void> deleteBook(String bookId) async {
-    _bookId(bookId);
+    // The server can never hold an invalid ID; dropping it ends outbox retries
+    // that would otherwise block narration registration forever.
+    if (!_cloudId.hasMatch(bookId)) return;
     await _json(
       'DELETE',
       '/api/narration/books/$bookId',

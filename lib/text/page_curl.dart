@@ -12,17 +12,20 @@ import 'curl_mesh.dart';
 /// and reverse meshes; texture coordinates always refer to the original page.
 /// Reverse turns unfold the incoming sheet, rather than distorting live text.
 class PaperCurlPainter extends CustomPainter {
-  /// Creates a visual-only preview. [progress] is clamped to the unit interval.
+  /// Creates a visual-only preview. [turn] is clamped to the unit interval.
+  ///
+  /// [turn] also drives repainting, so animation frames repaint only this
+  /// layer instead of rebuilding the viewport's text slices every frame.
   PaperCurlPainter({
     required this.current,
     required this.target,
-    required this.progress,
+    required this.turn,
     required this.grabY,
     required this.fingerY,
     required this.forward,
     required this.fromRight,
     required this.paper,
-  });
+  }) : super(repaint: turn);
 
   /// Texture of the last committed page; never the accessibility source.
   final ui.Image current;
@@ -30,10 +33,13 @@ class PaperCurlPainter extends CustomPainter {
   /// Texture of the adjacent page, excluded from reading-position reporting.
   final ui.Image target;
 
-  /// Fraction of the turn, where one is a completed navigation.
-  final double progress;
+  /// Live fraction of the turn, where one is a completed navigation.
+  final Animation<double> turn;
 
-  /// Initial page-local grab height in logical pixels. [progress] carries
+  /// Current [turn] value, read at paint time.
+  double get progress => turn.value;
+
+  /// Initial page-local grab height in logical pixels. [turn] carries
   /// horizontal movement; these heights control the two-dimensional bend.
   final double grabY;
 
@@ -279,7 +285,7 @@ class PaperCurlPainter extends CustomPainter {
   bool shouldRepaint(PaperCurlPainter oldDelegate) =>
       oldDelegate.current != current ||
       oldDelegate.target != target ||
-      oldDelegate.progress != progress ||
+      oldDelegate.turn != turn ||
       oldDelegate.grabY != grabY ||
       oldDelegate.fingerY != fingerY ||
       oldDelegate.forward != forward ||

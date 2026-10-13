@@ -19,13 +19,10 @@ class FileCloudDeletionOutbox implements CloudDeletionOutbox {
   Future<List<PendingBookDeletion>> load() async {
     final stored = await _file.read((json) {
       if (json['items'] is! List) return null;
-      return (json['items'] as List<dynamic>)
-          .whereType<Map>()
-          .map(
-            (item) =>
-                PendingBookDeletion.fromJson(item.cast<String, dynamic>()),
-          )
-          .toList();
+      return decodeRecords(
+        json['items'] as List<dynamic>,
+        PendingBookDeletion.fromJson,
+      );
     });
     return stored?.value ?? [];
   }

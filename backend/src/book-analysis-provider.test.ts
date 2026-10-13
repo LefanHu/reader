@@ -32,7 +32,7 @@ function liveWire(output: AnalysisWindowOutput) {
 function injected(responseValue: Record<string, unknown>, inspect: (body: Record<string, unknown>) => void = () => {}) {
   let calls = 0, closed = 0;
   const provider = new ResponsesBookAnalysisProvider("private-key", {}, () => ({
-    async postJson(url, headers, body) { calls++; assert.equal(url, "https://api.openai.com/api/responses"); assert.equal(headers.authorization, "Bearer private-key"); inspect(body); return responseValue; },
+    async postJson(url, headers, body) { calls++; assert.equal(url, "https://api.openai.com/v1/responses"); assert.equal(headers.authorization, "Bearer private-key"); inspect(body); return responseValue; },
     close() { closed++; },
   }));
   return { provider, counts: () => ({ calls, closed }) };

@@ -73,7 +73,7 @@ void main() {
           final expected = PaperCurlPainter(
             current: painter.current,
             target: painter.target,
-            progress: .5,
+            turn: AlwaysStoppedAnimation(.5),
             grabY: bounds.height * .2,
             fingerY: bounds.height * .35,
             forward: true,

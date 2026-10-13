@@ -108,3 +108,22 @@ class AtomicJsonFile {
     if (backup.existsSync()) backup.deleteSync();
   }
 }
+
+/// Decodes each map in a persisted list independently, skipping records that
+/// no longer parse. One malformed record must never invalidate the whole file:
+/// [AtomicJsonFile.read] would discard it and the next write would silently
+/// drop every valid record, including deletion receipts kept for retry.
+List<T> decodeRecords<T>(
+  List<dynamic> items,
+  T Function(Map<String, dynamic> json) decode,
+) {
+  final records = <T>[];
+  for (final item in items.whereType<Map>()) {
+    try {
+      records.add(decode(item.cast<String, dynamic>()));
+    } on Object {
+      continue;
+    }
+  }
+  return records;
+}

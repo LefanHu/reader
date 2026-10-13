@@ -145,6 +145,20 @@ void main() {
     },
   );
 
+  test('position saves publish only the position signal', () async {
+    final book = testBook();
+    final controller = await testController(books: [book]);
+    addTearDown(controller.dispose);
+    var general = 0, positions = 0;
+    controller.addListener(() => general++);
+    controller.positionChanges.addListener(() => positions++);
+    const position = TextPosition(sectionId: 's0', blockId: 'p0', offset: 4);
+    await controller.savePosition(book, position, .7);
+    expect(positions, 1);
+    expect(general, 0);
+    expect(controller.catalog.find(book)!.lastPosition, position);
+  });
+
   test(
     'controller persists positions and global typography independently',
     () async {
@@ -174,6 +188,7 @@ void main() {
       importer: BookImporter(root: root),
       picker: FakePicker(const []),
       changed: () {},
+      positionChanged: () {},
     );
     await session.load();
     const position = TextPosition(sectionId: 's0', blockId: 'p0', offset: 3);

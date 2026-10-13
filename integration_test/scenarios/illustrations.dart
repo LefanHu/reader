@@ -158,7 +158,12 @@ void registerIllustrationTests() {
       expect(replaced.pendingGeneration, isNull);
       expect(File(replaced.localImagePath!).existsSync(), isTrue);
       expect(replaced.localImagePath, endsWith('.2.jpg'));
-      expect(File(first.localImagePath!).existsSync(), isFalse);
+      // Old art is deleted only after the new manifest commits.
+      await _until(
+        tester,
+        () => !File(first.localImagePath!).existsSync(),
+        'the superseded artwork cleanup',
+      );
       expect(app.viewport.navigation.leadingPosition, anchor);
       await _closeGallery(tester);
 

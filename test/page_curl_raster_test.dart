@@ -59,7 +59,7 @@ void main() {
           PaperCurlPainter(
             current: current,
             target: target,
-            progress: p,
+            turn: AlwaysStoppedAnimation(p),
             grabY: grabY,
             fingerY: fingerY,
             forward: forward,

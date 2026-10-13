@@ -209,10 +209,9 @@ class _TextViewportState extends State<TextViewport>
     super.initState();
     _attachNavigation();
     WidgetsBinding.instance.addObserver(this);
-    _animation = AnimationController(vsync: this)
-      ..addListener(() {
-        if (mounted) setState(() {});
-      });
+    // The curl painter listens to this controller directly; animation frames
+    // repaint only that layer rather than rebuilding the page's text.
+    _animation = AnimationController(vsync: this);
     _scroll.addListener(_scrolled);
     _goTo(
       widget.initialPosition ??
@@ -475,8 +474,12 @@ class _TextViewportState extends State<TextViewport>
     final epoch = ++_turnEpoch;
     _turnBusy = true;
     _turnDelta = delta;
-    _turnError = null;
-    _animation.value = 0;
+    // The animation no longer rebuilds the viewport, so state changes that
+    // add or remove the curl layer must rebuild explicitly.
+    setState(() {
+      _turnError = null;
+      _animation.value = 0;
+    });
     ui.Image? current;
     try {
       final target = await _resolvePage(delta);
@@ -497,13 +500,13 @@ class _TextViewportState extends State<TextViewport>
       }
       // A drag may have ended during section I/O. Resume at its actual fraction
       // so settling still scales with the distance remaining, not loading time.
-      if (!automatic) _animation.value = _dragProgress;
+      setState(() {
+        if (!automatic) _animation.value = _dragProgress;
+      });
       if (automatic) {
         _settleTurn(true);
       } else if (!_dragging) {
         _settleTurn(_releaseComplete);
-      } else {
-        setState(() {});
       }
     } on Object catch (error) {
       current?.dispose();
@@ -856,7 +859,7 @@ class _TextViewportState extends State<TextViewport>
                               painter: PaperCurlPainter(
                                 current: _turn!.current!,
                                 target: _turn!.incoming!,
-                                progress: _animation.value,
+                                turn: _animation,
                                 grabY: _dragOrigin?.dy ?? _height / 2,
                                 fingerY: _dragPointer?.dy ?? _height / 2,
                                 forward: _turn!.delta > 0,

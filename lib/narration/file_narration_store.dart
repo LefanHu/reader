@@ -33,6 +33,13 @@ class FileNarrationStore implements NarrationStore {
   Set<String> _pins = {};
   static final _queue = KeyedSerialQueue();
 
+  /// Upper-bound byte estimate per root, from the last full scan plus every
+  /// later publication. Removals outside eviction (book deletion, [clear],
+  /// replaced keys) only make it high, which triggers an earlier exact scan,
+  /// so the budget is never exceeded unnoticed. Avoids listing and stat-ing the
+  /// whole cache after every clip.
+  static final _estimatedBytes = <String, int>{};
+
   // Claims span native writer waits across all stores sharing the root. A
   // same-key successor waits outside _serial; clear invalidates every claimant.
   static final _writers = <String, List<_NarrationWrite>>{};
@@ -269,7 +276,15 @@ class FileNarrationStore implements NarrationStore {
             timing = null;
           }
         }
-        await _evict();
+        final rootKey = root.absolute.path;
+        final estimate = _estimatedBytes[rootKey];
+        final added =
+            await audio.length() +
+            (timing == null ? 0 : await timingFile.length());
+        _estimatedBytes[rootKey] =
+            estimate != null && estimate + added <= maxBytes
+            ? estimate + added
+            : await _evict();
         return NarrationAudioAsset(path: audio.path, timing: timing);
       });
     } finally {
@@ -371,14 +386,17 @@ class FileNarrationStore implements NarrationStore {
     }
   }
 
-  Future<void> _evict() async {
+  /// Scans every book's narration cache, removes unclaimed crash leftovers,
+  /// evicts least-recently-used unpinned entries over budget, and returns the
+  /// exact remaining total.
+  Future<int> _evict() async {
     final files = <File>[];
     final books = Directory('${root.absolute.path}/books');
     if (await FileSystemEntity.type(root.absolute.path, followLinks: false) !=
             FileSystemEntityType.directory ||
         await FileSystemEntity.type(books.path, followLinks: false) !=
             FileSystemEntityType.directory) {
-      return;
+      return 0;
     }
     await for (final book in books.list(followLinks: false)) {
       if (book is! Directory ||
@@ -405,6 +423,7 @@ class FileNarrationStore implements NarrationStore {
       await _deleteEntry(file);
       total -= sizes[file]!;
     }
+    return total;
   }
 
   @override

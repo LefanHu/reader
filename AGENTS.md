@@ -18,7 +18,7 @@
 
 - Keep every handwritten Dart file under 1,000 lines with headroom. Only `lib/text/direction.dart` (generated Unicode table) is exempt; do not split it or alter its generator.
 - One focused declaring file per component. Pair widgets with their private State; owned enums, typedefs, helpers and small single-test fixtures may sit beside their owner. Use direct imports: no barrels, compatibility exports, or `part` splits.
-- `ReaderController` is the sole shared notifier and cross-feature transaction owner. Catalog, preferences, and illustration coordinators own authoritative state and live callbacks; they never import the controller, UI, or each other.
+- `ReaderController` is the cross-feature transaction owner. Catalog, preferences, and illustration coordinators own authoritative state and live callbacks; they never import the controller, UI, or each other.
 - `SectionLayout` owns measured painters; `PageTurn` owns its two-or-zero images. Navigation attaches live callbacks only during viewport lifecycle transitions and detaches only the identical owner. Borrowed targets, lines, slices and painters never dispose these resources.
 
 ## Reader and interface invariants

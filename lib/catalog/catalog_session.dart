@@ -11,7 +11,8 @@ import 'catalog_store.dart';
 
 /// Owns the live catalog, serial imports, and debounced reading-position writes.
 ///
-/// Changes publish through the application's shared notifier. Injected services
+/// Changes publish through [changed]; position-only records publish through
+/// [positionChanged] so frequent saves do not rebuild the app. Injected services
 /// remain caller-owned; disposal only fences work and cancels the debounce timer.
 class CatalogSession {
   /// Installs catalog services and the shared change callback once.
@@ -20,6 +21,7 @@ class CatalogSession {
     required this.importer,
     required this.picker,
     required this.changed,
+    required this.positionChanged,
     this.acceptedBook,
   });
 
@@ -48,8 +50,11 @@ class CatalogSession {
   /// Total candidates in the current import.
   int importTotal = 0;
 
-  /// Publishes catalog transactions through the app's sole shared notifier.
+  /// Publishes catalog transactions through the app's general notification.
   final VoidCallback changed;
+
+  /// Publishes a recorded reading position or progress change only.
+  final VoidCallback positionChanged;
   Timer? _positionSave;
   Future<void>? _positionWrite;
   bool _disposed = false;
@@ -137,6 +142,7 @@ class CatalogSession {
         progress: progress.clamp(0, 1),
         lastOpenedAt: DateTime.now(),
       ),
+      positionOnly: true,
     );
     _positionSave?.cancel();
     if (immediate) return store.save(books);
@@ -172,11 +178,11 @@ class CatalogSession {
     await store.save(books);
   }
 
-  void _replace(CatalogBook updated) {
+  void _replace(CatalogBook updated, {bool positionOnly = false}) {
     books = books
         .map((book) => book.hash == updated.hash ? updated : book)
         .toList();
-    changed();
+    positionOnly ? positionChanged() : changed();
   }
 
   /// Fences delayed position work without closing services or writing.

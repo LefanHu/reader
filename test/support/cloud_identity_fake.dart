@@ -47,7 +47,7 @@ class FakeCloudIdentity implements CloudIdentity {
 
   @override
   Future<Map<String, String>> authorizationHeaders({
-    bool interactive = true,
+    required bool interactive,
   }) async {
     if (interactive) await signIn();
     return {'authorization': 'Bearer test', 'x-firebase-appcheck': 'test'};

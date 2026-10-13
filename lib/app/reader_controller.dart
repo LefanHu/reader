@@ -46,6 +46,7 @@ import '../preferences/reader_preferences_coordinator.dart';
 import '../preferences/settings_store.dart';
 import '../text/document_store.dart';
 import '../text/text_position.dart';
+import 'change_signal.dart';
 
 /// Narration dependencies installed together; absent graphs have no narration.
 typedef NarrationServices = ({
@@ -57,13 +58,23 @@ typedef NarrationServices = ({
 
 /// Owns session state and coordinates UI, persistence, normalized text, and art jobs.
 ///
-/// This remains the app's only shared [ChangeNotifier]. Every service is
-/// injected by [create] or tests, so reading never depends on cloud plugins.
+/// Its own notification covers general state. High-frequency updates publish
+/// only through [highlightChanges] and [positionChanges], so a spoken word or a
+/// scrolled line rebuilds the widgets presenting it rather than the whole app.
+/// Every service is injected by [create] or tests, so reading never depends on
+/// cloud plugins.
 /// Account usage owns its request lifecycle separately.
 class ReaderController extends ChangeNotifier {
   /// Replaces finalized-preprocessing readiness for service-less tests only;
   /// production never sets it, so image intents always wait for real analysis.
   final bool Function(CatalogBook)? analysisReadyForTesting;
+
+  /// Fires when the narration highlight moves; never on the general channel.
+  final highlightChanges = ChangeSignal();
+
+  /// Fires when a book's reading position or progress is recorded; never on
+  /// the general channel.
+  final positionChanges = ChangeSignal();
 
   /// Composes authoritative owners before installing optional narration.
   ReaderController({
@@ -88,6 +99,9 @@ class ReaderController extends ChangeNotifier {
       importer: importer,
       picker: picker,
       changed: notifyListeners,
+      positionChanged: () {
+        if (!_disposed) positionChanges.notify();
+      },
       acceptedBook: _acceptedBook,
     );
     preferences = ReaderPreferencesCoordinator(
@@ -152,6 +166,9 @@ class ReaderController extends ChangeNotifier {
         },
         changed: () {
           if (!_disposed) notifyListeners();
+        },
+        highlightChanged: () {
+          if (!_disposed) highlightChanges.notify();
         },
         commit: (book, position, progress) =>
             savePosition(book, position, progress, fromNarration: true),
@@ -567,6 +584,8 @@ class ReaderController extends ChangeNotifier {
     _usage.dispose();
     catalog.dispose();
     preferences.dispose();
+    highlightChanges.dispose();
+    positionChanges.dispose();
     super.dispose();
   }
 }

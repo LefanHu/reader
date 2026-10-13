@@ -1,4 +1,3 @@
-import 'package:firebase_core/firebase_core.dart';
 import 'package:http/http.dart' as http;
 
 import '../identity/cloud_failure_kind.dart';
@@ -42,6 +41,12 @@ class HttpAccountApi implements AccountApi {
     } on AccountUsageException {
       rethrow;
     } on CloudIdentityException catch (error) {
+      if (error.kind == CloudFailureKind.offline) {
+        throw const AccountUsageException(
+          AccountUsageFailureKind.offline,
+          'Connect to the internet to view account usage.',
+        );
+      }
       final attestation = error.kind == CloudFailureKind.attestation;
       throw AccountUsageException(
         attestation
@@ -50,16 +55,6 @@ class HttpAccountApi implements AccountApi {
         attestation
             ? 'This installation could not verify App Check.'
             : 'Sign in again to view account usage.',
-      );
-    } on FirebaseException catch (error) {
-      final attestation = error.plugin == 'firebase_app_check';
-      throw AccountUsageException(
-        attestation
-            ? AccountUsageFailureKind.attestation
-            : AccountUsageFailureKind.service,
-        attestation
-            ? 'This installation could not verify App Check.'
-            : 'Account authentication could not be verified.',
       );
     } on CloudServiceException catch (error) {
       if (error.statusCode == 401 || error.statusCode == 403) {

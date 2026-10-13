@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -25,8 +26,9 @@ import 'store.dart';
 /// Owns illustration sidecars, indexing, and cloud job workflows.
 ///
 /// Dependencies and live catalog/narration callbacks are installed once. Changes
-/// publish through the application notifier; this owner introduces no additional
-/// cancellation or disposal fences around existing in-flight feature work.
+/// publish through the application notifier. Awaited cloud results are written
+/// only after re-checking that the book and the same enabled profile are still
+/// live, so deletion or account clearing cannot be undone by a late response.
 class IllustrationCoordinator {
   /// Installs feature services and live cross-feature callbacks.
   IllustrationCoordinator({
@@ -95,6 +97,11 @@ class IllustrationCoordinator {
   /// poll interval so inline placeholders turn into art promptly.
   final Map<String, bool> _jobsActive = {};
 
+  /// Job IDs the server reported terminal. Their scenes change afterwards only
+  /// through regeneration, so they are polled again only while a local scene
+  /// of that job is still queued, generating or regenerating.
+  final Set<String> _settledJobs = {};
+
   // A future ID remains readable in the manifest, but this client cannot admit
   // generation for a source it does not support. Existing art/jobs still load.
   static const _supportedProviderIds = {
@@ -142,10 +149,13 @@ class IllustrationCoordinator {
   Future<void> enqueueBookDeletion(String cloudBookId) =>
       _deletions.enqueue(cloudBookId);
 
-  /// Removes only the book's in-memory manifest and normalized index.
+  /// Removes only the book's in-memory manifest, index and polling state.
   void forget(CatalogBook book) {
-    manifests.remove(book.hash);
+    final jobs = manifests.remove(book.hash)?.chapterJobs.values;
+    if (jobs != null) _settledJobs.removeAll(jobs);
     _textIndexes.remove(book.hash);
+    _jobsActive.remove(book.hash);
+    _lastIllustrationRefresh.remove(book.hash);
   }
 
   /// Deletes local scenes and disables manifests while retaining books/indexes.
@@ -486,22 +496,37 @@ class IllustrationCoordinator {
         ? index.chapters.first
         : index.chapterForHref(href);
     final start = current?.spineOrdinal ?? 0;
-    final jobs = Map<int, String>.of(manifest.chapterJobs);
+    var created = false;
     for (final ordinal in [start, start + 1]) {
-      if (ordinal >= index.chapters.length || jobs.containsKey(ordinal)) {
+      if (ordinal >= index.chapters.length ||
+          manifestFor(book).chapterJobs.containsKey(ordinal)) {
         continue;
       }
       final id = await api.createChapterJob(
         profile: profile,
         chapter: index.chapters[ordinal],
       );
-      jobs[ordinal] = id;
-      _jobsActive[book.hash] = true;
-      final updated = manifestFor(book).copyWith(chapterJobs: jobs);
+      // The request may outlive deletion, account clearing or a profile
+      // change; only record the job against the same still-live profile, and
+      // merge into the latest manifest instead of a pre-await snapshot.
+      final latest = manifestFor(book);
+      final latestProfile = latest.profile;
+      if (_currentBook(book) == null ||
+          latestProfile == null ||
+          !latestProfile.enabled ||
+          latestProfile.cloudBookId != profile.cloudBookId ||
+          latestProfile.revision != profile.revision) {
+        break;
+      }
+      final updated = latest.copyWith(
+        chapterJobs: {...latest.chapterJobs, ordinal: id},
+      );
       await store.saveManifest(book, updated);
       manifests[book.hash] = updated;
+      _jobsActive[book.hash] = true;
+      created = true;
     }
-    _changed();
+    if (created) _changed();
   }
 
   /// Nudges enabled books at the committed anchor without advancing reading state.
@@ -736,33 +761,60 @@ class IllustrationCoordinator {
   Future<void> _refreshIllustrationJobs(CatalogBook book) async {
     final beforePolling = manifests[book.hash];
     if (beforePolling?.enabled != true || _currentBook(book) == null) return;
+    final unsettledJobs = {
+      for (final scene in beforePolling!.scenes)
+        if (scene.jobId != null &&
+            (scene.regenerating ||
+                scene.state == IllustrationSceneState.queued ||
+                scene.state == IllustrationSceneState.generating))
+          scene.jobId!,
+    };
     final incomingScenes = <IllustrationScene>[];
     final results = <IllustrationJobResult>[];
-    for (final jobId in beforePolling!.chapterJobs.values) {
+    for (final jobId in beforePolling.chapterJobs.values) {
+      if (_settledJobs.contains(jobId) && !unsettledJobs.contains(jobId)) {
+        continue;
+      }
       final result = await api.getJob(jobId);
       results.add(result);
       incomingScenes.addAll(result.scenes);
+      if (const {
+        'complete',
+        'failed',
+        'insufficient_credits',
+      }.contains(result.status)) {
+        _settledJobs.add(jobId);
+      }
     }
     // The server keeps a job analyzing through image generation.
     _jobsActive[book.hash] = results.any(
       (result) => result.status == 'queued' || result.status == 'analyzing',
     );
+    if (incomingScenes.isEmpty) return;
     // Polling awaits network IO; merge into the newest local path state.
     final current = manifests[book.hash];
     if (current?.enabled != true || _currentBook(book) == null) return;
     final scenes = List<IllustrationScene>.of(current!.scenes);
+    final positions = {for (var i = 0; i < scenes.length; i++) scenes[i].id: i};
+    final previouslyKnown = {
+      for (final scene in beforePolling.scenes) scene.id,
+    };
     for (final incoming in incomingScenes) {
-      final index = scenes.indexWhere((scene) => scene.id == incoming.id);
-      if (index < 0) {
-        if (beforePolling.scenes.any((scene) => scene.id == incoming.id)) {
+      final index = positions[incoming.id];
+      if (index == null) {
+        if (previouslyKnown.contains(incoming.id)) {
           continue; // Removed locally while this poll was awaiting network IO.
         }
+        positions[incoming.id] = scenes.length;
         scenes.add(incoming);
       } else {
         scenes[index] = _mergeScene(scenes[index], incoming);
       }
     }
     final manifest = current.copyWith(scenes: scenes);
+    // Most polls observe no change; skip the sidecar write and the app-wide
+    // rebuild unless a scene actually moved.
+    if (jsonEncode(manifest.toJson()) == jsonEncode(current.toJson())) return;
     await store.saveManifest(book, manifest);
     manifests[book.hash] = manifest;
     _changed();

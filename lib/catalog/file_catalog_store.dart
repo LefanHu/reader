@@ -35,9 +35,7 @@ class FileCatalogStore implements CatalogStore {
     }
     final stored = await _catalogFile.read((json) {
       if (json['books'] is! List) return null;
-      return (json['books'] as List)
-          .whereType<Map>()
-          .map((item) => CatalogBook.fromJson(item.cast<String, dynamic>()))
+      return decodeRecords(json['books'] as List, CatalogBook.fromJson)
           .where(
             (book) =>
                 ownedBookDirectory(root, book) != null &&

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 
@@ -66,14 +67,29 @@ List<AnalysisDescriptorPage> analysisDescriptorPages(
 /// on demand and rejects changed text/offsets rather than snapping evidence.
 class AnalysisSource {
   /// Uses the same disk boundary as rendering; injectable for deterministic IO.
+  ///
+  /// With the default disk store, [buildManifest] runs entirely on one
+  /// background isolate: it decodes and hashes every section of the book.
+  /// Injected stores stay on the calling isolate.
   AnalysisSource({TextDocumentStore? documents})
-    : documents = documents ?? TextDocumentStore();
+    : documents = documents ?? TextDocumentStore(),
+      _background = documents == null;
 
   /// Immutable normalized source boundary, never an illustration text cache.
   final TextDocumentStore documents;
 
+  final bool _background;
+
   /// Covers every block exactly once, preserving empty blocks and sections.
-  Future<AnalysisSourceManifest> buildManifest(String sourcePath) async {
+  Future<AnalysisSourceManifest> buildManifest(String sourcePath) => _background
+      ? Isolate.run(
+          () =>
+              AnalysisSource(documents: InlineTextDocumentStore())
+                  ._buildManifest(sourcePath),
+        )
+      : _buildManifest(sourcePath);
+
+  Future<AnalysisSourceManifest> _buildManifest(String sourcePath) async {
     final document = await documents.load(sourcePath);
     final sections = <AnalysisSectionDescriptor>[];
     final chunks = <AnalysisChunkDescriptor>[];

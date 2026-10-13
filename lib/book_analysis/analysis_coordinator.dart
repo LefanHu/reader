@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
 
 import '../catalog/catalog_book.dart';
@@ -76,12 +77,24 @@ class BookAnalysisCoordinator {
   final AnalysisSource _source;
   final Map<String, BookAnalysisState> _states = {};
   final Map<String, AnalysisSourceManifest> _manifests = {};
+
+  /// Descriptor pages of each cached manifest; recomputing them re-encodes
+  /// every descriptor, and the active book is polled every few seconds.
+  final Map<String, List<AnalysisDescriptorPage>> _pages = {};
   final Map<String, (int, String)> _verifiedOwners = {};
   final Map<String, _Owner> _writeOwners = {};
   final Map<String, int> _bookEpochs = {};
   final Set<String> _queued = <String>{};
   final Map<String, DateTime> _retryAt = {};
   final Set<Future<void>> _writes = {};
+
+  /// Last state JSON written to or restored from the store, per import hash;
+  /// identical saves skip the disk write and the app-wide notification.
+  final Map<String, String> _persisted = {};
+
+  /// Account-specific service configuration shared by one drain pass, so a
+  /// nudge over the whole library costs one request rather than one per book.
+  AnalysisConfiguration? _drainConfig;
   Timer? _timer;
   String? _activeBook;
   Future<void>? _running;
@@ -103,6 +116,8 @@ class BookAnalysisCoordinator {
         if (!_localCurrent(owner)) continue;
         if (state == null || !state.matchesBook(book)) {
           state = BookAnalysisState.forBook(book);
+        } else {
+          _persisted[book.hash] = jsonEncode(state.toJson());
         }
         _states[book.hash] = state;
         _queued.add(book.hash);
@@ -114,14 +129,17 @@ class BookAnalysisCoordinator {
     }
   }
 
-  /// Schedules a live import, discarding cached source identity and retry delay.
+  /// Schedules a live import, discarding its retry delay.
+  ///
+  /// The cached source manifest is kept: it is keyed by the content hash, so
+  /// the same import always yields the same manifest, and rebuilding it hashes
+  /// every section of the book.
   void queue(CatalogBook book) {
     if (_disposed || !isBookLive(book)) return;
     final existing = _states[book.hash];
     if (existing == null || !existing.matchesBook(book)) {
       _states[book.hash] = BookAnalysisState.forBook(book);
     }
-    _manifests.remove(book.hash);
     _retryAt.remove(book.hash);
     _queued.add(book.hash);
     _start();
@@ -157,6 +175,7 @@ class BookAnalysisCoordinator {
     _activeBook = null;
     _timer?.cancel();
     _timer = null;
+    _drainConfig = null;
     _retryAt.clear();
     _queued.clear();
     // Retain old data until the server confirms the same/new owner or deletion.
@@ -179,7 +198,9 @@ class BookAnalysisCoordinator {
     _queued.remove(book.hash);
     _retryAt.remove(book.hash);
     _states.remove(book.hash);
+    _persisted.remove(book.hash);
     _manifests.remove(book.hash);
+    _pages.remove(book.hash);
     if (_activeBook == book.hash) _activeBook = null;
     _armTimer();
   }
@@ -189,6 +210,7 @@ class BookAnalysisCoordinator {
     invalidateAccount();
     await flush();
     await store.clearAccountData(retainedBooks);
+    _persisted.clear();
     if (_disposed) return;
     for (final book in retainedBooks) {
       if (isBookLive(book)) {
@@ -265,6 +287,7 @@ class BookAnalysisCoordinator {
   }
 
   Future<void> _drain() async {
+    _drainConfig = null;
     while (!_disposed && _resumed && _queued.isNotEmpty) {
       final hash = _activeBook ?? _queued.first;
       if (!_queued.remove(hash)) break;
@@ -292,11 +315,21 @@ class BookAnalysisCoordinator {
 
   Future<void> _save(_Owner owner, BookAnalysisState state) async {
     if (!owner.current(this)) return;
-    _states[owner.book.hash] = state;
+    final hash = owner.book.hash;
+    final changedInMemory = !identical(_states[hash], state);
+    _states[hash] = state;
+    final json = jsonEncode(state.toJson());
+    if (_persisted[hash] == json) {
+      // Re-saving identical state would rewrite the sidecar and re-verify
+      // every finalized page; only notify if the in-memory view moved.
+      if (changedInMemory && owner.current(this)) changed();
+      return;
+    }
     final write = store.saveState(owner.book, state);
     _writes.add(write);
     try {
       await write;
+      _persisted[hash] = json;
     } finally {
       _writes.remove(write);
     }
@@ -325,8 +358,9 @@ class BookAnalysisCoordinator {
       _retry(owner, waitingPollInterval);
       return;
     }
-    final config = await api.getConfiguration();
+    final config = _drainConfig ?? await api.getConfiguration();
     if (!owner.current(this)) return;
+    _drainConfig = config;
     if (config.accountKey.isEmpty) {
       _activeBook = null;
       await _save(
@@ -415,7 +449,10 @@ class BookAnalysisCoordinator {
       if (!owner.current(this)) return;
     }
     final generation = state.generationId!;
-    final pages = analysisDescriptorPages(manifest.chunks);
+    final pages = _pages.putIfAbsent(
+      book.hash,
+      () => analysisDescriptorPages(manifest.chunks),
+    );
     for (
       var ordinal = state.manifestPagesUploaded;
       ordinal < pages.length;

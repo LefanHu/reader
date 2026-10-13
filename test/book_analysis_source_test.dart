@@ -1,10 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/book_analysis/analysis_source.dart';
 import 'package:reader/book_analysis/analysis_source_models.dart';
 import 'package:reader/book_analysis/analysis_span.dart';
 import 'package:reader/book_analysis/analysis_limits.dart';
+import 'package:reader/importing/book_importer.dart';
+import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/text/document.dart';
 import 'package:reader/text/document_store.dart';
 import 'package:reader/text/grapheme_boundary.dart';
@@ -14,6 +18,32 @@ import 'package:reader/text/text_position.dart';
 import 'package:reader/text/text_section.dart';
 
 void main() {
+  test(
+    'the default disk source builds the same manifest on a background isolate',
+    () async {
+      final root = await Directory.systemTemp.createTemp('analysis_source');
+      addTearDown(() => root.delete(recursive: true));
+      final bytes = Uint8List.fromList(
+        utf8.encode('${'Mara walks e\u0301 and 👩🏽‍🚀. ' * 400}\n\nThe end.'),
+      );
+      final imported = await BookImporter(root: root).import(
+        ImportCandidate(
+          name: 'Book.txt',
+          size: bytes.length,
+          readBytes: () async => bytes,
+        ),
+        {},
+      );
+      final path = imported.book!.path;
+      final background = await AnalysisSource().buildManifest(path);
+      final inline = await AnalysisSource(documents: TextDocumentStore())
+          .buildManifest(path);
+      expect(background.documentDigest, inline.documentDigest);
+      expect(background.chunkCount, inline.chunkCount);
+      expect(background.chunkCount, greaterThan(0));
+    },
+  );
+
   test('combining accents emoji and newline share the Node hash golden', () {
     expect(
       analysisSpanHash(

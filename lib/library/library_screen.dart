@@ -37,6 +37,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
   late LibraryFilter _savedFilter;
   late LibrarySort _savedSort;
 
+  /// General changes plus position saves, which reorder recent books and move
+  /// progress bars. Only listened to while the library is the visible route;
+  /// becoming current again rebuilds through the [ModalRoute] dependency.
+  late final _changesWhileVisible = Listenable.merge([
+    widget.controller,
+    widget.controller.positionChanges,
+  ]);
+
   @override
   void initState() {
     super.initState();
@@ -181,7 +189,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
+    // A covered library skips position saves made while reading.
+    listenable: ModalRoute.of(context)?.isCurrent ?? true
+        ? _changesWhileVisible
+        : widget.controller,
     builder: (context, _) => LayoutBuilder(
       builder: (context, constraints) {
         // Use actual window width so iPad split view gets the compact layout.

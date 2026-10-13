@@ -335,7 +335,10 @@ void main() {
         ],
       );
       h.api.failProvider = true;
-      h.coordinator.nudge();
+      // A different normalized document for the same import only arises
+      // across launches; within one session the source manifest is cached.
+      h.restart();
+      await h.start();
       await _until(() => h.state.status == BookAnalysisStatus.failed);
       expect(h.state.failureCategory, 'provider_failed');
       expect(h.state.finalized!.revision, old.revision);
@@ -350,6 +353,28 @@ void main() {
       );
     },
   );
+
+  test('nudging a completed library shares one configuration request and rewrites nothing', () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    final second = _book('b');
+    h.books.add(second);
+    await h.start();
+    await _until(
+      () =>
+          h.coordinator.isComplete(h.book) && h.coordinator.isComplete(second),
+    );
+    final configCalls = h.api.configCalls;
+    var writes = 0;
+    h.store.beforeStateWrite = (_) async => writes++;
+    h.coordinator.nudge();
+    await _until(() => h.api.configCalls > configCalls);
+    await Future<void>.delayed(const Duration(milliseconds: 15));
+    expect(h.api.configCalls, configCalls + 1);
+    expect(writes, 0);
+    expect(h.coordinator.isComplete(h.book), isTrue);
+    expect(h.coordinator.isComplete(second), isTrue);
+  });
 
   test('invalid combining-grapheme evidence is rejected rather than snapped', () async {
     final h = _Harness(

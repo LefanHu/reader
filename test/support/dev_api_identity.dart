@@ -115,7 +115,7 @@ class DevApiIdentity implements CloudIdentity {
 
   @override
   Future<Map<String, String>> authorizationHeaders({
-    bool interactive = true,
+    required bool interactive,
   }) async {
     if (!_signedIn) {
       if (!interactive) {

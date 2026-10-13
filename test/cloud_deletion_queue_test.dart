@@ -1,5 +1,9 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/cloud_deletion_queue.dart';
+import 'package:reader/file_cloud_deletion_outbox.dart';
 
 import 'support/memory_cloud_deletion_outbox.dart';
 
@@ -49,5 +53,22 @@ void main() {
     await queue.drain();
     expect(deleted, isEmpty);
     expect(await queue.hasPending, isTrue);
+  });
+
+  test('a malformed outbox record never drops the valid receipts', () async {
+    final root = await Directory.systemTemp.createTemp('outbox');
+    addTearDown(() => root.delete(recursive: true));
+    File('${root.path}/deletions.json').writeAsStringSync(
+      jsonEncode({
+        'items': [
+          {'cloudBookId': 'a', 'queuedAt': '2026-01-01T00:00:00Z'},
+          {'cloudBookId': 7},
+        ],
+      }),
+    );
+    final outbox = FileCloudDeletionOutbox(root, fileName: 'deletions.json');
+    expect((await outbox.load()).map((item) => item.cloudBookId), ['a']);
+    await outbox.enqueue('b');
+    expect((await outbox.load()).map((item) => item.cloudBookId), ['a', 'b']);
   });
 }

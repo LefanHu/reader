@@ -166,6 +166,52 @@ void main() {
     expect(events, ['initialize', 'initialize', 'attest']);
   });
   test(
+    'Firebase SDK token failures surface as classified identity failures',
+    () async {
+      auth.currentUser = _User(events);
+      final failing = FirebaseCloudIdentity(
+        auth: auth,
+        google: google,
+        configured: true,
+        initialize: () async {},
+        appCheckToken: () async => throw FirebaseException(
+          plugin: 'firebase_app_check',
+          code: 'unknown',
+        ),
+      );
+      await expectLater(
+        failing.authorizationHeaders(interactive: false),
+        throwsA(
+          isA<CloudIdentityException>().having(
+            (e) => e.kind,
+            'kind',
+            CloudFailureKind.attestation,
+          ),
+        ),
+      );
+      final offline = FirebaseCloudIdentity(
+        auth: auth,
+        google: google,
+        configured: true,
+        initialize: () async {},
+        appCheckToken: () async => throw FirebaseException(
+          plugin: 'firebase_app_check',
+          code: 'network-request-failed',
+        ),
+      );
+      await expectLater(
+        offline.authorizationHeaders(interactive: false),
+        throwsA(
+          isA<CloudIdentityException>().having(
+            (e) => e.kind,
+            'kind',
+            CloudFailureKind.offline,
+          ),
+        ),
+      );
+    },
+  );
+  test(
     'Firebase logout completes even when native Google logout fails',
     () async {
       auth.currentUser = _User(events);
