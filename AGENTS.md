@@ -1,5 +1,9 @@
 # Repository guidance
 
+## Vision
+
+Turn any book you own into an illustrated, narrated edition. Analysis learns the characters and places so art stays consistent across the book; the Decisions API picks the scenes worth illustrating; narration reads it aloud. Generating that enrichment needs the network, but reading never waits on it: books, positions, and art or audio already downloaded stay available offline and without an account. The reader itself must be excellent, because the enrichment is only worth it on top of a reading experience people would choose anyway.
+
 ## Purpose and priorities
 
 - Personal development project: no real users, no production data, everything may change.
@@ -67,6 +71,13 @@ Before any external release, revisit: App Check, deletion/privacy guarantees, co
 - Review every subagent diff and rerun the validation yourself before applying it. Subagent reports are claims, not evidence.
 - Subagents never deploy, apply cloud changes, push, or commit to the working branch; the main session does that when asked.
 
+## Development cycle
+
+1. Implement the change and get it passing validation (see Testing and validation).
+2. Simplify: run the `code-simplifier:code-simplifier` agent on the code changed in this cycle (name the files or diff; not the whole repo). It must preserve behavior and follow this file.
+3. Review the simplifier's diff like any subagent output, discard edits that change behavior or add abstractions, then rerun the full validation.
+4. Commit, deploy or build only when asked.
+
 ## Comments
 
 - Document non-trivial types, public members, service boundaries and persisted fields. Comments explain why, invariants, lifecycle and ordering that is easy to break; never narrate syntax. Update them in the same change.
@@ -83,3 +94,21 @@ Before any external release, revisit: App Check, deletion/privacy guarantees, co
 - Check behavior with automated assertions (positions, clipboard, platform calls), not screenshots. After intentional visual changes, regenerate and inspect the affected goldens (Paper, Sepia, Dark; iOS lists and desktop grids); never accept baselines just because tests pass.
 - Performance runs are opt-in: `flutter drive --profile --no-dds` with `integration_test/performance_test.dart`; compare only runs with matching fixture, device and settings.
 - On feature completion, give a copyable `qrencode -t ANSIUTF8 '<OTA installation-page URL>'` for the latest successfully built and hosted installer, or say that none is fresh.
+
+## iOS OTA installer builds
+
+"Create a new build" / "http serve build" means an Ad Hoc IPA published to the tailnet installer page:
+
+```sh
+python3 tool/build_ios_ota.py \
+  --base-url https://lefans-mac-mini.tailf6a70a.ts.net:8443 \
+  --profile .credentials/ReaderAdHoc.mobileprovision \
+  --defines .dart-defines/dev.json
+```
+
+- Takes several minutes; run it in the background and log to the scratchpad. It unlocks the dedicated build keychain itself (`.credentials/ios-build-keychain.password`), builds with the dev cloud defines, bumps the build number in `pubspec.yaml`, and publishes to `build/ota/site`. Commit the `pubspec.yaml` bump with the next commit.
+- Serve it (loopback port 8765), detached so it outlives the session; skip if `pgrep -f "build_ios_ota.py --serve"` already finds it:
+  `nohup python3 tool/build_ios_ota.py --serve > <scratchpad>/ota-serve.log 2>&1 &`
+- Tailscale already proxies `https://lefans-mac-mini.tailf6a70a.ts.net:8443` to it (`Tailscale serve status`); only if missing run `/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=8443 http://127.0.0.1:8765`.
+- Verify with `curl -s -o /dev/null -w '%{http_code}' https://lefans-mac-mini.tailf6a70a.ts.net:8443/manifest.plist` (expect 200), then give the user `qrencode -t ANSIUTF8 'https://lefans-mac-mini.tailf6a70a.ts.net:8443/'`.
+- `--ipa <path>` republishes an existing Ad Hoc export without rebuilding. The installer page URL is stable across builds.
