@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../catalog/catalog_book.dart';
+import '../generation_fence.dart';
 import '../identity/cloud_failure_kind.dart';
 import '../identity/cloud_identity_exception.dart';
 import '../identity/cloud_service_exception.dart';
@@ -27,7 +28,7 @@ class BookAnalysisCoordinator {
     required this.books,
     required this.isBookLive,
     required this.uploadEligible,
-    required this.accountGeneration,
+    required this.accountFence,
     required this.changed,
     this.abandonRegistration,
     this.activePollInterval = const Duration(seconds: 4),
@@ -60,8 +61,9 @@ class BookAnalysisCoordinator {
   /// Applies the current account and consent policy before source upload.
   final bool Function(CatalogBook) uploadEligible;
 
-  /// Account-action epoch used to invalidate asynchronous work immediately.
-  final int Function() accountGeneration;
+  /// Account-action fence, invalidated by the owner before any explicit
+  /// account action starts awaiting, so in-flight work stops immediately.
+  final GenerationFence accountFence;
 
   /// Notifies the shared owner after observable analysis state changes.
   final void Function() changed;
@@ -81,9 +83,17 @@ class BookAnalysisCoordinator {
   /// Descriptor pages of each cached manifest; recomputing them re-encodes
   /// every descriptor, and the active book is polled every few seconds.
   final Map<String, List<AnalysisDescriptorPage>> _pages = {};
-  final Map<String, (int, String)> _verifiedOwners = {};
+
+  /// Account ticket and account key under which each finalized result was
+  /// verified; a later account action retires the ticket.
+  final Map<String, (FenceTicket, String)> _verifiedOwners = {};
   final Map<String, _Owner> _writeOwners = {};
-  final Map<String, int> _bookEpochs = {};
+
+  /// Per-import fence retired before local deletion or replacement.
+  final KeyedGenerationFence<String> _bookFences = KeyedGenerationFence();
+
+  /// Run fence retired on suspension, account actions and disposal.
+  final GenerationFence _runFence = GenerationFence();
   final Set<String> _queued = <String>{};
   final Map<String, DateTime> _retryAt = {};
   final Set<Future<void>> _writes = {};
@@ -98,7 +108,6 @@ class BookAnalysisCoordinator {
   Timer? _timer;
   String? _activeBook;
   Future<void>? _running;
-  int _epoch = 0;
   bool _resumed = true;
   bool _disposed = false;
   bool _restoring = false;
@@ -158,7 +167,7 @@ class BookAnalysisCoordinator {
     if (_disposed || _resumed == resumed) return;
     _resumed = resumed;
     if (!resumed) {
-      _epoch++;
+      _runFence.invalidate();
       _writeOwners.clear();
       _timer?.cancel();
       _timer = null;
@@ -169,7 +178,7 @@ class BookAnalysisCoordinator {
 
   /// Called synchronously before any explicit account action starts awaiting.
   void invalidateAccount() {
-    _epoch++;
+    _runFence.invalidate();
     _writeOwners.clear();
     _verifiedOwners.clear();
     _activeBook = null;
@@ -193,7 +202,7 @@ class BookAnalysisCoordinator {
     final state = _states[book.hash];
     if (state != null && !state.matchesBook(book)) return;
     _verifiedOwners.remove(book.hash);
-    _bookEpochs[book.hash] = (_bookEpochs[book.hash] ?? 0) + 1;
+    _bookFences.invalidate(book.hash);
     _writeOwners.remove(book.hash);
     _queued.remove(book.hash);
     _retryAt.remove(book.hash);
@@ -232,12 +241,14 @@ class BookAnalysisCoordinator {
   bool isComplete(CatalogBook book) {
     final state = _states[book.hash];
     final pointer = state?.finalized;
+    final verified = _verifiedOwners[book.hash];
     return state != null &&
         state.matchesBook(book) &&
         state.status == BookAnalysisStatus.complete &&
         pointer != null &&
-        _verifiedOwners[book.hash] ==
-            (accountGeneration(), pointer.accountKey) &&
+        verified != null &&
+        verified.$1.isCurrent &&
+        verified.$2 == pointer.accountKey &&
         state.accountKey == pointer.accountKey &&
         state.documentDigest == pointer.documentDigest;
   }
@@ -252,7 +263,7 @@ class BookAnalysisCoordinator {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    _epoch++;
+    _runFence.invalidate();
     _writeOwners.clear();
     _timer?.cancel();
     _timer = null;
@@ -260,14 +271,18 @@ class BookAnalysisCoordinator {
     _retryAt.clear();
   }
 
-  _Owner _capture(CatalogBook book) =>
-      _Owner(book, _epoch, accountGeneration(), _bookEpochs[book.hash] ?? 0);
+  _Owner _capture(CatalogBook book) => _Owner(
+    book,
+    _runFence.capture(),
+    accountFence.capture(),
+    _bookFences.capture(book.hash),
+  );
 
   bool _localCurrent(_Owner owner) =>
       !_disposed &&
-      owner.epoch == _epoch &&
-      owner.account == accountGeneration() &&
-      owner.bookEpoch == (_bookEpochs[owner.book.hash] ?? 0) &&
+      owner.run.isCurrent &&
+      owner.account.isCurrent &&
+      owner.bookTicket.isCurrent &&
       isBookLive(owner.book);
 
   void _start() {
@@ -641,7 +656,8 @@ class BookAnalysisCoordinator {
     final status = switch (kind) {
       CloudFailureKind.signedOut ||
       CloudFailureKind.cancelled => BookAnalysisStatus.waitingAccount,
-      CloudFailureKind.offline => BookAnalysisStatus.waitingConnection,
+      CloudFailureKind.offline ||
+      CloudFailureKind.timeout => BookAnalysisStatus.waitingConnection,
       CloudFailureKind.notConfigured ||
       CloudFailureKind.attestation => BookAnalysisStatus.waitingService,
       CloudFailureKind.service =>
@@ -715,12 +731,13 @@ String _safeCategory(String category) =>
     ? category
     : 'provider';
 
+/// Fence tickets captured when work for one import starts.
 class _Owner {
-  const _Owner(this.book, this.epoch, this.account, this.bookEpoch);
+  const _Owner(this.book, this.run, this.account, this.bookTicket);
   final CatalogBook book;
-  final int epoch;
-  final int account;
-  final int bookEpoch;
+  final FenceTicket run;
+  final FenceTicket account;
+  final FenceTicket bookTicket;
   bool current(BookAnalysisCoordinator coordinator) =>
       coordinator._resumed && coordinator._localCurrent(this);
 }

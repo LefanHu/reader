@@ -6,7 +6,7 @@ import 'package:archive/archive.dart';
 import 'package:characters/characters.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/illustrations/document_text_indexer.dart';
+import 'package:reader/illustrations/illustration_book_text.dart';
 import 'package:reader/text/direction.dart';
 import 'package:reader/text/document_store.dart' as text;
 import 'package:reader/text/grapheme_boundary.dart' as text;
@@ -181,23 +181,21 @@ void main() {
       final root = await Directory.systemTemp.createTemp('document_prose');
       addTearDown(() => root.delete(recursive: true));
       final book = await importTextBook(root, 'Arabic العربية\n\n中文\fहिन्दी');
-      final index = await DocumentTextIndexer().index(
-        sourcePath: book.path,
-        bookHash: book.hash,
-      );
       final store = text.TextDocumentStore();
+      final illustrated = await IllustrationBookText.load(store, book.path);
       final document = await store.load(book.path);
       for (var i = 0; i < document.sections.length; i++) {
         final section = await store.loadSection(
           book.path,
           document.sections[i].id,
         );
+        final chapter = await illustrated.chapter(i);
         expect(
-          index.chapters[i].paragraphs.map((p) => p.text),
+          chapter.paragraphs.map((p) => p.text),
           section.blocks.map((b) => b.text),
         );
         expect(
-          index.chapters[i].paragraphs.map((p) => p.id),
+          chapter.paragraphs.map((p) => p.id),
           section.blocks.map((b) => b.id),
         );
       }

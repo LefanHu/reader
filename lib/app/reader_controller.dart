@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import '../account/account_usage.dart';
 import '../account/account_usage_exception.dart';
@@ -18,16 +19,15 @@ import '../catalog/file_catalog_store.dart';
 import '../cloud_deletion_outbox.dart';
 import '../cloud_deletion_queue.dart';
 import '../file_cloud_deletion_outbox.dart';
+import '../generation_fence.dart';
 import '../identity/cloud_failure_kind.dart';
 import '../identity/cloud_identity.dart';
 import '../identity/cloud_identity_exception.dart';
 import '../identity/firebase_cloud_identity.dart';
 import '../illustrations/api.dart';
-import '../illustrations/document_text_indexer.dart';
 import '../illustrations/file_illustration_store.dart';
 import '../illustrations/http_illustration_api.dart';
 import '../illustrations/illustration_coordinator.dart';
-import '../illustrations/indexer.dart';
 import '../illustrations/store.dart';
 import '../importing/book_importer.dart';
 import '../importing/book_picker.dart';
@@ -83,7 +83,7 @@ class ReaderController extends ChangeNotifier {
     required BookImporter importer,
     required BookPicker picker,
     required IllustrationStore illustrationStore,
-    required TextIndexer textIndexer,
+    TextDocumentStore? illustrationDocuments,
     required IllustrationApi illustrationApi,
     required CloudDeletionOutbox illustrationDeletionOutbox,
     required this.narrationSource,
@@ -115,12 +115,18 @@ class ReaderController extends ChangeNotifier {
       },
       changed: notifyListeners,
     );
+    _bookDeletions = CloudDeletionQueue(
+      outbox: illustrationDeletionOutbox,
+      ready: () async =>
+          illustrationApi.configured && await cloudIdentity.hasSession(),
+      delete: (id) => illustrationApi.deleteBook(id, interactive: false),
+    );
     illustrations = IllustrationCoordinator(
       store: illustrationStore,
-      textIndexer: textIndexer,
+      documents: illustrationDocuments ?? TextDocumentStore(),
       api: illustrationApi,
       identity: cloudIdentity,
-      deletionOutbox: illustrationDeletionOutbox,
+      deletions: _bookDeletions,
       currentBook: catalog.find,
       narrationOwnsPosition: (book) =>
           this.narration?.ownsPosition(book) == true,
@@ -189,8 +195,8 @@ class ReaderController extends ChangeNotifier {
               profile.revision > 0 &&
               profile.cloudBookId.isNotEmpty;
         },
-        accountGeneration: () => _accountActionGeneration,
-        abandonRegistration: illustrations.enqueueBookDeletion,
+        accountFence: _accountFence,
+        abandonRegistration: _bookDeletions.enqueue,
         changed: _analysisChanged,
       );
     }
@@ -202,7 +208,9 @@ class ReaderController extends ChangeNotifier {
   /// Default-enabled preprocessing owner; absent only in offline/test graphs.
   BookAnalysisCoordinator? analysis;
 
-  int _accountActionGeneration = 0;
+  /// Retired synchronously before any explicit account action awaits, so
+  /// background analysis never commits results for the previous account.
+  final GenerationFence _accountFence = GenerationFence();
 
   void _acceptedBook(CatalogBook book) {
     try {
@@ -224,7 +232,7 @@ class ReaderController extends ChangeNotifier {
   }
 
   void _invalidateAnalysisAccount() {
-    _accountActionGeneration++;
+    _accountFence.invalidate();
     analysis?.invalidateAccount();
   }
 
@@ -263,6 +271,15 @@ class ReaderController extends ChangeNotifier {
   /// Narration deletion retries stay outside book directories and never sign in.
   late final CloudDeletionQueue _narrationDeletions;
 
+  /// Shared cloud-book registrations: illustrations and preprocessing use one
+  /// server identity and purge endpoint, so both deletions share this queue.
+  /// Receipts stay outside book directories and retries never sign in.
+  late final CloudDeletionQueue _bookDeletions;
+
+  /// Retries every durable cloud deletion once with an existing session.
+  Future<void> drainCloudDeletions() =>
+      Future.wait([_bookDeletions.drain(), _narrationDeletions.drain()]);
+
   /// Authoritative catalog, serial imports, recency, and position persistence.
   late final CatalogSession catalog;
 
@@ -280,7 +297,9 @@ class ReaderController extends ChangeNotifier {
     // Native synthesis binds an existing private root before any book is opened.
     await store.root.create(recursive: true);
     final identity = FirebaseCloudIdentity();
-    final narrationApi = HttpNarrationApi(identity: identity);
+    // One app-lifetime connection pool serves every cloud feature API.
+    final client = http.Client();
+    final narrationApi = HttpNarrationApi(identity: identity, client: client);
     final source = await createNarrationSource(
       selectNarrationProvider(defaultTargetPlatform),
       root: store.root,
@@ -288,9 +307,9 @@ class ReaderController extends ChangeNotifier {
     );
     final controller = ReaderController(
       cloudIdentity: identity,
-      accountApi: HttpAccountApi(identity: identity),
+      accountApi: HttpAccountApi(identity: identity, client: client),
       analysis: (
-        api: HttpBookAnalysisApi(identity: identity),
+        api: HttpBookAnalysisApi(identity: identity, client: client),
         store: FileAnalysisStore(store.root),
         documents: null,
       ),
@@ -314,8 +333,7 @@ class ReaderController extends ChangeNotifier {
         fileName: 'illustration-deletions.json',
       ),
       illustrationStore: FileIllustrationStore(store.root),
-      illustrationApi: HttpIllustrationApi(identity: identity),
-      textIndexer: DocumentTextIndexer(),
+      illustrationApi: HttpIllustrationApi(identity: identity, client: client),
     );
     // The mounted app supplies the actual native lifecycle before any dispatch.
     controller.setAppResumed(false);
@@ -342,7 +360,7 @@ class ReaderController extends ChangeNotifier {
     }
     await illustrations.loadManifests(catalog.books);
     await analysis?.restore(catalog.books);
-    unawaited(illustrations.drainDeletions());
+    unawaited(_bookDeletions.drain());
     unawaited(_narrationDeletions.drain());
     unawaited(refreshCloudAccount());
     notifyListeners();
@@ -430,10 +448,19 @@ class ReaderController extends ChangeNotifier {
         unawaited(_narrationDeletions.drain());
       }
     }
-    await illustrations.requestBookDeletion(
-      book,
-      analysisCloudBookId: analysisBookId,
-    );
+    // Receipts are durable before local deletion continues; the purge runs in
+    // the background, so deletion never waits for the network or prompts for
+    // sign-in. A reimport's setup drains this queue before registering, so it
+    // cannot overtake the purge.
+    final cloudBookIds = <String>{
+      ?illustrations.manifests[book.hash]?.profile?.cloudBookId,
+      ?analysisBookId,
+    }..remove('');
+    for (final id in cloudBookIds) {
+      await _bookDeletions.enqueue(id);
+    }
+    // drain() is single-flight and swallows errors; failures stay in the outbox.
+    unawaited(_bookDeletions.drain());
     catalog.removeFromMemory(book);
     illustrations.forget(book);
     await catalog.persist();
@@ -508,7 +535,7 @@ class ReaderController extends ChangeNotifier {
     await _accountAction(() async {
       await cloudIdentity.signIn();
       await refreshCloudAccount();
-      unawaited(illustrations.drainDeletions());
+      unawaited(_bookDeletions.drain());
       unawaited(_narrationDeletions.drain());
     }, settle: () {});
   }

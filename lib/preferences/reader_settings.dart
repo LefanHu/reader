@@ -3,6 +3,10 @@ import 'reading_theme.dart';
 import 'library_filter.dart';
 import 'library_sort.dart';
 
+/// Playback speeds offered by Settings and the listening sheet, which write
+/// the same preference; a saved speed stays within the first and last.
+const narrationSpeeds = [.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
 /// Reader-wide preferences shared by every imported publication.
 ///
 /// These values are persisted separately from the catalog so changing a book

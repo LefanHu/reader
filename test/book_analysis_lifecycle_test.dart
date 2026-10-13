@@ -8,6 +8,7 @@ import 'package:reader/book_analysis/analysis_coordinator.dart';
 import 'package:reader/book_analysis/analysis_entity.dart';
 import 'package:reader/book_analysis/book_analysis_state.dart';
 import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/generation_fence.dart';
 import 'package:reader/text/text_block.dart';
 import 'package:reader/text/text_position.dart';
 import 'package:reader/text/text_section.dart';
@@ -217,7 +218,7 @@ void main() {
       await h.start();
       await entered.future;
       final oldGeneration = h.state.generationId;
-      h.generation++;
+      h.accountFence.invalidate();
       h.coordinator.invalidateAccount();
       h.api.accountKey = 'b' * 64;
       release.complete();
@@ -470,7 +471,7 @@ class _Harness {
   final Duration waiting;
   late BookAnalysisCoordinator coordinator;
   bool consent;
-  int generation = 0;
+  final accountFence = GenerationFence();
   BookAnalysisState get state => coordinator.states[book.hash]!;
   void _create() {
     coordinator = BookAnalysisCoordinator(
@@ -485,7 +486,7 @@ class _Harness {
             book.addedAt == candidate.addedAt,
       ),
       uploadEligible: (_) => consent,
-      accountGeneration: () => generation,
+      accountFence: accountFence,
       changed: () {},
       abandonRegistration: (id) async {
         abandoned.add(id);

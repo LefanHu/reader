@@ -6,7 +6,7 @@ import 'text_section.dart';
 /// Document manifest; prose is loaded one bounded section at a time.
 class TextDocument {
   /// Metadata is immutable after the staged import commits.
-  const TextDocument({
+  TextDocument({
     required this.title,
     required this.authors,
     required this.sections,
@@ -33,16 +33,33 @@ class TextDocument {
   /// Nested, resolved table of contents.
   final List<TextContentsEntry> contents;
 
+  /// Section ID to ordinal, built once because the manifest is immutable.
+  late final Map<String, int> _ordinals = {
+    for (var i = 0; i < sections.length; i++) sections[i].id: i,
+  };
+
+  /// UTF-16 units before each section; the last entry is the document length.
+  late final List<int> _starts = _prefix();
+
+  List<int> _prefix() {
+    final starts = <int>[0];
+    for (final section in sections) {
+      starts.add(starts.last + section.length);
+    }
+    return starts;
+  }
+
   /// Document size for normalized reading progress.
-  int get length => sections.fold(0, (sum, section) => sum + section.length);
+  int get length => _starts.last;
+
+  /// Ordinal of the section with [sectionId], or -1 when it is unknown.
+  int ordinalOf(String? sectionId) => _ordinals[sectionId] ?? -1;
 
   /// Progress derives from source text, independent of viewport dimensions.
   double progress(TextSection section, TextPosition position) {
-    final ordinal = sections.indexWhere((item) => item.id == section.id);
+    final ordinal = ordinalOf(section.id);
     if (ordinal < 0 || length == 0) return 0;
-    var units = sections
-        .take(ordinal)
-        .fold(0, (sum, item) => sum + item.length);
+    var units = _starts[ordinal];
     final resolved = section.resolve(position);
     for (final block in section.blocks) {
       if (block.id == resolved.blockId) {

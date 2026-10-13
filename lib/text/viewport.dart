@@ -277,9 +277,7 @@ class _TextViewportState extends State<TextViewport>
     final hadTurn = _turnBusy;
     _cancelTurn();
     if (hadTurn && mounted) setState(() {});
-    final ordinal = widget.document.sections.indexWhere(
-      (item) => item.id == requested.sectionId,
-    );
+    final ordinal = widget.document.ordinalOf(requested.sectionId);
     final target = ordinal >= 0 ? ordinal : 0;
     final generation = ++_request;
     ++_restoreGeneration;

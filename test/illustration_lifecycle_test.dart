@@ -5,10 +5,9 @@ import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
+import 'package:reader/cloud_deletion_queue.dart';
 import 'package:reader/identity/cloud_identity.dart';
 import 'package:reader/illustrations/api.dart';
-import 'package:reader/illustrations/book_text_index.dart';
-import 'package:reader/illustrations/chapter_text_index.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
 import 'package:reader/illustrations/http_illustration_api.dart';
 import 'package:reader/illustrations/illustration_coordinator.dart';
@@ -19,10 +18,11 @@ import 'package:reader/illustrations/illustration_profile.dart';
 import 'package:reader/illustrations/illustration_scene.dart';
 import 'package:reader/illustrations/illustration_selection.dart';
 import 'package:reader/illustrations/illustration_setup.dart';
-import 'package:reader/illustrations/indexed_paragraph.dart';
 import 'package:reader/illustrations/scene_anchor.dart';
 import 'package:reader/illustrations/unlocked_illustration.dart';
+import 'package:reader/text/text_block.dart';
 import 'package:reader/text/text_position.dart';
+import 'package:reader/text/text_section.dart';
 
 import 'support/dev_api_books.dart';
 import 'support/dev_api_client.dart';
@@ -30,9 +30,9 @@ import 'support/dev_api_environment.dart';
 import 'support/dev_api_identity.dart';
 import 'support/cloud_identity_fake.dart';
 import 'support/fake_illustration_api.dart';
-import 'support/fake_text_indexer.dart';
 import 'support/illustration_image_fixture.dart';
 import 'support/memory_cloud_deletion_outbox.dart';
+import 'support/memory_document_store.dart';
 
 /// Image source on dev that the lifecycle confirm test switches to; dev
 /// offers only `openai` and `diagnostic`, so the server profile starts on `openai`.
@@ -47,14 +47,12 @@ const _anchor = SceneAnchor(
 );
 const _before = TextPosition(sectionId: 's0', blockId: 'p1', offset: 5);
 const _passed = TextPosition(sectionId: 's0', blockId: 'p1', offset: 6);
-const _chapter = ChapterTextIndex(
-  href: 's0',
-  spineOrdinal: 0,
-  title: null,
-  paragraphs: [
-    IndexedParagraph(id: 'p0', text: 'start', ordinal: 0, progression: 0),
-    IndexedParagraph(id: 'p1', text: 'ending', ordinal: 1, progression: .5),
-    IndexedParagraph(id: 'p2', text: 'after', ordinal: 2, progression: 1),
+const _section = TextSection(
+  id: 's0',
+  blocks: [
+    TextBlock(id: 'p0', text: 'start'),
+    TextBlock(id: 'p1', text: 'ending'),
+    TextBlock(id: 'p2', text: 'after'),
   ],
 );
 const _profile = IllustrationProfile(
@@ -667,10 +665,6 @@ class _Harness {
       generation: 1,
       thumbnail: true,
     );
-    await store.saveIndex(
-      book,
-      BookTextIndex(bookHash: hash, chapters: const [_chapter]),
-    );
     await store.saveManifest(
       book,
       IllustrationManifest(
@@ -717,10 +711,14 @@ class _Harness {
   Future<void> reopen() async {
     coordinator = IllustrationCoordinator(
       store: store,
-      textIndexer: FakeTextIndexer(chapters: const [_chapter]),
+      documents: MemoryDocumentStore(sections: const [_section]),
       api: cloudApi,
       identity: identity,
-      deletionOutbox: MemoryCloudDeletionOutbox(),
+      deletions: CloudDeletionQueue(
+        outbox: MemoryCloudDeletionOutbox(),
+        ready: () async => cloudApi.configured && await identity.hasSession(),
+        delete: (id) => cloudApi.deleteBook(id, interactive: false),
+      ),
       currentBook: (_) => book,
       narrationOwnsPosition: (_) => false,
       refreshCloudAccount: () async {},

@@ -10,10 +10,20 @@ import 'keyed_serial_queue.dart';
 /// operations propagate to callers without preventing subsequent writes.
 class AtomicJsonFile {
   /// Wraps a private app-owned file; path ownership remains the caller's policy.
-  AtomicJsonFile(this.file);
+  ///
+  /// Owners whose directory deletion must stay final pass `createParent:
+  /// false`. [verifyParent] re-validates the parent chain immediately before
+  /// the synchronous commit and throws to abort it.
+  AtomicJsonFile(this.file, {this.createParent = true, this.verifyParent});
 
   /// Committed generation and identity of the shared operation queue.
   final File file;
+
+  /// Whether writes recreate a missing parent directory.
+  final bool createParent;
+
+  /// Throws when the parent is no longer app-owned storage.
+  final void Function()? verifyParent;
 
   static final _queue = KeyedSerialQueue();
 
@@ -74,38 +84,44 @@ class AtomicJsonFile {
   });
 
   Future<void> _replace(String body, {bool Function()? isCurrent}) async {
-    if (isCurrent != null) {
-      await _replaceFenced(body, isCurrent);
-      return;
+    bool current() => isCurrent == null || isCurrent();
+    if (!current()) return;
+    if (createParent) {
+      await file.parent.create(recursive: true);
+      if (!current()) return;
     }
-    await file.parent.create(recursive: true);
-    final temporary = _generations[1];
-    final backup = _generations[2];
+    final [_, temporary, backup] = _generations;
+    // Writing through a planted link would publish outside owned storage.
+    requireRegularOrAbsent(temporary.path);
     await temporary.writeAsString(body, flush: true);
-    // Keep the old generation recoverable until the replacement is committed.
-    if (await backup.exists()) await backup.delete();
-    if (await file.exists()) await file.rename(backup.path);
-    await temporary.rename(file.path);
-    if (await backup.exists()) await backup.delete();
-  }
-
-  Future<void> _replaceFenced(String body, bool Function() isCurrent) async {
-    if (!isCurrent()) return;
-    await file.parent.create(recursive: true);
-    if (!isCurrent()) return;
-    final temporary = _generations[1];
-    final backup = _generations[2];
-    await temporary.writeAsString(body, flush: true);
-    if (!isCurrent()) {
+    if (!current()) {
       // This path's queue is held: no other writer can own this temporary file.
       temporary.deleteSync();
       return;
     }
-    // No event-loop gap between the final ownership check and publication.
+    // No event-loop gap between the final ownership checks and publication;
+    // the old generation stays recoverable until the replacement commits.
+    verifyParent?.call();
+    for (final generation in _generations) {
+      requireRegularOrAbsent(generation.path);
+    }
     if (backup.existsSync()) backup.deleteSync();
     if (file.existsSync()) file.renameSync(backup.path);
     temporary.renameSync(file.path);
     if (backup.existsSync()) backup.deleteSync();
+  }
+}
+
+/// Throws [FormatException] unless [path] is absent or a regular file.
+///
+/// App-owned files are never written through, renamed over or deleted when a
+/// link or directory occupies their path: following a planted link would
+/// publish or remove data outside owned storage.
+void requireRegularOrAbsent(String path) {
+  final kind = FileSystemEntity.typeSync(path, followLinks: false);
+  if (kind != FileSystemEntityType.notFound &&
+      kind != FileSystemEntityType.file) {
+    throw const FormatException('App storage targets must be regular files.');
   }
 }
 

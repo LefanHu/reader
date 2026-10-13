@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import '../atomic_json_file.dart';
 import '../catalog/book_storage.dart';
 import '../catalog/catalog_book.dart';
+import '../hex_identifiers.dart';
 import 'analysis_protocol.dart';
 import 'analysis_result.dart';
 import 'analysis_limits.dart';
@@ -30,8 +31,6 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
   bool Function(CatalogBook, BookAnalysisState)? _stateEligible;
   bool Function(CatalogBook, String)? _pageEligible;
   final _pending = <Future<void>>{};
-  static final _hex = RegExp(r'^[a-f0-9]{64}$');
-  static final _bookId = RegExp(r'^[a-f0-9]{40}$');
   static final _pageId = RegExp(
     '^(${AnalysisResultPageKind.values.map((kind) => kind.name).join('|')})-(0|[1-9][0-9]*)\$',
   );
@@ -301,7 +300,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
           FileSystemEntityType.directory) {
         await for (final generation in pages.list(followLinks: false)) {
           if (generation is! Directory ||
-              !_hex.hasMatch(
+              !sha256Hex.hasMatch(
                 generation.uri.pathSegments.where((s) => s.isNotEmpty).last,
               ) ||
               FileSystemEntity.typeSync(generation.path, followLinks: false) !=
@@ -411,7 +410,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
     }
     if (state.accountKey != null) _identity(state.accountKey!);
     if (state.documentDigest != null) _identity(state.documentDigest!);
-    if (state.cloudBookId != null && !_bookId.hasMatch(state.cloudBookId!)) {
+    if (state.cloudBookId != null && !cloudIdHex.hasMatch(state.cloudBookId!)) {
       throw const FormatException('Invalid analysis cloud book identity.');
     }
     if (state.receipt != null) {
@@ -534,7 +533,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
   }
 
   void _identity(String value) {
-    if (!_hex.hasMatch(value)) {
+    if (!sha256Hex.hasMatch(value)) {
       throw const FormatException('Invalid analysis identity.');
     }
   }
@@ -549,16 +548,7 @@ class FileAnalysisStore implements AnalysisStore, AnalysisWriteFence {
 
   void _regularGenerations(File file) {
     for (final suffix in ['', '.tmp', '.bak']) {
-      final kind = FileSystemEntity.typeSync(
-        '${file.path}$suffix',
-        followLinks: false,
-      );
-      if (kind != FileSystemEntityType.notFound &&
-          kind != FileSystemEntityType.file) {
-        throw const FormatException(
-          'Analysis generations must be regular files.',
-        );
-      }
+      requireRegularOrAbsent('${file.path}$suffix');
     }
   }
 }

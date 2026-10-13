@@ -8,6 +8,7 @@ import '../identity/cloud_failure_kind.dart';
 import '../identity/cloud_identity_exception.dart';
 import '../preferences/library_filter.dart';
 import '../preferences/library_sort.dart';
+import '../preferences/reader_settings.dart';
 import '../preferences/reading_mode.dart';
 import '../preferences/reading_theme.dart';
 import '../theme.dart';
@@ -359,7 +360,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         spacing: 8,
         runSpacing: 8,
         children: [
-          for (final speed in [.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+          for (final speed in narrationSpeeds)
             ChoiceChip(
               label: Text('$speed×'),
               selected: controller.preferences.settings.narrationSpeed == speed,

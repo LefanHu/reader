@@ -8,7 +8,6 @@ import 'package:reader/catalog/catalog_store.dart';
 import 'package:reader/cloud_deletion_outbox.dart';
 import 'package:reader/identity/cloud_identity.dart';
 import 'package:reader/illustrations/api.dart';
-import 'package:reader/illustrations/indexer.dart';
 import 'package:reader/illustrations/store.dart';
 import 'package:reader/importing/book_importer.dart';
 import 'package:reader/importing/import_candidate.dart';
@@ -25,7 +24,6 @@ import 'fake_illustration_api.dart';
 import 'fake_narration_api.dart';
 import 'fake_narration_player.dart';
 import 'fake_picker.dart';
-import 'fake_text_indexer.dart';
 import 'memory_catalog_store.dart';
 import 'memory_cloud_deletion_outbox.dart';
 import 'memory_document_store.dart';
@@ -46,7 +44,7 @@ Future<ReaderController> testController({
   SettingsStore? settingsStore,
   Directory? root,
   IllustrationStore? illustrationStore,
-  TextIndexer? textIndexer,
+  TextDocumentStore? illustrationDocuments,
   IllustrationApi? illustrationApi,
   CloudDeletionOutbox? illustrationDeletionOutbox,
   NarrationApi? narrationApi,
@@ -71,7 +69,7 @@ Future<ReaderController> testController({
     importer: BookImporter(root: directory),
     picker: FakePicker(files),
     illustrationStore: illustrationStore ?? MemoryIllustrationStore(),
-    textIndexer: textIndexer ?? FakeTextIndexer(),
+    illustrationDocuments: illustrationDocuments ?? MemoryDocumentStore(),
     illustrationApi: illustrationApi ?? FakeIllustrationApi(),
     illustrationDeletionOutbox:
         illustrationDeletionOutbox ?? MemoryCloudDeletionOutbox(),

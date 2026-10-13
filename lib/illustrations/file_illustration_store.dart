@@ -7,7 +7,7 @@ import 'dart:typed_data';
 import '../atomic_json_file.dart';
 import '../catalog/book_storage.dart';
 import '../catalog/catalog_book.dart';
-import 'book_text_index.dart';
+import '../hex_identifiers.dart';
 import 'illustration_manifest.dart';
 import 'store.dart';
 
@@ -21,14 +21,10 @@ class FileIllustrationStore implements IllustrationStore {
   /// Private catalog root that owns every book directory.
   final Directory root;
 
-  static final _sceneId = RegExp(r'^[a-f0-9]{40}$');
-
   Directory _root(CatalogBook book) => featureDirectory(root, book, 'visuals');
 
   AtomicJsonFile _manifest(CatalogBook book) =>
       AtomicJsonFile(File('${_root(book).path}/manifest.json'));
-  AtomicJsonFile _index(CatalogBook book) =>
-      AtomicJsonFile(File('${_root(book).path}/index.json'));
 
   /// Loads this book's manifest; unreadable or foreign manifests read as a fresh disabled manifest.
   @override
@@ -52,25 +48,6 @@ class FileIllustrationStore implements IllustrationStore {
       _manifest(book).write(manifest.toJson());
 
   @override
-  Future<BookTextIndex?> loadIndex(CatalogBook book) async {
-    final AtomicJsonFile file;
-    try {
-      file = _index(book);
-    } on FormatException {
-      return null;
-    }
-    final stored = await file.read((json) {
-      final value = BookTextIndex.fromJson(json);
-      return value.bookHash == book.hash ? value : null;
-    });
-    return stored?.value;
-  }
-
-  @override
-  Future<void> saveIndex(CatalogBook book, BookTextIndex index) =>
-      _index(book).write(index.toJson());
-
-  @override
   Future<String> saveImage(
     CatalogBook book,
     String sceneId,
@@ -79,7 +56,7 @@ class FileIllustrationStore implements IllustrationStore {
     required int generation,
     bool thumbnail = false,
   }) async {
-    if (!_sceneId.hasMatch(sceneId)) {
+    if (!cloudIdHex.hasMatch(sceneId)) {
       throw const FormatException('Invalid illustration scene identity.');
     }
     if (generation < 1) {
@@ -101,15 +78,8 @@ class FileIllustrationStore implements IllustrationStore {
     final suffix = thumbnail ? 'thumb.webp' : extension;
     final destination = File('${images.path}/$sceneId.$generation.$suffix');
     final temporary = File('${destination.path}.tmp');
-    for (final file in [destination, temporary]) {
-      final kind = await FileSystemEntity.type(file.path, followLinks: false);
-      if (kind != FileSystemEntityType.notFound &&
-          kind != FileSystemEntityType.file) {
-        throw const FormatException(
-          'Illustration assets must be regular files.',
-        );
-      }
-    }
+    requireRegularOrAbsent(destination.path);
+    requireRegularOrAbsent(temporary.path);
     await temporary.writeAsBytes(bytes, flush: true);
     await temporary.rename(destination.path);
     return destination.path;
@@ -122,7 +92,7 @@ class FileIllustrationStore implements IllustrationStore {
     int? generation,
   }) async {
     // An invalid identity can never have been saved.
-    if (!_sceneId.hasMatch(sceneId)) return;
+    if (!cloudIdHex.hasMatch(sceneId)) return;
     if (generation != null && generation < 1) {
       throw const FormatException('Invalid illustration generation.');
     }

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+import 'cloud_book_fingerprint.dart';
 import 'cloud_failure_kind.dart';
 import 'cloud_identity.dart';
 import 'cloud_service_exception.dart';
@@ -110,6 +111,29 @@ class CloudHttpClient {
     });
   }
 
+  /// Account-scoped fingerprint of [hash], the only book identity any cloud
+  /// registration sends; the import hash itself never leaves the device.
+  ///
+  /// A response without a key is a [CloudFailureKind.service] failure.
+  Future<String> bookFingerprint(
+    String hash, {
+    required bool interactive,
+  }) async {
+    final json = await this.json(
+      'GET',
+      '/api/fingerprint-key',
+      interactive: interactive,
+    );
+    final key = json['key'];
+    if (key is! String) {
+      throw const CloudServiceException(
+        CloudFailureKind.service,
+        'The server returned no book key.',
+      );
+    }
+    return cloudBookFingerprint(hash, key);
+  }
+
   /// Downloads a short-lived HTTPS asset without credentials, up to [maxBytes].
   ///
   /// Throws [CloudFailureKind.cancelled] once [isCurrent] turns false.
@@ -187,7 +211,7 @@ class CloudHttpClient {
       );
     } on TimeoutException {
       throw const CloudServiceException(
-        CloudFailureKind.offline,
+        CloudFailureKind.timeout,
         'The cloud service timed out. Check your connection and retry.',
       );
     }

@@ -14,7 +14,6 @@ import 'package:reader/app/reader_controller.dart';
 import 'package:reader/book_analysis/services.dart';
 import 'package:reader/identity/cloud_identity.dart';
 import 'package:reader/illustrations/api.dart';
-import 'package:reader/illustrations/document_text_indexer.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
 import 'package:reader/importing/import_candidate.dart';
 import 'package:reader/library/library_screen.dart';
@@ -124,7 +123,7 @@ class NativeTestApp {
         ),
       ],
       illustrationStore: FileIllustrationStore(root),
-      textIndexer: DocumentTextIndexer(),
+      illustrationDocuments: TextDocumentStore(),
       illustrationApi: illustrationApi,
       cloudIdentity: cloudIdentity,
       accountApi: accountApi,
@@ -170,8 +169,8 @@ class NativeTestApp {
       catalogStore: store,
       root: root,
       illustrationStore: FileIllustrationStore(root),
+      illustrationDocuments: TextDocumentStore(),
       illustrationApi: _illustrationApi,
-      textIndexer: DocumentTextIndexer(),
       cloudIdentity: _cloudIdentity,
       accountApi: _accountApi,
       analysisServices:

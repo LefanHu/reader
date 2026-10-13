@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
+import '../preferences/reader_settings.dart';
 import '../text/text_position.dart';
 import 'session.dart';
 
@@ -404,7 +405,7 @@ class _NarrationSheetState extends State<NarrationSheet> {
                   decoration: const InputDecoration(
                     labelText: 'Speed · all books',
                   ),
-                  items: [.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+                  items: narrationSpeeds
                       .map(
                         (speed) => DropdownMenuItem(
                           value: speed,

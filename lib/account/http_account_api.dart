@@ -41,7 +41,8 @@ class HttpAccountApi implements AccountApi {
     } on AccountUsageException {
       rethrow;
     } on CloudIdentityException catch (error) {
-      if (error.kind == CloudFailureKind.offline) {
+      if (error.kind == CloudFailureKind.offline ||
+          error.kind == CloudFailureKind.timeout) {
         throw const AccountUsageException(
           AccountUsageFailureKind.offline,
           'Connect to the internet to view account usage.',
@@ -63,12 +64,16 @@ class HttpAccountApi implements AccountApi {
           'Account authentication or App Check could not be verified.',
         );
       }
-      if (error.kind == CloudFailureKind.offline) {
-        throw AccountUsageException(
+      if (error.kind == CloudFailureKind.timeout) {
+        throw const AccountUsageException(
           AccountUsageFailureKind.offline,
-          error.message.contains('timed out')
-              ? 'Account usage timed out. Check your connection and retry.'
-              : 'Connect to the internet to view account usage.',
+          'Account usage timed out. Check your connection and retry.',
+        );
+      }
+      if (error.kind == CloudFailureKind.offline) {
+        throw const AccountUsageException(
+          AccountUsageFailureKind.offline,
+          'Connect to the internet to view account usage.',
         );
       }
       throw const AccountUsageException(

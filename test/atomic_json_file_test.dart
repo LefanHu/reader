@@ -66,4 +66,31 @@ void main() {
     expect(recovered?.value, 'tmp');
     expect(recovered?.recovered, isTrue);
   });
+
+  test('write never follows a linked temporary generation', () async {
+    final root = await Directory.systemTemp.createTemp('atomic_json_link');
+    addTearDown(() => root.delete(recursive: true));
+    final file = File('${root.path}/value.json');
+    final outside = File('${root.path}/outside.json')..writeAsStringSync('{}');
+    Link('${file.path}.tmp').createSync(outside.path);
+
+    await expectLater(
+      AtomicJsonFile(file).write({'value': 1}),
+      throwsFormatException,
+    );
+    expect(outside.readAsStringSync(), '{}');
+    expect(file.existsSync(), isFalse);
+  });
+
+  test('write without createParent leaves a deleted parent deleted', () async {
+    final root = await Directory.systemTemp.createTemp('atomic_json_parent');
+    addTearDown(() => root.delete(recursive: true));
+    final file = File('${root.path}/gone/value.json');
+
+    await expectLater(
+      AtomicJsonFile(file, createParent: false).write({'value': 1}),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(Directory('${root.path}/gone').existsSync(), isFalse);
+  });
 }

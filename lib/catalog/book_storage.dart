@@ -1,14 +1,12 @@
 import 'dart:io';
 
+import '../hex_identifiers.dart';
 import 'catalog_book.dart';
-
-/// Lowercase SHA-256 hex digest; content hashes and cache keys use this form.
-const sha256HexPattern = r'^[a-f0-9]{64}$';
 
 /// Returns `<root>/books/<hash>` only when it is a real, app-owned directory
 /// (no symbolic links on the way) that directly contains [book]'s file path.
 Directory? ownedBookDirectory(Directory root, CatalogBook book) {
-  if (!RegExp(sha256HexPattern).hasMatch(book.hash)) return null;
+  if (!sha256Hex.hasMatch(book.hash)) return null;
   final base = root.absolute.path;
   final expected = '$base/books/${book.hash}';
   for (final path in [base, '$base/books', expected]) {

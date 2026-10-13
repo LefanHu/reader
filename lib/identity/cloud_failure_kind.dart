@@ -12,8 +12,11 @@ enum CloudFailureKind {
   /// App Check could not attest this installation.
   attestation,
 
-  /// The network was unreachable or timed out.
+  /// The network was unreachable.
   offline,
+
+  /// The service did not answer in time; callers retry it like [offline].
+  timeout,
 
   /// The cloud service rejected or garbled the request.
   service,

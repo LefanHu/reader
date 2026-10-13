@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../catalog/catalog_book.dart';
-import '../identity/cloud_book_fingerprint.dart';
+import '../hex_identifiers.dart';
 import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
 import 'analysis_protocol.dart';
@@ -27,8 +27,6 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
        );
 
   final CloudHttpClient _http;
-  static final _bookId = RegExp(r'^[a-f0-9]{40}$');
-  static final _digest = RegExp(r'^[a-f0-9]{64}$');
   static final _pageId = RegExp(
     '^(${AnalysisResultPageKind.values.map((kind) => kind.name).join('|')})-(0|[1-9][0-9]*)\$',
   );
@@ -57,18 +55,8 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
     required int sectionCount,
   }) async {
     _ordinal(sectionCount);
-    final key = await _http.json(
-      'GET',
-      '/api/fingerprint-key',
-      interactive: false,
-      maxBytes: analysisPageMaxBytes,
-    );
-    final encodedKey = key['key'];
-    if (encodedKey is! String) {
-      throw const FormatException('The server returned no book key.');
-    }
     final body = {
-      'fingerprint': cloudBookFingerprint(book.hash, encodedKey),
+      'fingerprint': await _http.bookFingerprint(book.hash, interactive: false),
       'title': book.title,
       'authors': book.authors,
       'language': book.language,
@@ -240,13 +228,13 @@ class HttpBookAnalysisApi implements BookAnalysisApi {
   }
 
   void _book(String value) {
-    if (!_bookId.hasMatch(value)) {
+    if (!cloudIdHex.hasMatch(value)) {
       throw const FormatException('Invalid cloud book identity.');
     }
   }
 
   void _hex(String value) {
-    if (!_digest.hasMatch(value)) {
+    if (!sha256Hex.hasMatch(value)) {
       throw const FormatException('Invalid analysis identity.');
     }
   }

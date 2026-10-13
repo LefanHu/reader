@@ -3,7 +3,6 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/catalog/catalog_book.dart';
-import 'package:reader/illustrations/chapter_text_index.dart';
 import 'package:reader/file_cloud_deletion_outbox.dart';
 import 'package:reader/illustrations/file_illustration_store.dart';
 import 'package:reader/illustrations/http_illustration_api.dart';
@@ -14,12 +13,13 @@ import 'package:reader/illustrations/illustration_profile.dart';
 import 'package:reader/illustrations/illustration_scene.dart';
 import 'package:reader/illustrations/illustration_selection.dart';
 import 'package:reader/illustrations/illustration_setup.dart';
-import 'package:reader/illustrations/indexed_paragraph.dart';
 
 import 'support/memory_cloud_deletion_outbox.dart';
 
 import 'package:reader/illustrations/scene_anchor.dart';
+import 'package:reader/text/text_block.dart';
 import 'package:reader/text/text_position.dart';
+import 'package:reader/text/text_section.dart';
 
 import 'support/dev_api_books.dart';
 import 'support/dev_api_client.dart';
@@ -27,7 +27,7 @@ import 'support/dev_api_environment.dart';
 import 'support/dev_api_identity.dart';
 import 'support/cloud_identity_fake.dart';
 import 'support/fake_illustration_api.dart';
-import 'support/fake_text_indexer.dart';
+import 'support/memory_document_store.dart';
 import 'support/test_controller.dart';
 
 void main() {
@@ -121,7 +121,7 @@ void main() {
     expect(client.exchanges.where((e) => e.method == 'DELETE'), isEmpty);
 
     hold.release();
-    await controller.illustrations.drainDeletions();
+    await controller.drainCloudDeletions();
     final deletes = client.exchanges.where((e) => e.method == 'DELETE');
     expect(deletes.map((e) => (e.path, e.status)), [('/api/books/$id', 204)]);
     expect(await outbox.load(), isEmpty);
@@ -259,19 +259,15 @@ void main() {
   });
 
   test('controller schedules one chapter ahead and downloads ready art immediately', () async {
-    final chapters = List.generate(
+    final sections = List.generate(
       3,
-      (chapter) => ChapterTextIndex(
-        href: 's$chapter',
-        spineOrdinal: chapter,
-        title: 'Chapter $chapter',
-        paragraphs: List.generate(
+      (chapter) => TextSection(
+        id: 's$chapter',
+        blocks: List.generate(
           3,
-          (paragraph) => IndexedParagraph(
+          (paragraph) => TextBlock(
             id: 'c$chapter-p$paragraph',
             text: 'Paragraph $paragraph',
-            ordinal: paragraph,
-            progression: paragraph / 2,
           ),
         ),
       ),
@@ -306,7 +302,7 @@ void main() {
     );
     final controller = await testController(
       books: [book],
-      textIndexer: FakeTextIndexer(chapters: chapters),
+      illustrationDocuments: MemoryDocumentStore(sections: sections),
       illustrationApi: api,
       initialize: false,
     );

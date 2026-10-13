@@ -6,12 +6,11 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../catalog/catalog_book.dart';
-import '../identity/cloud_book_fingerprint.dart';
+import '../hex_identifiers.dart';
 import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
 import 'api.dart';
 import 'chapter_text_index.dart';
-import 'illustration_exception.dart';
 import 'illustration_configuration.dart';
 import 'illustration_job_result.dart';
 import 'illustration_profile.dart';
@@ -34,9 +33,6 @@ class HttpIllustrationApi implements IllustrationApi {
 
   final CloudHttpClient _http;
 
-  /// Server-issued book, job and scene identities are 40 lowercase hex digits.
-  static final _cloudId = RegExp(r'^[a-f0-9]{40}$');
-
   @override
   bool get configured => _http.configured;
 
@@ -51,16 +47,10 @@ class HttpIllustrationApi implements IllustrationApi {
     CatalogBook book, {
     required int chapterCount,
   }) async {
-    final keyJson = await _json(
-      'GET',
-      '/api/fingerprint-key',
+    final fingerprint = await _http.bookFingerprint(
+      book.hash,
       interactive: true,
     );
-    final encodedKey = keyJson['key'] as String?;
-    if (encodedKey == null) {
-      throw const IllustrationException('The server returned no book key.');
-    }
-    final fingerprint = cloudBookFingerprint(book.hash, encodedKey);
     final json = await _json(
       'POST',
       '/api/books',
@@ -228,7 +218,7 @@ class HttpIllustrationApi implements IllustrationApi {
   @override
   Future<void> deleteBook(String cloudBookId, {bool interactive = true}) async {
     // The server can never hold an invalid ID; dropping it ends outbox retries.
-    if (!_cloudId.hasMatch(cloudBookId)) return;
+    if (!cloudIdHex.hasMatch(cloudBookId)) return;
     // A completed previous delete is success, including crash/retry recovery.
     await _http.json(
       'DELETE',
@@ -255,7 +245,7 @@ class HttpIllustrationApi implements IllustrationApi {
   }
 
   String _id(Object? value) {
-    if (value is String && _cloudId.hasMatch(value)) return value;
+    if (value is String && cloudIdHex.hasMatch(value)) return value;
     throw const FormatException('Invalid illustration identity.');
   }
 

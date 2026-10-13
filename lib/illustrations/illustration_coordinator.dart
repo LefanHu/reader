@@ -4,14 +4,14 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../catalog/catalog_book.dart';
-import '../cloud_deletion_outbox.dart';
 import '../cloud_deletion_queue.dart';
 import '../identity/cloud_identity.dart';
 import '../identity/cloud_identity_exception.dart';
 import '../identity/cloud_service_exception.dart';
+import '../text/document_store.dart';
 import '../text/text_position.dart';
 import 'api.dart';
-import 'book_text_index.dart';
+import 'illustration_book_text.dart';
 import 'illustration_exception.dart';
 import 'illustration_figure.dart';
 import 'illustration_job_result.dart';
@@ -20,10 +20,9 @@ import 'illustration_profile.dart';
 import 'illustration_scene.dart';
 import 'illustration_selection.dart';
 import 'illustration_setup.dart';
-import 'indexer.dart';
 import 'store.dart';
 
-/// Owns illustration sidecars, indexing, and cloud job workflows.
+/// Owns illustration sidecars, chapter submission, and cloud job workflows.
 ///
 /// Dependencies and live catalog/narration callbacks are installed once. Changes
 /// publish through the application notifier. Awaited cloud results are written
@@ -33,10 +32,10 @@ class IllustrationCoordinator {
   /// Installs feature services and live cross-feature callbacks.
   IllustrationCoordinator({
     required this.store,
-    required this.textIndexer,
+    required this.documents,
     required this.api,
     required this.identity,
-    required this.deletionOutbox,
+    required this.deletions,
     required this._currentBook,
     required this._narrationOwnsPosition,
     required this._refreshCloudAccount,
@@ -46,11 +45,12 @@ class IllustrationCoordinator {
     this.consentConfirmed,
   });
 
-  /// Persists indexes, manifests, and downloaded scene files.
+  /// Persists manifests and downloaded scene files.
   final IllustrationStore store;
 
-  /// Builds normalized chapter indexes for scheduling and anchor resolution.
-  final TextIndexer textIndexer;
+  /// Normalized document boundary shared with the reader; chapter prose and
+  /// anchor resolution read the same sections the viewport paints.
+  final TextDocumentStore documents;
 
   /// Cloud registration, generation, unlock, and privacy boundary.
   final IllustrationApi api;
@@ -58,20 +58,15 @@ class IllustrationCoordinator {
   /// Shared account session used for sign-in and existing-session probes.
   final CloudIdentity identity;
 
-  /// Durable book-deletion receipts outside source-book directories.
-  final CloudDeletionOutbox deletionOutbox;
+  /// Shared cloud-book deletion queue, owned by the app composition root;
+  /// setup drains it so a reimport never registers ahead of a pending purge.
+  final CloudDeletionQueue deletions;
 
   /// Fences automatic preprocessing before this explicit native account action.
   final VoidCallback? accountActionStarted;
 
   /// Queues preprocessing only after confirmed upload consent is durable.
   final void Function(CatalogBook)? consentConfirmed;
-
-  late final _deletions = CloudDeletionQueue(
-    outbox: deletionOutbox,
-    ready: () async => api.configured && await identity.hasSession(),
-    delete: (id) => api.deleteBook(id, interactive: false),
-  );
 
   /// Authoritative loaded and lazily created book manifests.
   final Map<String, IllustrationManifest> manifests = {};
@@ -89,7 +84,7 @@ class IllustrationCoordinator {
   /// True once finalized preprocessing for the exact document exists.
   final bool Function(CatalogBook) _analysisReady;
   final VoidCallback _changed;
-  final Map<String, BookTextIndex> _textIndexes = {};
+  final Map<String, IllustrationBookText> _texts = {};
   final Set<String> _advancingIllustrations = {};
   final Map<String, DateTime> _lastIllustrationRefresh = {};
 
@@ -124,41 +119,16 @@ class IllustrationCoordinator {
       );
   }
 
-  /// Uses the shared deletion owner/outbox for both illustration and analysis IDs.
-  /// Receipts are durable before this returns; the server purge is dispatched in
-  /// the background so local deletion never waits for the network and never
-  /// prompts for sign-in. Receipts outlive source directories, and a reimport's
-  /// setup drains the outbox before registering, so it cannot overtake a purge.
-  Future<void> requestBookDeletion(
-    CatalogBook book, {
-    String? analysisCloudBookId,
-  }) async {
-    final ids = <String>{
-      if (manifests[book.hash]?.profile?.cloudBookId case final String id) id,
-      ?analysisCloudBookId,
-    };
-    for (final id in ids.where((id) => id.isNotEmpty)) {
-      await _deletions.enqueue(id);
-    }
-    // drain() is single-flight and swallows errors; failures stay in the outbox.
-    unawaited(_deletions.drain());
-  }
-
-  /// Keeps a delayed preprocessing registration's deletion receipt outside books.
-  /// Dispatch remains owned by the existing noninteractive deletion lifecycle.
-  Future<void> enqueueBookDeletion(String cloudBookId) =>
-      _deletions.enqueue(cloudBookId);
-
-  /// Removes only the book's in-memory manifest, index and polling state.
+  /// Removes only the book's in-memory manifest, text view and polling state.
   void forget(CatalogBook book) {
     final jobs = manifests.remove(book.hash)?.chapterJobs.values;
     if (jobs != null) _settledJobs.removeAll(jobs);
-    _textIndexes.remove(book.hash);
+    _texts.remove(book.hash);
     _jobsActive.remove(book.hash);
     _lastIllustrationRefresh.remove(book.hash);
   }
 
-  /// Deletes local scenes and disables manifests while retaining books/indexes.
+  /// Deletes local scenes and disables manifests while retaining books.
   Future<void> clearLocalAccountData(List<CatalogBook> books) async {
     for (final book in books) {
       final scenes = manifestFor(book).scenes;
@@ -197,10 +167,10 @@ class IllustrationCoordinator {
       accountActionStarted?.call();
       await identity.signIn();
       await _refreshCloudAccount();
-      await drainDeletions();
+      await deletions.drain();
       // Reimported bytes produce the same cloud identity. Finish old deletions
       // before registration so a delayed retry cannot delete the new profile.
-      if (await _deletions.hasPending) {
+      if (await deletions.hasPending) {
         throw const IllustrationException(
           'Cloud cleanup is pending. Try enabling illustrations again when connected.',
         );
@@ -217,8 +187,8 @@ class IllustrationCoordinator {
           currentProfile: current,
         );
       }
-      final index = await _indexFor(book);
-      return await api.registerBook(book, chapterCount: index.chapters.length);
+      final text = await _textFor(book);
+      return await api.registerBook(book, chapterCount: text.chapterCount);
     } on Object catch (failure) {
       final safe = _safeFailure(failure);
       error = safe.toString();
@@ -260,7 +230,7 @@ class IllustrationCoordinator {
       await _scheduleAhead(
         book,
         manifest,
-        await _indexFor(book),
+        await _textFor(book),
         book.lastPosition,
       );
     } on Object catch (failure) {
@@ -321,7 +291,7 @@ class IllustrationCoordinator {
       await _scheduleAhead(
         book,
         manifest,
-        await _indexFor(book),
+        await _textFor(book),
         book.lastPosition,
       );
     } on Object catch (failure) {
@@ -456,30 +426,19 @@ class IllustrationCoordinator {
     _changed();
   }
 
-  /// Retries durable book deletions once using only an existing cloud session.
-  Future<void> drainDeletions() => _deletions.drain();
-
-  Future<BookTextIndex> _indexFor(CatalogBook book) async {
-    final memory = _textIndexes[book.hash];
-    if (memory != null) return memory;
-    final stored = await store.loadIndex(book);
-    if (stored != null) {
-      _textIndexes[book.hash] = stored;
-      return stored;
-    }
-    final created = await textIndexer.index(
-      sourcePath: book.path,
-      bookHash: book.hash,
+  Future<IllustrationBookText> _textFor(CatalogBook book) async {
+    final cached = _texts[book.hash];
+    if (cached != null && cached.sourcePath == book.path) return cached;
+    return _texts[book.hash] = await IllustrationBookText.load(
+      documents,
+      book.path,
     );
-    _textIndexes[book.hash] = created;
-    await store.saveIndex(book, created);
-    return created;
   }
 
   Future<void> _scheduleAhead(
     CatalogBook book,
     IllustrationManifest manifest,
-    BookTextIndex index,
+    IllustrationBookText text,
     TextPosition? position,
   ) async {
     // Image intents wait for finalized preprocessing: no placeholder, position
@@ -491,21 +450,15 @@ class IllustrationCoordinator {
         !_supportedProviderIds.contains(profile.providerId)) {
       return;
     }
-    final href = position?.sectionId;
-    final current = href == null
-        ? index.chapters.first
-        : index.chapterForHref(href);
-    final start = current?.spineOrdinal ?? 0;
+    final start = text.ordinalAt(position);
     var created = false;
     for (final ordinal in [start, start + 1]) {
-      if (ordinal >= index.chapters.length ||
+      if (ordinal >= text.chapterCount ||
           manifestFor(book).chapterJobs.containsKey(ordinal)) {
         continue;
       }
-      final id = await api.createChapterJob(
-        profile: profile,
-        chapter: index.chapters[ordinal],
-      );
+      final chapter = await text.chapter(ordinal);
+      final id = await api.createChapterJob(profile: profile, chapter: chapter);
       // The request may outlive deletion, account clearing or a profile
       // change; only record the job against the same still-live profile, and
       // merge into the latest manifest instead of a pre-await snapshot.
@@ -544,7 +497,7 @@ class IllustrationCoordinator {
           current.addedAt != book.addedAt) {
         return;
       }
-      final index = await _indexFor(book);
+      final text = await _textFor(book);
       final latest = _currentBook(book);
       if (latest == null ||
           latest.path != book.path ||
@@ -552,7 +505,7 @@ class IllustrationCoordinator {
           busy) {
         return;
       }
-      await _scheduleAhead(book, manifestFor(book), index, latest.lastPosition);
+      await _scheduleAhead(book, manifestFor(book), text, latest.lastPosition);
     } on Object catch (failure) {
       error = _safeFailure(failure).toString();
       _changed();
@@ -573,9 +526,9 @@ class IllustrationCoordinator {
     }
     _advancingIllustrations.add(book.hash);
     try {
-      final index = await _indexFor(book);
+      final text = await _textFor(book);
       if (!busy) {
-        await _scheduleAhead(book, manifestFor(book), index, position);
+        await _scheduleAhead(book, manifestFor(book), text, position);
       }
       final lastRefresh = _lastIllustrationRefresh[book.hash];
       // Poll quickly while the server still has chapter work in flight.
@@ -590,7 +543,7 @@ class IllustrationCoordinator {
       for (final scene in List.of(manifestFor(book).scenes)) {
         if ((scene.state != IllustrationSceneState.readyLocked &&
                 scene.pendingGeneration == null) ||
-            !index.resolves(scene.anchor)) {
+            !await text.resolves(scene.anchor)) {
           continue;
         }
         final released = await api.unlockScene(scene.id);

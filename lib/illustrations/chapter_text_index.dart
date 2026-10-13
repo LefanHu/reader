@@ -1,10 +1,10 @@
-// Persisted field meanings and lifecycle invariants are documented per model.
-// ignore_for_file: public_member_api_docs
-
 import 'indexed_paragraph.dart';
 
-/// Ordered normalized section and deterministic server paragraph mappings.
+/// One normalized section submitted as a server chapter, with stable block IDs
+/// as paragraph identities. Built on demand from the `TextDocument`; never
+/// persisted.
 class ChapterTextIndex {
+  /// Paragraphs are the section's blocks in order, verbatim.
   const ChapterTextIndex({
     required this.href,
     required this.spineOrdinal,
@@ -16,30 +16,15 @@ class ChapterTextIndex {
   /// Normalized section ID used as the backend resource identifier.
   final String href;
 
+  /// Zero-based section ordinal, the server chapter number.
   final int spineOrdinal;
+
+  /// Section title, if the source provided one.
   final String? title;
+
+  /// Section language hint.
   final String? language;
+
+  /// Ordered blocks of the section.
   final List<IndexedParagraph> paragraphs;
-
-  Map<String, dynamic> toJson() => {
-    'href': href,
-    'spineOrdinal': spineOrdinal,
-    if (title != null) 'title': title,
-    if (language != null) 'language': language,
-    'paragraphs': paragraphs.map((item) => item.toJson()).toList(),
-  };
-
-  factory ChapterTextIndex.fromJson(Map<String, dynamic> json) =>
-      ChapterTextIndex(
-        href: json['href'] as String,
-        spineOrdinal: (json['spineOrdinal'] as num).round(),
-        title: json['title'] as String?,
-        language: json['language'] as String?,
-        paragraphs: (json['paragraphs'] as List<dynamic>? ?? const [])
-            .whereType<Map>()
-            .map(
-              (item) => IndexedParagraph.fromJson(item.cast<String, dynamic>()),
-            )
-            .toList(),
-      );
 }

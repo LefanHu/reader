@@ -2,11 +2,10 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
-import '../identity/cloud_book_fingerprint.dart';
 import '../identity/cloud_http_client.dart';
 import '../identity/cloud_identity.dart';
-import '../catalog/book_storage.dart';
 import '../catalog/catalog_book.dart';
+import '../hex_identifiers.dart';
 import '../text/narration_chunk.dart';
 import 'api.dart';
 import 'narration_registration.dart';
@@ -46,9 +45,10 @@ class HttpNarrationApi implements NarrationApi {
   @override
   Future<NarrationRegistration> register(CatalogBook book) async {
     await identity.signIn();
-    final key = await _json('GET', '/api/fingerprint-key');
-    // Reuse the privacy-preserving account-specific fingerprint protocol.
-    final fingerprint = cloudBookFingerprint(book.hash, key['key'] as String);
+    final fingerprint = await _http.bookFingerprint(
+      book.hash,
+      interactive: false,
+    );
     final json = await _json(
       'POST',
       '/api/narration/books',
@@ -81,7 +81,7 @@ class HttpNarrationApi implements NarrationApi {
         'voice': voice,
       },
     );
-    if (!_cloudId.hasMatch(job['id'] as String)) {
+    if (!sha256Hex.hasMatch(job['id'] as String)) {
       throw const FormatException('Invalid narration job identity.');
     }
     for (var attempt = 0; attempt < 120 && isCurrent(); attempt++) {
@@ -109,10 +109,9 @@ class HttpNarrationApi implements NarrationApi {
   }
 
   /// Server-issued narration book and job identities are SHA-256 hex digests.
-  static final _cloudId = RegExp(sha256HexPattern);
 
   void _bookId(String value) {
-    if (!_cloudId.hasMatch(value)) {
+    if (!sha256Hex.hasMatch(value)) {
       throw const FormatException('Invalid narration book identity.');
     }
   }
@@ -121,7 +120,7 @@ class HttpNarrationApi implements NarrationApi {
   Future<void> deleteBook(String bookId) async {
     // The server can never hold an invalid ID; dropping it ends outbox retries
     // that would otherwise block narration registration forever.
-    if (!_cloudId.hasMatch(bookId)) return;
+    if (!sha256Hex.hasMatch(bookId)) return;
     await _json(
       'DELETE',
       '/api/narration/books/$bookId',

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import '../atomic_json_file.dart';
 import '../catalog/book_storage.dart';
 import '../catalog/catalog_book.dart';
+import '../hex_identifiers.dart';
 import '../keyed_serial_queue.dart';
 import 'narration_audio_asset.dart';
 import 'narration_manifest.dart';
@@ -24,7 +25,6 @@ class FileNarrationStore implements NarrationStore {
 
   /// Global byte budget; active files may briefly exceed it until unpinned.
   final int maxBytes;
-  static final _keyPattern = RegExp(sha256HexPattern);
   static final _audioPattern = RegExp(r'/[a-f0-9]{64}\.wav$');
   static final _companionPattern = RegExp(
     r'/([a-f0-9]{64})\.(?:wav\.tmp|timing\.json(?:\.tmp)?)$',
@@ -51,17 +51,15 @@ class FileNarrationStore implements NarrationStore {
       featureDirectory(root, book, 'narration');
 
   File _ownedFile(String path, {bool absent = false}) {
-    final kind = FileSystemEntity.typeSync(path, followLinks: false);
-    if ((kind != FileSystemEntityType.notFound &&
-            kind != FileSystemEntityType.file) ||
-        (absent && kind != FileSystemEntityType.notFound)) {
+    requireRegularOrAbsent(path);
+    if (absent && File(path).existsSync()) {
       throw const FormatException('Unexpected narration storage target.');
     }
     return File(path);
   }
 
   File _audio(CatalogBook book, String key) {
-    if (!_keyPattern.hasMatch(key)) {
+    if (!sha256Hex.hasMatch(key)) {
       throw const FormatException('Invalid audio key.');
     }
     return _ownedFile('${_directory(book).path}/$key.wav');
@@ -92,23 +90,13 @@ class FileNarrationStore implements NarrationStore {
       _serial(() async {
         final directory = _directory(book);
         await directory.create();
-        final file = _ownedFile('${directory.path}/manifest.json');
-        final temporary = _ownedFile('${file.path}.tmp');
-        final backup = _ownedFile('${file.path}.bak');
-        // Use the shared generation protocol, but never recursively create its
-        // parent: a concurrently deleted publication must remain deleted.
-        await temporary.writeAsString(
-          jsonEncode({'bookHash': book.hash, ...manifest.toJson()}),
-          flush: true,
-        );
-        _directory(book);
-        _ownedFile(file.path);
-        _ownedFile(temporary.path);
-        _ownedFile(backup.path);
-        if (backup.existsSync()) backup.deleteSync();
-        if (file.existsSync()) file.renameSync(backup.path);
-        temporary.renameSync(file.path);
-        if (backup.existsSync()) backup.deleteSync();
+        // Never recursively create the parent: a concurrently deleted
+        // publication must remain deleted. Ownership is rechecked at commit.
+        await AtomicJsonFile(
+          File('${directory.path}/manifest.json'),
+          createParent: false,
+          verifyParent: () => _directory(book),
+        ).write({'bookHash': book.hash, ...manifest.toJson()});
       });
 
   @override
@@ -159,8 +147,8 @@ class FileNarrationStore implements NarrationStore {
     Duration duration,
   ) {
     if (timing == null ||
-        !_keyPattern.hasMatch(timing.chunkId) ||
-        !_keyPattern.hasMatch(timing.sourceDigest) ||
+        !sha256Hex.hasMatch(timing.chunkId) ||
+        !sha256Hex.hasMatch(timing.sourceDigest) ||
         !timing.matches(audioKey: key, duration: duration)) {
       return null;
     }
@@ -400,7 +388,7 @@ class FileNarrationStore implements NarrationStore {
     }
     await for (final book in books.list(followLinks: false)) {
       if (book is! Directory ||
-          !_keyPattern.hasMatch(
+          !sha256Hex.hasMatch(
             book.uri.pathSegments.where((part) => part.isNotEmpty).last,
           )) {
         continue;

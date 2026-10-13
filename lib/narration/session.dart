@@ -255,9 +255,7 @@ class NarrationSession {
         start ??
         (samePosition ? manifest.chunkStart ?? manifest.anchor : position);
     final doc = document!;
-    final ordinal = doc.sections.indexWhere(
-      (section) => section.id == anchor?.sectionId,
-    );
+    final ordinal = doc.ordinalOf(anchor?.sectionId);
     if (start != null && ordinal < 0) {
       throw ArgumentError.value(start, 'start', 'Unknown narration section.');
     }
@@ -391,11 +389,7 @@ class NarrationSession {
 
   Future<void> _start(int epoch) async {
     while (_index >= _units.length) {
-      final ordinal =
-          document!.sections.indexWhere(
-            (summary) => summary.id == _section!.id,
-          ) +
-          1;
+      final ordinal = document!.ordinalOf(_section!.id) + 1;
       if (ordinal >= document!.sections.length) {
         _wanted = false;
         _resumeTimer?.cancel();

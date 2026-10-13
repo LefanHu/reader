@@ -71,8 +71,8 @@ class ReaderPreferencesCoordinator {
     }
     if (narrationSpeed != null &&
         (!narrationSpeed.isFinite ||
-            narrationSpeed < .75 ||
-            narrationSpeed > 2)) {
+            narrationSpeed < narrationSpeeds.first ||
+            narrationSpeed > narrationSpeeds.last)) {
       return Future.error(
         ArgumentError.value(narrationSpeed, 'narrationSpeed'),
       );
