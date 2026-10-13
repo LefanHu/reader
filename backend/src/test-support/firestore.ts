@@ -172,6 +172,8 @@ export class MemoryCollection {
   }
 
   limit(value: number) { return new MemoryCollection(this.db, this.path, this.filters, value); }
+  /** Field projection only shrinks production payloads; the double returns whole documents. */
+  select(..._fields: string[]) { return this; }
 
   async get() {
     const docs: MemorySnapshot[] = [];

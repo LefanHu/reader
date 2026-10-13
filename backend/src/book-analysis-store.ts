@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { Timestamp, type Firestore, type Transaction } from "firebase-admin/firestore";
-import { bookReference, readBookFence } from "./fences.js";
+import { assertLeaseFree, bookReference, readBookFence, WORKER_LEASE_MS } from "./fences.js";
 import { HttpError } from "./http.js";
 import {
   analysisJsonHash, validateAnalysisAdmission, validateAnalysisChunkInput,
@@ -15,7 +15,6 @@ import type {
 
 export const ANALYSIS_COLLECTIONS = { jobs: "bookAnalysisJobs", records: "bookAnalysisRecords", inputs: "bookAnalysisInputs" } as const;
 const INPUT_TTL = 24 * 60 * 60 * 1000;
-const LEASE = 10 * 60 * 1000;
 const id = (...parts: unknown[]) => analysisJsonHash(parts);
 const same = (a: unknown, b: unknown) => isDeepStrictEqual(a, b);
 function conflict(message = "Book analysis intent conflicts."): never { throw new HttpError(409, message); }
@@ -29,6 +28,9 @@ export type StoredAnalysisGeneration = AnalysisOwner & {
   processedUnits: number; requiredUnits: number; cursor: AnalysisOperationCursor;
   error: { category: string } | null; finalizedRevision: string | null;
   resultPages: AnalysisResultPageDescriptor[];
+  /** Descriptor pages stored so far; the full manifest is read and validated only once, by
+   * the upload that completes it, instead of re-reading every page on every upload. */
+  manifestPagesStored: number;
   /** Monotonic verification coverage bound to the exact ordered immutable descriptor list. */
   publicationVerifiedCount?: number;
   publicationDescriptorDigest?: string;
@@ -54,10 +56,13 @@ export class BookAnalysisStore {
     return this.db.collection(ANALYSIS_COLLECTIONS.records).doc(id(generationId, type, key));
   }
   private async owned(transaction: Transaction, uid: string, generationId: string): Promise<StoredAnalysisGeneration> {
-    const data = (await transaction.get(this.generationReference(generationId))).data() as StoredAnalysisGeneration | undefined;
-    if (!data || data.uid !== uid || data.recordType !== "generation") throw new HttpError(404, "Book analysis not found.");
-    await this.bookFence(transaction, uid, data.bookId);
-    return data;
+    return (await this.ownedWithFence(transaction, uid, generationId)).generation;
+  }
+  /** Owned generation plus the book fence it was checked against, so callers never re-read it. */
+  private async ownedWithFence(transaction: Transaction, uid: string, generationId: string) {
+    const generation = (await transaction.get(this.generationReference(generationId))).data() as StoredAnalysisGeneration | undefined;
+    if (!generation || generation.uid !== uid || generation.recordType !== "generation") throw new HttpError(404, "Book analysis not found.");
+    return { generation, fence: await this.bookFence(transaction, uid, generation.bookId) };
   }
   private async bookFence(transaction: Transaction, uid: string, bookId: string) {
     const fence = await readBookFence(transaction, this.db, "books", uid, bookId);
@@ -90,7 +95,7 @@ export class BookAnalysisStore {
       const generation: StoredAnalysisGeneration = { recordType: "generation", uid, bookId, generationId,
         admission, status: ready ? "finalizing" : "manifest", manifestReady: ready, processedChunks: 0,
         processedUnits: 0, requiredUnits: 0, cursor: { stage: ready ? "reconcile" : "manifest", ordinal: 0 },
-        error: null, finalizedRevision: null, resultPages: [] };
+        error: null, finalizedRevision: null, resultPages: [], manifestPagesStored: 0 };
       transaction.create(ref, bounded(generation));
       transaction.update(bookReference(this.db, "books", uid, bookId), { activeAnalysisGenerationId: generationId });
       return this.receipt(generation);
@@ -101,33 +106,40 @@ export class BookAnalysisStore {
     await this.db.runTransaction(async transaction => {
       const g = await this.owned(transaction, uid, generationId);
       if (ordinal < 0 || ordinal >= g.admission.pageCount) throw new HttpError(400, "Analysis page ordinal is invalid.");
-      const refs = Array.from({ length: g.admission.pageCount }, (_, n) => this.recordReference(generationId, "descriptor", n));
-      const snapshots = await Promise.all(refs.map(ref => transaction.get(ref)));
-      const existing = snapshots[ordinal]!.data();
+      const pageRef = (n: number) => this.recordReference(generationId, "descriptor", n);
+      const existing = (await transaction.get(pageRef(ordinal))).data();
       if (existing) { if (!same(existing.page, page)) conflict(); return; }
       if (g.manifestReady || g.status !== "manifest") conflict();
-      const pages = snapshots.map((s, n) => n === ordinal ? page : s.data()?.page as AnalysisDescriptorPage | undefined);
-      let requiredUnits = 0;
-      if (pages.every((p): p is AnalysisDescriptorPage => p !== undefined)) {
+      const complete = g.manifestPagesStored + 1 === g.admission.pageCount;
+      let requiredUnits = 0, nextMissing = g.cursor.ordinal;
+      if (complete) {
+        // The completing upload reads every other page once to validate the whole manifest.
+        const pages = await Promise.all(Array.from({ length: g.admission.pageCount }, async (_, n) =>
+          n === ordinal ? page : (await transaction.get(pageRef(n))).data()?.page as AnalysisDescriptorPage | undefined));
+        if (!pages.every((p): p is AnalysisDescriptorPage => p !== undefined)) conflict("Analysis manifest pages are inconsistent.");
         const chunks = pages.flatMap(p => p.chunks);
         validateAnalysisSourceManifest({ ...g.admission, chunks });
         requiredUnits = chunks.reduce((n, c) => n + c.primary.reduce((sum, s) => sum + s.endOffset - s.startOffset, 0), 0);
+      } else if (ordinal === nextMissing) {
+        // In-order uploads read one page ahead; out-of-order pages leave the cursor in place.
+        do nextMissing++; while (nextMissing < g.admission.pageCount && (await transaction.get(pageRef(nextMissing))).exists);
       }
       const chunkRefs = page.chunks.map(chunk => this.recordReference(generationId, "chunk", chunk.ordinal));
       const chunkSnapshots = await Promise.all(chunkRefs.map(ref => transaction.get(ref)));
       page.chunks.forEach((chunk, n) => {
         if (chunkSnapshots[n]!.exists) conflict("Analysis descriptor order conflicts.");
       });
-      transaction.create(refs[ordinal]!, bounded({ recordType: "descriptor", uid, bookId: g.bookId,
+      transaction.create(pageRef(ordinal), bounded({ recordType: "descriptor", uid, bookId: g.bookId,
         generationId, pageOrdinal: ordinal, page, checksum: analysisJsonHash(page) }));
       page.chunks.forEach((chunk, n) => transaction.create(chunkRefs[n]!, bounded({
         recordType: "chunk", uid, bookId: g.bookId, generationId, descriptor: chunk,
       })));
-      if (pages.every(p => p !== undefined)) transaction.set(this.generationReference(generationId), bounded({ ...g,
+      const manifestPagesStored = g.manifestPagesStored + 1;
+      if (complete) transaction.set(this.generationReference(generationId), bounded({ ...g, manifestPagesStored,
         manifestReady: true, status: "extracting", requiredUnits, cursor: { stage: "extract", ordinal: 0 },
       }));
-      else transaction.set(this.generationReference(generationId), bounded({ ...g,
-        cursor: { stage: "manifest", ordinal: pages.findIndex(p => p === undefined) },
+      else transaction.set(this.generationReference(generationId), bounded({ ...g, manifestPagesStored,
+        cursor: { stage: "manifest", ordinal: nextMissing },
       }));
     });
   }
@@ -144,8 +156,7 @@ export class BookAnalysisStore {
     validateAnalysisChunkInput(input, descriptor);
     const jobId = id(generationId, "extract", ordinal);
     return this.db.runTransaction(async transaction => {
-      const g = await this.owned(transaction, uid, generationId);
-      const fence = await this.bookFence(transaction, uid, g.bookId);
+      const { generation: g, fence } = await this.ownedWithFence(transaction, uid, generationId);
       const jobRef = this.jobReference(jobId), inputRef = this.inputReference(jobId);
       const [jobSnapshot, raw] = await Promise.all([transaction.get(jobRef), transaction.get(inputRef)]);
       const existing = jobSnapshot.data() as StoredAnalysisJob | undefined;
@@ -171,9 +182,8 @@ export class BookAnalysisStore {
   }
   async admitFinalize(uid: string, generationId: string) {
     return this.db.runTransaction(async transaction => {
-      const g = await this.owned(transaction, uid, generationId);
+      const { generation: g, fence } = await this.ownedWithFence(transaction, uid, generationId);
       if (g.status === "complete" || g.status === "failed") return { receipt: this.receipt(g), enqueue: false };
-      const fence = await this.bookFence(transaction, uid, g.bookId);
       if (fence.book.data()?.activeAnalysisGenerationId !== generationId) conflict("Analysis generation was superseded.");
       if (!g.manifestReady || g.processedChunks !== g.admission.chunkCount) conflict("Book analysis extraction is incomplete.");
       const jobId = id(generationId, "finalize", g.cursor.stage, g.cursor.ordinal);
@@ -185,12 +195,12 @@ export class BookAnalysisStore {
       return { receipt: this.receipt(g, job), enqueue: job.status === "pending" };
     });
   }
-  /** Active duplicates/terminal/deleted/superseded intents adopt 204 without a provider call. */
+  /** Terminal/deleted/superseded intents adopt 204 without a provider call; an
+   * active lease throws 409 so the task retries instead of stranding the job. */
   async claim(jobId: string): Promise<{ claim: AnalysisClaim; job: StoredAnalysisJob; generation: StoredAnalysisGeneration } | null> {
     return this.db.runTransaction(async transaction => {
       const ref = this.jobReference(jobId), job = (await transaction.get(ref)).data() as StoredAnalysisJob | undefined;
-      if (!job || job.status === "complete" || job.status === "failed" ||
-        (job.leaseUntil?.toMillis() ?? 0) > Date.now()) return null;
+      if (!job || job.status === "complete" || job.status === "failed") return null;
       const [fence, snapshot] = await Promise.all([readBookFence(transaction, this.db, "books", job.uid, job.bookId),
         transaction.get(this.generationReference(job.generationId))]);
       const generation = snapshot.data() as StoredAnalysisGeneration | undefined;
@@ -198,8 +208,10 @@ export class BookAnalysisStore {
         !fence.live || fence.book.data()?.uid !== job.uid ||
         fence.book.data()?.activeAnalysisGenerationId !== job.generationId || generation.status === "failed" ||
         !same(generation.cursor, job.cursor)) return null;
+      // Obsolete jobs end above; only a still-wanted job waits out a live lease.
+      assertLeaseFree(job.leaseUntil, "Book analysis job is already running.");
       const token = randomUUID();
-      transaction.update(ref, { status: "running", claimToken: token, leaseUntil: Timestamp.fromMillis(Date.now() + LEASE) });
+      transaction.update(ref, { status: "running", claimToken: token, leaseUntil: Timestamp.fromMillis(Date.now() + WORKER_LEASE_MS) });
       return { claim: { uid: job.uid, bookId: job.bookId, generationId: job.generationId, jobId, token }, job, generation };
     });
   }

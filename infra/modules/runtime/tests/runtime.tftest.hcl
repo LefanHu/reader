@@ -25,6 +25,7 @@ variables {
   worker_service_account          = "reader-test-worker@reader-test-12345.iam.gserviceaccount.com"
   task_service_account            = "reader-test-tasks@reader-test-12345.iam.gserviceaccount.com"
   task_queue                      = "reader-illustrations"
+  book_analysis_task_queue        = "reader-book-analysis"
   openai_secret_id                = "reader-openai-api-key"
   fingerprint_secret_id           = "reader-fingerprint-secret"
   notification_channel            = "projects/reader-test-12345/notificationChannels/123"
@@ -81,7 +82,7 @@ run "runtime_keeps_worker_private_and_injects_only_secret_references" {
 
   assert {
     condition = alltrue([
-      for required in ["GOOGLE_CLOUD_PROJECT", "ILLUSTRATION_BUCKET", "TASK_LOCATION", "TASK_QUEUE", "TASK_SERVICE_ACCOUNT", "WORKER_URL", "PILOT_CREDITS", "ILLUSTRATIONS_ENABLED", "SERVICE_ROLE", "OPENAI_SCENE_MODEL", "OPENAI_IMAGE_ORCHESTRATOR_MODEL", "OPENAI_IMAGE_MODEL"] :
+      for required in ["GOOGLE_CLOUD_PROJECT", "ILLUSTRATION_BUCKET", "TASK_LOCATION", "TASK_QUEUE", "BOOK_ANALYSIS_TASK_QUEUE", "TASK_SERVICE_ACCOUNT", "WORKER_URL", "PILOT_CREDITS", "ILLUSTRATIONS_ENABLED", "SERVICE_ROLE", "OPENAI_SCENE_MODEL", "OPENAI_IMAGE_ORCHESTRATOR_MODEL", "OPENAI_IMAGE_MODEL"] :
       contains([for env in google_cloud_run_v2_service.api.template[0].containers[0].env : env.name], required)
     ])
     error_message = "The API service is missing a required declarative environment variable."

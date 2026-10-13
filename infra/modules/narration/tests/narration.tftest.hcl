@@ -6,7 +6,7 @@ variables {
 run "bounded_private_narration_resources" {
   command = plan
   assert {
-    condition     = google_cloud_tasks_queue.narration.rate_limits[0].max_concurrent_dispatches == 2 && google_cloud_tasks_queue.narration.retry_config[0].max_attempts == 5
+    condition     = google_cloud_tasks_queue.narration.rate_limits[0].max_concurrent_dispatches == 2 && google_cloud_tasks_queue.narration.retry_config[0].max_attempts == 10 && google_cloud_tasks_queue.narration.retry_config[0].min_backoff == "60s"
     error_message = "Narration must retain bounded dispatch and retries."
   }
   assert {

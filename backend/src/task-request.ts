@@ -1,4 +1,5 @@
 import type { CloudTasksClient, protos } from "@google-cloud/tasks";
+import { WORKER_REQUEST_TIMEOUT_SECONDS } from "./fences.js";
 
 /** Builds private worker tasks with a task name in the selected parent queue.
  * The shared API may enqueue illustration and narration work independently. */
@@ -20,6 +21,9 @@ export function workerTaskRequest(
     parent: client.queuePath(project, location, queue),
     task: {
       name: client.taskPath(project, location, queue, taskId),
+      // Match the worker's request timeout; the 10-minute default would retry a
+      // healthy long request while it still holds its claim.
+      dispatchDeadline: { seconds: WORKER_REQUEST_TIMEOUT_SECONDS },
       httpRequest: {
         httpMethod: "POST",
         url: `${options.workerUrl}${options.path}`,

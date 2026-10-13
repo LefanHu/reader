@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CloudTasksClient } from "@google-cloud/tasks";
 import { workerTaskRequest } from "./task-request.js";
+import { WORKER_REQUEST_TIMEOUT_SECONDS } from "./fences.js";
 
 test("private tasks belong to the selected feature queue and preserve worker authorization", () => {
   const client = new CloudTasksClient();
-  for (const queue of ["reader-illustrations", "reader-narration"]) {
+  for (const queue of ["reader-illustrations", "reader-narration", "reader-book-analysis"]) {
     const request = workerTaskRequest(client, {
       project: "reader-test",
       location: "us-central1",
@@ -23,6 +24,7 @@ test("private tasks belong to the selected feature queue and preserve worker aut
       task.name!.slice(0, task.name!.lastIndexOf("/tasks/")),
       request.parent,
     );
+    assert.equal(Number(task.dispatchDeadline!.seconds), WORKER_REQUEST_TIMEOUT_SECONDS);
     assert.equal(
       task.httpRequest!.url,
       "https://private-worker.example/internal/narration/job",

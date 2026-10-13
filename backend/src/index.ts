@@ -90,7 +90,9 @@ function requireFeature(_req: Request, res: Response, next: NextFunction) {
 
 // Preprocessing shares Auth/App Check and rollout, but never image credits or availability.
 app.use("/api/book-analysis", bookAnalysisApiRouter({
-  db, requireFeature, enqueue, fingerprintSecret,
+  db, requireFeature, fingerprintSecret,
+  // Library-wide preprocessing must not queue ahead of requested illustrations.
+  enqueue: (path, payload, id) => enqueue(path, payload, id, process.env.BOOK_ANALYSIS_TASK_QUEUE ?? "reader-book-analysis"),
 }));
 
 app.get("/api/fingerprint-key", asyncRoute(async (req, res) => {

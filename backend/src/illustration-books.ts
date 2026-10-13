@@ -4,6 +4,7 @@ import { asyncRoute, HttpError, routeParam } from "./http.js";
 import { bookReference } from "./fences.js";
 import { registerOwnedBook } from "./book-registration.js";
 import { refundReservation } from "./illustration-credits.js";
+import { ownedQuery, purgeOwnedRecords } from "./owned-data.js";
 import { getIllustrationConfiguration, requireIllustrationProfile } from "./illustration-configuration.js";
 
 function stylesFor(title: string): string[] {
@@ -67,21 +68,11 @@ export function illustrationBookDeletion(dependencies: { db: Firestore; storage:
       if (!book.exists) throw new HttpError(404, "Book not found.");
       transaction.set(bookRef, { uid, deleted: true, deletedAt: FieldValue.serverTimestamp() });
     });
-    const records = await Promise.all([
-      db.collection("illustrationScenes").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("illustrationJobs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("illustrationJobInputs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("creditReservations").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("bookAnalysisJobs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("bookAnalysisRecords").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-      db.collection("bookAnalysisInputs").where("uid", "==", uid).where("bookId", "==", bookId).get(),
-    ]);
     // Deletion owns releasing reservations; a fenced late worker cannot refund.
-    for (const reservation of records[3]!.docs) await refundReservation(db, uid, reservation.ref);
+    const reservations = await ownedQuery(db, "creditReservations", { uid, bookId }).select().get();
+    for (const reservation of reservations.docs) await refundReservation(db, uid, reservation.ref);
     await storage.bucket(bucket).deleteFiles({ prefix: `users/${uid}/books/${bookId}/`, force: true });
-    const writer = db.bulkWriter();
-    for (const snapshot of records) for (const document of snapshot.docs) writer.delete(document.ref);
-    await writer.close();
+    await purgeOwnedRecords(db, { uid, bookId });
     // Marks the purge complete so a reimport may register this deterministic ID
     // again; the tombstone written earlier keeps delayed workers fenced until then.
     await bookRef.set({ purgedAt: FieldValue.serverTimestamp() }, { merge: true });

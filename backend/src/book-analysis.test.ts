@@ -208,7 +208,7 @@ test("tombstone-first real deletion purges prose and derived shards and fences a
   }, provider);
 });
 
-test("active duplicates adopt 204; owned expired claims return 409 without retrying a submitted provider", async () => {
+test("active duplicates and owned expired claims return 409 without retrying a submitted provider", async () => {
   const base = bookAnalysisFixtureProvider();
   let release!: () => void, submitted!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
@@ -221,7 +221,7 @@ test("active duplicates adopt 204; owned expired claims return 409 without retry
     const receipt = await response.json() as AnalysisReceipt;
     const delayed = h.request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST");
     await started;
-    assert.equal((await h.request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST")).status, 204);
+    assert.equal((await h.request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST")).status, 409);
     assert.equal(calls, 1);
     await h.store.jobReference(receipt.jobId!).update({ leaseUntil: Timestamp.fromMillis(0) });
     release(); assert.equal((await delayed).status, 409);
@@ -272,4 +272,15 @@ test("reported identity relations cannot become accepted canonical aliases", asy
     assert.equal(state.status, "failed"); assert.equal(state.error?.category, "invalid_provider_result");
     assert.equal(state.finalizedRevision, null); assert.deepEqual(state.resultPages, []);
   }, provider);
+});
+
+test("extraction indexes its window without a claim-checked transaction per record", async () => {
+  await withHarness(async h => {
+    const { generationId } = await h.admit();
+    const receipt = await (await h.request(`/api/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0])).json() as AnalysisReceipt;
+    const reads = h.memory.reads.length;
+    assert.equal((await h.request(`/internal/book-analysis/extract/${receipt.jobId}`, "POST")).status, 204);
+    // Per-record transactions re-read the four claim documents each time (~470 reads here).
+    assert.ok(h.memory.reads.length - reads <= 200, `${h.memory.reads.length - reads} reads`);
+  });
 });

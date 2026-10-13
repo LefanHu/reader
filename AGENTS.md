@@ -49,6 +49,7 @@
 - One environment project, Firebase Auth service, and Firestore database. `foundation` owns core/auth/shared data/monitoring; `illustrations` owns feature infrastructure; `runtime` owns API/worker deployments; bootstrap is separate.
 - Use `tool/deploy_backend <environment> --scope core|illustrations|all` and matching `tool/plan_infra` scopes (default all). Core works without OpenAI credentials or Node. Scope never destroys an omitted stack and is independent of illustration rollout.
 - Each API enablement and resource has one Terraform owner.
+- Worker claims: a busy lease answers 409 (never 204, which would drop the only task able to resume a crashed worker's job), checked after obsolete-job exits. `WORKER_LEASE_MS` exceeds the worker request timeout, task dispatch deadlines equal that timeout (`backend/src/fences.ts`), and every queue's retry backoff must outlast the lease. Book analysis has its own queue.
 - After infra/tooling changes run `python3 -m unittest discover -s tool/tests -v`, Terraform validation/mocked tests, formatting checks, and ShellCheck. Validation never applies cloud infrastructure changes; dev-API tests write only test-uid data in dev.
 
 ## Integration tests

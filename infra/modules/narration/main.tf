@@ -8,8 +8,12 @@ resource "google_cloud_tasks_queue" "narration" {
     max_concurrent_dispatches = 2
     max_dispatches_per_second = 1
   }
+  # Narration's own lease is shorter; the shared backoff still outlasts it.
   retry_config {
-    max_attempts = 5
+    max_attempts  = 10
+    min_backoff   = "60s"
+    max_backoff   = "600s"
+    max_doublings = 4
   }
 }
 

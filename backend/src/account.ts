@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import type { Firestore } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
 import { asyncRoute } from "./http.js";
+import { purgeOwnedRecords } from "./owned-data.js";
 import { narrationLimits, narrationMonthCounterId, type NarrationBackend } from "./narration.js";
 
 /** Shared authenticated identity is supplied only by verified Firebase tokens. */
@@ -90,24 +91,11 @@ export function accountDeletionRouter(dependencies: {
       const { db, storage, bucket, narration } = dependencies;
       // The narration account tombstone fences both workers before shared assets are purged.
       await narration.deleteAccount(uid);
-      const records = await Promise.all([
-        db.collection("illustrationScenes").where("uid", "==", uid).get(),
-        db.collection("illustrationJobs").where("uid", "==", uid).get(),
-        db.collection("illustrationJobInputs").where("uid", "==", uid).get(),
-        db.collection("creditReservations").where("uid", "==", uid).get(),
-        db.collection("bookAnalysisJobs").where("uid", "==", uid).get(),
-        db.collection("bookAnalysisRecords").where("uid", "==", uid).get(),
-        db.collection("bookAnalysisInputs").where("uid", "==", uid).get(),
-      ]);
       await storage.bucket(bucket).deleteFiles({
         prefix: `users/${uid}/`,
         force: true,
       });
-      const writer = db.bulkWriter();
-      for (const snapshot of records) {
-        for (const document of snapshot.docs) writer.delete(document.ref);
-      }
-      await writer.close();
+      await purgeOwnedRecords(db, { uid });
       await db.recursiveDelete(db.collection("users").doc(uid));
       res.status(204).end();
   }));

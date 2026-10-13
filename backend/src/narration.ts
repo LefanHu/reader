@@ -12,6 +12,7 @@ import type { NarrationProvider } from "./narration-provider.js";
 import { asyncRoute, HttpError, routeParam } from "./http.js";
 import {
   accountTombstoneReference,
+  assertLeaseFree,
   bookReference,
   readBookFence,
 } from "./fences.js";
@@ -160,12 +161,16 @@ export class NarrationBackend {
       .where("bookId", "==", id)
       .get();
     for (const job of jobs.docs) {
-      await this.release(job.id);
+      // Release and tombstone each job in one transaction.
       await db.runTransaction(async (tx) => {
         const current = await tx.get(job.ref);
-        if (!current.exists) return;
+        const data = current.data();
+        if (!data) return;
+        const release = data.reserved && !data.submitted;
+        if (release) this.refundAllowance(tx, data);
         tx.update(job.ref, {
           status: "deleted",
+          ...(release ? { reserved: false } : {}),
           token: FieldValue.delete(),
           leaseUntil: FieldValue.delete(),
         });
@@ -196,7 +201,8 @@ export class NarrationBackend {
     ]);
     // Orphan jobs still own reservations. Release them before removing monthly
     // counters so a failed release leaves accounting available for a safe retry.
-    for (const job of owned[0].docs) await this.release(job.id);
+    // Jobs of listed books were released above; only still-reserved orphans need it.
+    for (const job of owned[0].docs) if (job.data().reserved) await this.release(job.id);
     const writer = db.bulkWriter();
     for (const records of owned)
       for (const record of records.docs) writer.delete(record.ref);
@@ -474,8 +480,7 @@ export class NarrationBackend {
       const value = job.data();
       if (!value || ["ready", "failed", "deleted"].includes(value.status))
         return null;
-      if ((value.leaseUntil?.toMillis() ?? 0) > Date.now())
-        throw new HttpError(409, "Narration claim is busy.");
+      assertLeaseFree(value.leaseUntil, "Narration claim is busy.");
       if (
         !(await readBookFence(tx, db, "narrationBooks", value.uid, value.bookId))
           .live

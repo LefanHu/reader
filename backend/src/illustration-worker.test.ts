@@ -8,7 +8,8 @@ import sharp from "sharp";
 import { composeImagePrompt } from "./openai.js";
 import { HttpError } from "./http.js";
 import { MemoryFirestore } from "./test-support/firestore.js";
-import { illustrationWorkerRouter, type IllustrationWorkerDependencies } from "./illustration-worker.js";
+import { illustrationWorkerRouter } from "./illustration-worker.js";
+import type { IllustrationSceneRange } from "./book-analysis-context.js";
 import { illustrationSceneRouter } from "./illustration-scenes.js";
 import { illustrationBookDeletion } from "./illustration-books.js";
 import { accountDeletionRouter } from "./account.js";
@@ -36,7 +37,8 @@ const profile: IllustrationBookProfile = { providerId: "openai",
   style: "Painted", revision: 1, density: 1 };
 const imageConfig = snapshotImageGenerationConfig("openai", {});
 const generationSpec: SceneGenerationSpec = { imageConfig, style: "Painted", sceneText: "A courtyard" };
-let contextStub: IllustrationWorkerDependencies["resolveContext"] | undefined;
+let contextStub: ((scene: IllustrationSceneRange) => IllustrationContext) | undefined;
+let contextLoads = 0;
 type Generation = { config: ImageGenerationConfig; prompt: string; references: readonly ReferenceImage[] };
 
 async function fixture(action: (harness: {
@@ -94,7 +96,7 @@ async function fixture(action: (harness: {
     assetRetentionMilliseconds: 30 * 86400000, composeImagePrompt,
     selectScenes: async () => { calls.selection++; return select(); },
     moderateText: async () => false,
-    resolveContext: async (database, args) => contextStub?.(database, args) ?? null,
+    loadContext: async () => { contextLoads++; return contextStub ?? null; },
     moderateImage: async (bytes, mimeType) => { moderatedImages.push({ bytes, mimeType }); return false; },
     imageGenerationProvider: {
       validateCredentials: config => credentials(config),
@@ -156,14 +158,14 @@ function seedScene(db: MemoryFirestore) {
     generationSpec });
 }
 
-test("completed and actively leased jobs leave input and credits untouched", async () => {
+test("completed jobs end and actively leased jobs retry, leaving input and credits untouched", async () => {
   await fixture(async ({ db, calls, request }) => {
-    for (const state of [{ status: "complete" },
-      { status: "analyzing", leaseUntil: Timestamp.fromMillis(Date.now() + 600000) }]) {
+    for (const [state, status] of [[{ status: "complete" }, 204],
+      [{ status: "analyzing", leaseUntil: Timestamp.fromMillis(Date.now() + 600000) }, 409]] as const) {
       seedJob(db);
       db.values.set("illustrationJobs/job", { ...db.values.get("illustrationJobs/job"), ...state });
       const before = [...db.values];
-      assert.equal((await request("/jobs/job")).status, 204);
+      assert.equal((await request("/jobs/job")).status, status);
       assert.deepEqual([...db.values], before);
     }
     assert.deepEqual(calls, { selection: 0, images: 0 });
@@ -188,13 +190,15 @@ test("missing input marks the claimed job failed and clears its lease before ret
 test("admitted temporal context is snapshotted into the scene recipe and prompt", async () => {
   await fixture(async ({ db, request, generations }) => {
     seedJob(db);
-    contextStub = async (_db, args) => ({ analysisRevision: "rev", generationId: "gen",
+    contextLoads = 0;
+    contextStub = (args) => ({ analysisRevision: "rev", generationId: "gen",
       sceneStart: args.sceneStart, sceneEnd: args.sceneEnd, subjects: [],
       facts: [{ assertionId: "a", subject: "Valley", property: "sky", value: "permanent dark sky", category: "ambient_environment",
         evidence: [], revealAt: args.sceneEnd } as unknown as IllustrationContext["facts"][number]] });
     try {
       assert.equal((await request("/jobs/job")).status, 204);
     } finally { contextStub = undefined; }
+    assert.equal(contextLoads, 1);
     assert.match(generations[0]!.prompt, /sky: permanent dark sky/);
     const spec = db.values.get(`illustrationScenes/${sceneId}`)!.generationSpec as SceneGenerationSpec;
     assert.equal(spec.context?.facts[0]?.value, "permanent dark sky");

@@ -15,6 +15,7 @@ locals {
     ILLUSTRATION_BUCKET             = var.illustrations_bucket
     TASK_LOCATION                   = var.region
     TASK_QUEUE                      = var.task_queue
+    BOOK_ANALYSIS_TASK_QUEUE        = var.book_analysis_task_queue
     TASK_SERVICE_ACCOUNT            = var.task_service_account
     PILOT_CREDITS                   = tostring(var.pilot_credits)
     ILLUSTRATIONS_ENABLED           = tostring(var.illustrations_enabled)

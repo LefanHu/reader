@@ -33,6 +33,11 @@ output "task_queue" {
   value       = google_cloud_tasks_queue.illustrations.name
 }
 
+output "book_analysis_task_queue" {
+  description = "Queue name used by the API to schedule book preprocessing jobs."
+  value       = google_cloud_tasks_queue.book_analysis.name
+}
+
 output "openai_secret_id" {
   description = "Secret Manager container ID referenced by the worker; contains no key value."
   value       = google_secret_manager_secret.openai.secret_id

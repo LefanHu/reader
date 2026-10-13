@@ -38,6 +38,7 @@ module "runtime" {
   worker_service_account          = data.terraform_remote_state.illustrations.outputs.worker_service_account
   task_service_account            = data.terraform_remote_state.illustrations.outputs.task_service_account
   task_queue                      = data.terraform_remote_state.illustrations.outputs.task_queue
+  book_analysis_task_queue        = data.terraform_remote_state.illustrations.outputs.book_analysis_task_queue
   openai_secret_id                = data.terraform_remote_state.illustrations.outputs.openai_secret_id
   image_provider_secret_ids       = var.image_provider_secret_ids
   google_image_generation_enabled = var.google_image_generation_enabled

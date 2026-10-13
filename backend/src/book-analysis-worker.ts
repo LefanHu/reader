@@ -87,6 +87,47 @@ class Work {
   }
 }
 
+/**
+ * Write-back view for one indexing pass. Reads see pending writes; commit applies them in
+ * order through a few transactions, each with one live-claim check, instead of a transaction
+ * (and its four-document claim read) per record. Indexing runs after the paid provider call,
+ * so an interrupted pass is never retried: the job then fails as provider_incomplete and its
+ * partial derived records are unused.
+ */
+class WorkBatch {
+  private readonly pending = new Map<string, Row>();
+  constructor(readonly work: Work) {}
+  async read<T = Row>(name: string): Promise<T | null> {
+    return this.pending.has(name) ? this.pending.get(name) as T : this.work.read<T>(name);
+  }
+  set(name: string, data: Row) { this.pending.set(name, data); }
+  async update(name: string, change: (old: Row | null) => Row) { this.set(name, change(await this.read(name))); }
+  /** Same sharded membership layout as Work.append. */
+  async append(name: string, id: string) {
+    const memberName = key("membership", [name, id]);
+    if (await this.read(memberName)) return;
+    const count = (await this.read<{ count: number }>(name))?.count ?? 0;
+    const shardName = `${name}:${Math.floor(count / SHARD)}`;
+    const shard = await this.read<{ ids: string[] }>(shardName);
+    this.set(name, { count: count + 1 });
+    this.set(memberName, { present: true });
+    this.set(shardName, { ids: [...(shard?.ids ?? []), id] });
+  }
+  async commit() {
+    const records = [...this.pending].map(([name, data]) => ({ name, data }));
+    // Firestore allows 500 writes per transaction; leave room for the claim reads.
+    for (let start = 0; start < records.length; start += 400) await this.work.mutate(records.slice(start, start + 400));
+    this.pending.clear();
+  }
+}
+
+/** Reads independent records concurrently, in bounded groups, preserving input order. */
+async function readAll<T, R>(items: T[], read: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let start = 0; start < items.length; start += 64) results.push(...await Promise.all(items.slice(start, start + 64).map(read)));
+  return results;
+}
+
 function comparePosition(g: StoredAnalysisGeneration, a: AnalysisPosition, b: AnalysisPosition): number {
   const sections = g.admission.sections;
   const sa = sections.findIndex(s => s.id === a.sectionId), sb = sections.findIndex(s => s.id === b.sectionId);
@@ -173,21 +214,27 @@ async function candidates(work: Work, g: StoredAnalysisGeneration, chunk: Analys
   const text = normalize([...chunk.primary, ...chunk.overlap].map(s => s.text).join("\n"));
   const ids = new Set<string>();
   // A window holds at most ~2,000 distinct tokens; scanning all keeps a late name from being skipped.
-  for (const word of new Set(text.match(/[\p{L}\p{N}]+/gu) ?? [])) {
-    const name = key("names", word), head = await work.read<{ count: number }>(name);
-    if (!head) continue;
-    for (const shard of new Set([0, Math.floor((head.count - 1) / SHARD)])) for (const id of await work.ids(name, shard)) ids.add(id);
-  }
+  const words = [...new Set(text.match(/[\p{L}\p{N}]+/gu) ?? [])].map(word => key("names", word));
+  const heads = await readAll(words, name => work.read<{ count: number }>(name));
+  const shards = await readAll(words.flatMap((name, n) => {
+    const head = heads[n];
+    return head ? [...new Set([0, Math.floor((head.count - 1) / SHARD)])].map(shard => ({ name, shard })) : [];
+  }), ({ name, shard }) => work.ids(name, shard));
+  for (const shard of shards) for (const id of shard) ids.add(id);
   // Direct surfaces precede the most recent references and earliest introductions. Omitted rows remain indexed.
   const recent = await work.read<{ ids: string[] }>("recent");
   for (const id of recent?.ids ?? []) ids.add(id);
   for (const id of await work.ids("introductions", 0)) ids.add(id);
   const rows: Array<{ identity: Identity; matched: boolean; recent: number; blockOrdinal: number }> = [];
-  for (const id of [...ids].slice(0, 512)) {
+  const loaded = await readAll([...ids].slice(0, 512), async id => {
     const identity = await work.read<Identity>(key("identity", id));
-    if (!identity) continue;
+    if (!identity) return null;
     const anchor = identity.candidate.firstIntroduction;
-    const position = await work.read<{ ordinal: number }>(key("position", [anchor.sectionId, anchor.blockId]));
+    return { id, identity, position: await work.read<{ ordinal: number }>(key("position", [anchor.sectionId, anchor.blockId])) };
+  });
+  for (const entry of loaded) {
+    if (!entry) continue;
+    const { id, identity, position } = entry;
     const reference = recent?.ids.indexOf(id) ?? -1;
     rows.push({ identity, matched: identity.candidate.names.some(n => text.includes(normalize(n.text))),
       recent: reference < 0 ? Number.MAX_SAFE_INTEGER : reference, blockOrdinal: position?.ordinal ?? 0 });
@@ -216,7 +263,8 @@ async function candidates(work: Work, g: StoredAnalysisGeneration, chunk: Analys
   }
   return { candidates: selected, knownTimes, knownAssertions };
 }
-async function indexExtraction(work: Work, input: AnalysisWindowInput, output: AnalysisWindowOutput) {
+async function indexExtraction(claimed: Work, input: AnalysisWindowInput, output: AnalysisWindowOutput) {
+  const work = new WorkBatch(claimed);
   for (const span of input.chunk.primary) await work.set(key("position", [span.sectionId, span.blockId]), { ordinal: span.blockOrdinal });
   for (const entity of output.entities) {
     const existing = await work.read<Identity>(key("identity", entity.id));
@@ -263,7 +311,8 @@ async function indexExtraction(work: Work, input: AnalysisWindowInput, output: A
   }
   for (const time of output.times) await work.set(key("time", time.id), { time, color: 0 });
   const previous = await work.read<{ ids: string[] }>("recent");
-  await work.set("recent", { ids: [...new Set([...output.mentions.map(m => m.entityId).reverse(), ...output.entities.map(e => e.id), ...(previous?.ids ?? [])])].slice(0, 64) });
+  work.set("recent", { ids: [...new Set([...output.mentions.map(m => m.entityId).reverse(), ...output.entities.map(e => e.id), ...(previous?.ids ?? [])])].slice(0, 64) });
+  await work.commit();
 }
 
 async function reconcile(store: BookAnalysisStore, work: Work, g: StoredAnalysisGeneration, provider: BookAnalysisProvider) {
@@ -354,15 +403,19 @@ async function materialize(store: BookAnalysisStore, work: Work, g: StoredAnalys
   const ordinal = g.cursor.ordinal;
   if (ordinal >= g.admission.chunkCount) { await store.commitFinalization(work.claim, { stage: "index", ordinal: 0 }); return; }
   const output = await extraction(store, g, ordinal);
-  const canonical = new Map<string, string>();
-  for (const id of new Set([...output.entities.map(e => e.id), ...output.mentions.map(m => m.entityId), ...output.entries.flatMap(e => e.subjectIds),
-    ...output.assertions.flatMap(a => [a.subjectId, ...(a.objectEntityId ? [a.objectEntityId] : [])])])) canonical.set(id, (await work.root(id)).identity.canonical);
+  const referenced = [...new Set([...output.entities.map(e => e.id), ...output.mentions.map(m => m.entityId), ...output.entries.flatMap(e => e.subjectIds),
+    ...output.assertions.flatMap(a => [a.subjectId, ...(a.objectEntityId ? [a.objectEntityId] : [])])])];
+  const roots = await readAll(referenced, id => work.root(id));
+  const canonical = new Map(referenced.map((id, n) => [id, roots[n]!.identity.canonical]));
+  // Derived records are buffered and committed before pages are recorded and again before the
+  // cursor advances, preserving the durable order of the per-record writes they replace.
+  const batch = new WorkBatch(work);
   const resolve = (id: string) => canonical.get(id) ?? id;
   const mappings: AnalysisEntityMapping[] = [];
   for (const entity of output.entities) {
     const id = resolve(entity.id);
     if (id !== entity.id) {
-      const identity = (await work.read<Identity>(key("identity", entity.id)))!;
+      const identity = (await batch.read<Identity>(key("identity", entity.id)))!;
       mappings.push({ entityId: entity.id, canonicalEntityId: id, evidence: identity.mapping?.evidence ?? identity.candidate.evidence,
         revealAt: identity.mapping?.revealAt ?? entity.firstIntroduction });
     }
@@ -375,7 +428,7 @@ async function materialize(store: BookAnalysisStore, work: Work, g: StoredAnalys
     if (kind === "entries") for (const entry of output.entries) {
       for (const field of ["assertionIds", "supersedesAssertionIds"] as const) {
         const ids: string[] = [];
-        for (const id of entry[field]) ids.push((await work.read<{ canonical: string }>(key("record_alias", id)))?.canonical ?? id);
+        for (const id of entry[field]) ids.push((await batch.read<{ canonical: string }>(key("record_alias", id)))?.canonical ?? id);
         entry[field] = [...new Set(ids)];
       }
     }
@@ -386,10 +439,10 @@ async function materialize(store: BookAnalysisStore, work: Work, g: StoredAnalys
           record.scope, record.worldCategory, record.retroactiveWorld, record.validFromTimeId, record.validUntilTimeId] :
         "entryKind" in record ? [record.evidence, record.entryKind, record.subjectIds, record.assertionIds, record.supersedesAssertionIds] :
         "kind" in record ? [record.id, record.names] : [record.id];
-      const name = key("dedup", [kind, provenance]), existing = await work.read<{ id: string; jobId: string }>(name);
-      if (!existing) { await work.set(name, { id: record.id, jobId: work.claim.jobId }); (kept as unknown[]).push(record); }
+      const name = key("dedup", [kind, provenance]), existing = await batch.read<{ id: string; jobId: string }>(name);
+      if (!existing) { await batch.set(name, { id: record.id, jobId: work.claim.jobId }); (kept as unknown[]).push(record); }
       else if (existing.id === record.id && existing.jobId === work.claim.jobId) (kept as unknown[]).push(record);
-      else if (existing.id !== record.id) await work.set(key("record_alias", record.id), { canonical: existing.id });
+      else if (existing.id !== record.id) await batch.set(key("record_alias", record.id), { canonical: existing.id });
     }
     Object.assign(output, { [kind]: kept });
   }
@@ -400,22 +453,22 @@ async function materialize(store: BookAnalysisStore, work: Work, g: StoredAnalys
     entryIds: output.entries.filter(e => e.assertionIds.includes(assertion.id)).map(e => e.id),
     supersessions: output.entries.filter(e => e.assertionIds.includes(assertion.id) && e.supersedesAssertionIds.length).map(e => ({ assertionId: assertion.id, supersedesAssertionIds: e.supersedesAssertionIds, entryId: e.id })) }));
   for (const assertion of output.assertions) {
-    await work.set(key("assertion", assertion.id), { assertion });
-    await work.append(key("property", [assertion.subjectId, assertion.property]), assertion.id);
+    await batch.set(key("assertion", assertion.id), { assertion });
+    await batch.append(key("property", [assertion.subjectId, assertion.property]), assertion.id);
   }
   for (const entry of output.entries) for (const oldId of entry.supersedesAssertionIds) {
     for (const assertionId of entry.assertionIds) {
       const replacement = output.assertions.find(a => a.id === assertionId);
-      const previous = (await work.read<{ assertion: AnalysisAssertion }>(key("assertion", oldId)))?.assertion;
+      const previous = (await batch.read<{ assertion: AnalysisAssertion }>(key("assertion", oldId)))?.assertion;
       if (replacement?.validFromTimeId && replacement.support === "asserted" && previous?.subjectId === replacement.subjectId &&
-        previous.property === replacement.property) await work.append(key("ends", oldId), replacement.validFromTimeId);
+        previous.property === replacement.property) await batch.append(key("ends", oldId), replacement.validFromTimeId);
     }
   }
   for (const entry of output.entries) for (const subjectId of entry.subjectIds) if (!subjectIndexes.some(s => s.subjectId === subjectId && s.entryIds.includes(entry.id))) subjectIndexes.push({ subjectId, assertionIds: [], entryIds: [entry.id], supersessions: [] });
   pages.push(page(g, "subject_indexes", ordinal, { subjectIndexes }));
   const worldBaselines: WorldBaseline[] = [], worldMaps = [];
   for (const assertion of output.assertions) {
-    const subject = (await work.read<Identity>(key("identity", assertion.subjectId)))!.candidate;
+    const subject = (await batch.read<Identity>(key("identity", assertion.subjectId)))!.candidate;
     const exposesHiddenSubject = output.entries.some(e => e.assertionIds.includes(assertion.id) && e.informationKinds.some(k => k !== "location"));
     if (!exposesHiddenSubject && (subject.kind === "world" || subject.kind === "location") && assertion.worldCategory && assertion.support === "asserted" &&
       assertion.retroactiveWorld && assertion.validFromTimeId !== null && (assertion.scope === "enduring" || assertion.scope === "interval")) {
@@ -423,19 +476,21 @@ async function materialize(store: BookAnalysisStore, work: Work, g: StoredAnalys
         validFromTimeId: assertion.validFromTimeId, validUntilTimeId: assertion.validUntilTimeId });
     }
     if (subject.kind === "location" && assertion.objectEntityId && assertion.support === "asserted" &&
-      (await work.read<Identity>(key("identity", assertion.objectEntityId)))?.candidate.kind === "location") {
+      (await batch.read<Identity>(key("identity", assertion.objectEntityId)))?.candidate.kind === "location") {
       worldMaps.push({ id: key("map", assertion.id), locationEntityIds: [assertion.subjectId, assertion.objectEntityId],
         relationAssertionIds: [assertion.id], evidence: assertion.evidence });
     }
   }
-  await work.set(`baseline_candidates:${ordinal}`, { worldBaselines });
+  await batch.set(`baseline_candidates:${ordinal}`, { worldBaselines });
   pages.push(page(g, "world_maps", ordinal, { worldMaps }));
+  await batch.commit();
   const descriptors = await recordPages(store, work, g, pages);
   // Store graph edges in their stated direction. No calendar or total narrative order is invented.
   for (const time of output.times) {
-    for (const later of time.beforeIds) await work.append(key("edges", time.id), later);
-    for (const earlier of time.afterIds) await work.append(key("edges", earlier), time.id);
+    for (const later of time.beforeIds) await batch.append(key("edges", time.id), later);
+    for (const earlier of time.afterIds) await batch.append(key("edges", earlier), time.id);
   }
+  await batch.commit();
   await store.commitFinalization(work.claim, { stage: "materialize", ordinal: ordinal + 1 }, descriptors);
 }
 

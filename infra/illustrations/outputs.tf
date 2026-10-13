@@ -33,6 +33,11 @@ output "task_queue" {
   value       = module.illustrations.task_queue
 }
 
+output "book_analysis_task_queue" {
+  description = "Queue name used by the API to schedule book preprocessing jobs."
+  value       = module.illustrations.book_analysis_task_queue
+}
+
 output "openai_secret_id" {
   description = "Secret Manager container ID referenced by the worker; contains no key value."
   value       = module.illustrations.openai_secret_id

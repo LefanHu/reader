@@ -43,6 +43,11 @@ variable "task_queue" {
   type        = string
 }
 
+variable "book_analysis_task_queue" {
+  description = "Cloud Tasks queue for book preprocessing, separate from illustration jobs."
+  type        = string
+}
+
 variable "openai_secret_id" {
   description = "Secret Manager container holding the OpenAI API key."
   type        = string

@@ -270,8 +270,39 @@ resource "google_cloud_tasks_queue" "illustrations" {
     max_dispatches_per_second = 2
   }
 
+  # Retries must outlast a crashed worker's claim lease (WORKER_LEASE_MS in
+  # backend/src/fences.ts, 16 minutes): a busy lease answers 409, and backoff of
+  # 60 s doubling to 600 s keeps retrying until the lease lapses (~65 min total).
   retry_config {
-    max_attempts = 5
+    max_attempts  = 10
+    min_backoff   = "60s"
+    max_backoff   = "600s"
+    max_doublings = 4
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+# Background preprocessing of whole libraries must not delay illustrations a
+# reader is waiting for, so it has its own queue and dispatch limits.
+resource "google_cloud_tasks_queue" "book_analysis" {
+  project  = var.project_id
+  location = var.runtime_region
+  name     = "reader-book-analysis"
+
+  rate_limits {
+    max_concurrent_dispatches = 3
+    max_dispatches_per_second = 2
+  }
+
+  # Retries must outlast a crashed worker's claim lease (WORKER_LEASE_MS in
+  # backend/src/fences.ts, 16 minutes): a busy lease answers 409, and backoff of
+  # 60 s doubling to 600 s keeps retrying until the lease lapses (~65 min total).
+  retry_config {
+    max_attempts  = 10
+    min_backoff   = "60s"
+    max_backoff   = "600s"
+    max_doublings = 4
   }
 
   depends_on = [google_project_service.required]

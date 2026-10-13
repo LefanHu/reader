@@ -8,11 +8,11 @@ import type { selectScenes } from "./scene-selection.js";
 import type { GeneratedImage, ImageGenerationProvider, ImageMimeType } from "./image-generation.js";
 import { requireImageGenerationConfig, requireIllustrationProfile } from "./illustration-configuration.js";
 import { asyncRoute, HttpError, routeParam } from "./http.js";
-import { readBookFence } from "./fences.js";
+import { assertLeaseFree, readBookFence, WORKER_LEASE_MS } from "./fences.js";
 import { CancelledClaim, reserveCredit, settleCredit } from "./illustration-credits.js";
 import type { ChapterInput, IllustrationContext, ImageGenerationConfig, SceneGenerationSpec } from "./types.js";
 import type { AnalysisPosition } from "./book-analysis-types.js";
-import { resolveIllustrationContext } from "./book-analysis-context.js";
+import { loadIllustrationContext, type IllustrationContextResolver } from "./book-analysis-context.js";
 
 /** Worker dispatch includes credential/config validation before any credit reservation. */
 export interface IllustrationWorkerDependencies {
@@ -27,8 +27,8 @@ export interface IllustrationWorkerDependencies {
   imageGenerationProvider: ImageGenerationProvider & {
     validateCredentials(config: ImageGenerationConfig): void | Promise<void>;
   };
-  /** Test seam; production reads the latest finalized preprocessing generation. */
-  resolveContext?: typeof resolveIllustrationContext;
+  /** Test seam; production loads the latest finalized preprocessing generation once per job. */
+  loadContext?: typeof loadIllustrationContext;
 }
 
 class SafetyError extends Error {}
@@ -88,7 +88,7 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
     selectScenes, composeImagePrompt, moderateText, moderateImage,
     imageGenerationProvider,
   } = dependencies;
-  const resolveContext = dependencies.resolveContext ?? resolveIllustrationContext;
+  const loadContext = dependencies.loadContext ?? loadIllustrationContext;
   const router = express.Router();
 
   async function liveClaim(transaction: Transaction, claim: Claim) {
@@ -147,12 +147,13 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
       const data = job.data();
       if (!data || data.deleted) return null;
       if (["complete", "failed", "insufficient_credits"].includes(data.status)) return null;
-      if ((data.leaseUntil?.toMillis() ?? 0) > Date.now()) return null;
       const fence = await readBookFence(transaction, db, "books", data.uid, data.bookId);
       if (!fence.live) return null;
+      // Deleted books end above; only a still-wanted job waits out a live lease.
+      assertLeaseFree(data.leaseUntil, "Illustration job is already running.");
       transaction.update(jobRef, {
         status: "analyzing", claimToken: token,
-        leaseUntil: Timestamp.fromMillis(Date.now() + 10 * 60 * 1000), updatedAt: FieldValue.serverTimestamp(),
+        leaseUntil: Timestamp.fromMillis(Date.now() + WORKER_LEASE_MS), updatedAt: FieldValue.serverTimestamp(),
       });
       return data;
     });
@@ -173,6 +174,8 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
           throw new Error("Operation snapshot is incomplete");
         }
         const selected = await selectScenes(input, profile.density);
+        // Every scene of this job reads the same finalized generation.
+        let resolveScene: IllustrationContextResolver | null | undefined;
         const scenes: ScenePlan[] = [];
         for (const scene of selected) {
           const id = createHash("sha256").update(`${jobId}:${scene.startParagraphId}:${scene.endParagraphId}`).digest("hex").slice(0, 40);
@@ -185,7 +188,8 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
           const sceneStart: AnalysisPosition = { sectionId: input.href, blockId: input.paragraphs[start]!.id, offset: 0 };
           const sceneEnd: AnalysisPosition = { sectionId: input.href, blockId: paragraph.id, offset: paragraph.text.length };
           // Snapshotted once here so retries, regeneration and refresh reuse the same admitted truth.
-          const context = await resolveContext(db, { uid, bookId, anchor: sceneEnd, sceneStart, sceneEnd });
+          if (resolveScene === undefined) resolveScene = await loadContext(db, { uid, bookId });
+          const context = resolveScene?.({ anchor: sceneEnd, sceneStart, sceneEnd }) ?? null;
           scenes.push({ id, paragraphOrdinal: end,
             anchor: { href: input.href, spineOrdinal: chapterOrdinal, paragraphId: paragraph.id,
               fallbackProgression: paragraph.progression },
@@ -300,9 +304,9 @@ export function illustrationWorkerRouter(dependencies: IllustrationWorkerDepende
       if (!fence.live) return null;
       if (value.regenerationTarget !== targetGeneration || value.status !== "regenerating" ||
         value.regenerationTaskId !== req.body.taskId) return null;
-      if ((value.regenerationLeaseUntil?.toMillis() ?? 0) > Date.now()) throw new HttpError(409, "Regeneration is already running.");
+      assertLeaseFree(value.regenerationLeaseUntil, "Regeneration is already running.");
       transaction.update(reference, { regenerationToken: token,
-        regenerationLeaseUntil: Timestamp.fromMillis(Date.now() + 10 * 60 * 1000), updatedAt: FieldValue.serverTimestamp() });
+        regenerationLeaseUntil: Timestamp.fromMillis(Date.now() + WORKER_LEASE_MS), updatedAt: FieldValue.serverTimestamp() });
       return value;
     });
     if (!data) { res.status(204).end(); return; }

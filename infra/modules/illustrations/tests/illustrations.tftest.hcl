@@ -51,8 +51,12 @@ run "illustrations_preserves_privacy_retention_and_capacity" {
     error_message = "Per-user objects must expire after thirty days."
   }
   assert {
-    condition     = google_cloud_tasks_queue.illustrations.rate_limits[0].max_concurrent_dispatches == 3 && google_cloud_tasks_queue.illustrations.rate_limits[0].max_dispatches_per_second == 2 && google_cloud_tasks_queue.illustrations.retry_config[0].max_attempts == 5
+    condition     = google_cloud_tasks_queue.illustrations.rate_limits[0].max_concurrent_dispatches == 3 && google_cloud_tasks_queue.illustrations.rate_limits[0].max_dispatches_per_second == 2 && google_cloud_tasks_queue.illustrations.retry_config[0].max_attempts == 10 && google_cloud_tasks_queue.illustrations.retry_config[0].min_backoff == "60s"
     error_message = "The task queue must retain its cost and retry limits."
+  }
+  assert {
+    condition     = google_cloud_tasks_queue.book_analysis.name == "reader-book-analysis" && google_cloud_tasks_queue.book_analysis.rate_limits[0].max_concurrent_dispatches == 3 && google_cloud_tasks_queue.book_analysis.retry_config[0].max_attempts == 10 && google_cloud_tasks_queue.book_analysis.retry_config[0].min_backoff == "60s"
+    error_message = "Book preprocessing must use its own bounded queue with lease-spanning retries."
   }
   assert {
     condition     = google_secret_manager_secret.openai.deletion_protection && google_secret_manager_secret.openai.deletion_policy == "PREVENT" && google_secret_manager_secret.fingerprint.deletion_protection

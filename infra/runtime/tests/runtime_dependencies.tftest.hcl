@@ -13,14 +13,15 @@ override_data {
   target = data.terraform_remote_state.illustrations
   values = {
     outputs = {
-      illustrations_bucket   = "reader-test-illustrations"
-      api_service_account    = "api@reader-test.iam.gserviceaccount.com"
-      worker_service_account = "worker@reader-test.iam.gserviceaccount.com"
-      task_service_account   = "tasks@reader-test.iam.gserviceaccount.com"
-      narration_task_queue   = "reader-narration"
-      task_queue             = "reader-illustrations"
-      openai_secret_id       = "reader-openai-api-key"
-      fingerprint_secret_id  = "reader-fingerprint-secret"
+      illustrations_bucket     = "reader-test-illustrations"
+      api_service_account      = "api@reader-test.iam.gserviceaccount.com"
+      worker_service_account   = "worker@reader-test.iam.gserviceaccount.com"
+      task_service_account     = "tasks@reader-test.iam.gserviceaccount.com"
+      narration_task_queue     = "reader-narration"
+      task_queue               = "reader-illustrations"
+      book_analysis_task_queue = "reader-book-analysis"
+      openai_secret_id         = "reader-openai-api-key"
+      fingerprint_secret_id    = "reader-fingerprint-secret"
     }
   }
 }

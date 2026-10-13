@@ -7,7 +7,7 @@ import { BookAnalysisStore, CancelledAnalysisClaim } from "./book-analysis-store
 import { analysisChunkHash, analysisDocumentDigest, analysisOverlapHash, analysisSpanHash } from "./book-analysis-source.js";
 import { HttpError } from "./http.js";
 import { MemoryFirestore } from "./test-support/firestore.js";
-import type { AnalysisChunkInput, AnalysisGenerationAdmission, AnalysisReceipt, AnalysisResultPage, AnalysisSourceSpan } from "./book-analysis-types.js";
+import type { AnalysisChunkInput, AnalysisGenerationAdmission, AnalysisProgress, AnalysisReceipt, AnalysisResultPage, AnalysisSourceSpan } from "./book-analysis-types.js";
 
 function source(texts = ["Mara arrives.", "The valley remains dark."]) {
   const inputs: AnalysisChunkInput[] = texts.map((text, ordinal) => {
@@ -162,6 +162,20 @@ test("manifest coverage requires all ordered descriptors while upload page deliv
   });
 });
 
+test("the manifest cursor skips pages already stored and only the completing page validates the whole manifest", async () => {
+  await fixture(async f => {
+    const { generationId, chunks } = await admitted(f, source(["First passage.", "Second passage.", "Third passage."]));
+    const base = `/generations/${generationId}`;
+    const cursor = async () => ((await (await f.request(base)).json()) as AnalysisProgress).nextCursor;
+    assert.equal((await f.request(`${base}/manifest-pages/1`, "PUT", { chunks: [chunks[1]] })).status, 204);
+    assert.deepEqual(await cursor(), { stage: "manifest", ordinal: 0 });
+    assert.equal((await f.request(`${base}/manifest-pages/0`, "PUT", { chunks: [chunks[0]] })).status, 204);
+    assert.deepEqual(await cursor(), { stage: "manifest", ordinal: 2 });
+    assert.equal((await f.request(`${base}/manifest-pages/2`, "PUT", { chunks: [chunks[2]] })).status, 204);
+    assert.deepEqual(await cursor(), { stage: "extract", ordinal: 0 });
+  });
+});
+
 test("lost enqueue retries adopt exact job, TTL restoration preserves intent, and completed delivery never extracts again", async () => {
   await fixture(async f => {
     const { generationId, inputs } = await ready(f);
@@ -224,9 +238,10 @@ test("UUID leases reject owned expiration but cancelled, superseded and tombston
     const receipt = await (await f.request(`/generations/${generationId}/chunks/0`, "POST", inputs[0])).json() as AnalysisReceipt;
     const active = await f.store.claim(receipt.jobId!); assert(active);
     assert.match(active.claim.token, /^[a-f0-9-]{36}$/);
-    assert.equal(await f.store.claim(receipt.jobId!), null);
+    // A live lease may belong to a crashed worker, so the duplicate retries.
+    await assert.rejects(f.store.claim(receipt.jobId!), error => error instanceof HttpError && error.status === 409);
     const job = f.memory.values.get(`bookAnalysisJobs/${receipt.jobId}`)!;
-    assert.equal((job.leaseUntil as Timestamp).toMillis() > Date.now() + 9 * 60 * 1000, true);
+    assert.equal((job.leaseUntil as Timestamp).toMillis() > Date.now() + 15 * 60 * 1000, true);
     job.leaseUntil = Timestamp.fromMillis(Date.now() - 1);
     await assert.rejects(f.store.fail(active.claim, "test_failure"), error => error instanceof HttpError && error.status === 409);
     const newer = await f.store.claim(receipt.jobId!); assert(newer);
