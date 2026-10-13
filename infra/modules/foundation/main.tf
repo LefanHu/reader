@@ -45,14 +45,14 @@ resource "google_project_service" "required" {
 }
 
 resource "google_firebase_project" "environment" {
-  provider = google-beta
+  provider = google-beta.quota
   project  = google_project.environment.project_id
 
   depends_on = [google_project_service.required]
 }
 
 resource "google_firebase_apple_app" "reader" {
-  provider = google-beta
+  provider = google-beta.quota
 
   project      = google_project.environment.project_id
   display_name = "Reader ${title(var.environment)}"
@@ -91,7 +91,7 @@ resource "google_firebase_app_check_app_attest_config" "reader" {
 }
 
 data "google_firebase_apple_app_config" "reader" {
-  provider = google-beta
+  provider = google-beta.quota
   project  = google_project.environment.project_id
   app_id   = google_firebase_apple_app.reader.app_id
 
@@ -134,8 +134,11 @@ resource "google_firestore_database" "default" {
   depends_on = [google_project_service.required]
 }
 
+# Firebase and Rules are client-based APIs: user ADC needs the quota provider.
+# They depend on enabled services, so first-time projects can still bootstrap.
 resource "google_firebaserules_ruleset" "firestore" {
-  project = google_project.environment.project_id
+  provider = google.quota
+  project  = google_project.environment.project_id
 
   source {
     files {
@@ -148,6 +151,7 @@ resource "google_firebaserules_ruleset" "firestore" {
 }
 
 resource "google_firebaserules_release" "firestore" {
+  provider     = google.quota
   project      = google_project.environment.project_id
   name         = "cloud.firestore"
   ruleset_name = google_firebaserules_ruleset.firestore.name
@@ -202,7 +206,7 @@ resource "google_billing_budget" "monthly" {
 
 # Apple platform registrations share one Firebase project, Auth and database.
 resource "google_firebase_apple_app" "macos" {
-  provider        = google-beta
+  provider        = google-beta.quota
   project         = google_project.environment.project_id
   display_name    = "Reader macOS ${title(var.environment)}"
   bundle_id       = var.apple_macos_bundle_id
@@ -229,7 +233,7 @@ resource "google_firebase_app_check_app_attest_config" "macos" {
   depends_on = [time_sleep.macos_app_propagation]
 }
 data "google_firebase_apple_app_config" "macos" {
-  provider = google-beta
+  provider = google-beta.quota
   project  = google_project.environment.project_id
   app_id   = google_firebase_apple_app.macos.app_id
 
