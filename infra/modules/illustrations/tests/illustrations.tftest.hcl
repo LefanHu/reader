@@ -1,5 +1,7 @@
 mock_provider "google" {}
+mock_provider "google" { alias = "quota" }
 mock_provider "google-beta" {}
+mock_provider "google-beta" { alias = "quota" }
 mock_provider "random" {}
 
 variables {
@@ -59,20 +61,24 @@ run "illustrations_preserves_privacy_retention_and_capacity" {
     error_message = "Book preprocessing must use its own bounded queue with lease-spanning retries."
   }
   assert {
-    condition     = google_secret_manager_secret.openai.deletion_protection && google_secret_manager_secret.openai.deletion_policy == "PREVENT" && google_secret_manager_secret.fingerprint.deletion_protection
-    error_message = "Secret containers must reject accidental deletion."
+    condition     = alltrue([for secret in google_secret_manager_secret.container : secret.deletion_protection && secret.deletion_policy == "PREVENT"]) && google_secret_manager_secret.container["openai"].secret_id == "reader-openai-api-key" && google_secret_manager_secret.container["fingerprint"].secret_id == "reader-fingerprint-secret"
+    error_message = "Secret containers must keep their names and reject accidental deletion."
   }
   assert {
     condition     = google_project_iam_member.build_source.role == "roles/storage.objectViewer" && google_project_iam_member.build_source.condition[0].expression == "resource.type == 'storage.googleapis.com/Object' && resource.name.startsWith('projects/_/buckets/reader-test-12345_cloudbuild/objects/source/')"
     error_message = "The custom builder may read only source archives, not reader assets or unrelated storage."
   }
   assert {
-    condition     = toset(keys(google_secret_manager_secret.image_provider)) == toset(["seedream", "qwen", "xai", "flux"]) && google_secret_manager_secret.image_provider["seedream"].secret_id == "reader-byteplus-api-key" && google_secret_manager_secret.image_provider["qwen"].secret_id == "reader-qwen-api-key" && google_secret_manager_secret.image_provider["xai"].secret_id == "reader-xai-api-key" && google_secret_manager_secret.image_provider["flux"].secret_id == "reader-bfl-api-key"
+    condition     = toset(keys(google_secret_manager_secret.container)) == toset(["openai", "fingerprint", "seedream", "qwen", "xai", "flux"]) && google_secret_manager_secret.container["seedream"].secret_id == "reader-byteplus-api-key" && google_secret_manager_secret.container["qwen"].secret_id == "reader-qwen-api-key" && google_secret_manager_secret.container["xai"].secret_id == "reader-xai-api-key" && google_secret_manager_secret.container["flux"].secret_id == "reader-bfl-api-key"
     error_message = "Each direct provider needs exactly its named secret container."
   }
   assert {
-    condition     = alltrue([for secret in google_secret_manager_secret.image_provider : secret.deletion_protection && secret.deletion_policy == "PREVENT"]) && length(google_secret_manager_secret_iam_member.worker_image_provider) == 4 && alltrue([for grant in google_secret_manager_secret_iam_member.worker_image_provider : grant.role == "roles/secretmanager.secretAccessor"])
-    error_message = "Provider key containers must be protected and have exactly four worker accessors."
+    condition     = toset(keys(google_secret_manager_secret_iam_member.worker)) == toset(["openai", "seedream", "qwen", "xai", "flux"]) && alltrue([for grant in google_secret_manager_secret_iam_member.worker : grant.role == "roles/secretmanager.secretAccessor"]) && google_secret_manager_secret_iam_member.api_fingerprint.secret_id == "reader-fingerprint-secret"
+    error_message = "The worker reads OpenAI and the four provider keys but never the fingerprint; the API reads only the fingerprint."
+  }
+  assert {
+    condition     = output.image_provider_secret_ids == { seedream = "reader-byteplus-api-key", qwen = "reader-qwen-api-key", xai = "reader-xai-api-key", flux = "reader-bfl-api-key" }
+    error_message = "Deployment tooling reads provider containers only from this output, so it must list exactly the direct providers."
   }
   assert {
     condition     = google_project_iam_member.worker_vertex.role == "roles/aiplatform.user" && contains(local.required_services, "aiplatform.googleapis.com")

@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 
 import '../app/reader_controller.dart';
 import '../catalog/catalog_book.dart';
+import '../preferences/reader_preferences_coordinator.dart';
 import '../preferences/reader_settings.dart';
 import '../text/text_position.dart';
+import 'narration_voice.dart';
 import 'session.dart';
 
 /// Shows controls before loading or authenticating, so startup is never hidden.
@@ -149,11 +151,6 @@ class _NarrationSheetState extends State<NarrationSheet> {
       final attached = book != null && session.book?.hash == book.hash;
       final ready = attached && !_opening && session.ready;
       final cloud = session.source.requiresCloudRegistration;
-      final voices = session.source.voices;
-      final selectedVoice = controller.preferences.settings.narrationVoice;
-      final selectedDescriptor = voices
-          .where((voice) => voice.identifier == selectedVoice)
-          .firstOrNull;
       final ownsPosition = attached && session.ownsPosition(book);
       final error = _actionError ?? (attached ? session.error : null);
       final loading =
@@ -256,167 +253,16 @@ class _NarrationSheetState extends State<NarrationSheet> {
                         },
                 ),
                 const SizedBox(height: 16),
-                Center(
-                  child: Tooltip(
-                    message: ownsPosition
-                        ? 'Pause narration'
-                        : 'Play narration',
-                    child: FilledButton.icon(
-                      key: const ValueKey('narration-transport'),
-                      onPressed: !ready
-                          ? null
-                          : () => _perform(
-                              ownsPosition ? session.pause : session.play,
-                            ),
-                      icon: Icon(ownsPosition ? Icons.pause : Icons.play_arrow),
-                      label: Text(ownsPosition ? 'Pause' : 'Play'),
-                    ),
-                  ),
+                _TransportControls(
+                  session: session,
+                  ready: ready,
+                  ownsPosition: ownsPosition,
+                  perform: _perform,
                 ),
-                const SizedBox(height: 8),
-                // Wrap rather than shrink labels at narrow iOS widths or large
-                // accessibility text; every transport target remains reachable.
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 8,
-                  children: [
-                    Tooltip(
-                      message: 'Back 15 seconds',
-                      child: TextButton.icon(
-                        onPressed: ready && session.canSeek
-                            ? () => _perform(
-                                () => session.seekBy(
-                                  const Duration(seconds: -15),
-                                ),
-                              )
-                            : null,
-                        icon: const Icon(Icons.replay),
-                        label: const Text('−15 sec'),
-                      ),
-                    ),
-                    Tooltip(
-                      message: 'Forward 15 seconds',
-                      child: TextButton.icon(
-                        onPressed: ready && session.canSeek
-                            ? () => _perform(
-                                () =>
-                                    session.seekBy(const Duration(seconds: 15)),
-                              )
-                            : null,
-                        icon: const Icon(Icons.forward),
-                        label: const Text('+15 sec'),
-                      ),
-                    ),
-                    Tooltip(
-                      message: 'Stop narration',
-                      child: TextButton.icon(
-                        onPressed: ready ? () => _perform(session.stop) : null,
-                        icon: const Icon(Icons.stop),
-                        label: const Text('Stop'),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Listening preferences',
-                  style: theme.textTheme.titleSmall,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Voice and speed apply to all books.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  key: ValueKey(selectedVoice),
-                  initialValue: selectedVoice,
-                  isExpanded: true,
-                  isDense: false,
-                  itemHeight: null,
-                  menuMaxHeight: 360,
-                  decoration: InputDecoration(
-                    labelText: 'Voice · all books',
-                    helperText: selectedDescriptor == null
-                        ? 'Unavailable. Choose an installed voice for new audio.'
-                        : '${selectedDescriptor.language} · ${selectedDescriptor.quality}',
-                    helperMaxLines: 3,
-                  ),
-                  selectedItemBuilder: (context) => [
-                    if (selectedDescriptor == null)
-                      Text(
-                        'Unavailable: $selectedVoice',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    for (final voice in voices)
-                      Text(
-                        voice.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                  ],
-                  items: [
-                    if (selectedDescriptor == null)
-                      DropdownMenuItem(
-                        value: selectedVoice,
-                        enabled: false,
-                        child: Text('Unavailable: $selectedVoice'),
-                      ),
-                    for (final voice in voices)
-                      DropdownMenuItem(
-                        value: voice.identifier,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(voice.name),
-                              Text(
-                                '${voice.language} · ${voice.quality}',
-                                style: theme.textTheme.bodySmall,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                  onChanged: voices.isEmpty
-                      ? null
-                      : (voice) {
-                          if (voice == null) return;
-                          unawaited(
-                            _perform(
-                              () => controller.preferences.configure(
-                                narrationVoice: voice,
-                              ),
-                            ),
-                          );
-                        },
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<double>(
-                  key: ValueKey(controller.preferences.settings.narrationSpeed),
-                  initialValue: controller.preferences.settings.narrationSpeed,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Speed · all books',
-                  ),
-                  items: narrationSpeeds
-                      .map(
-                        (speed) => DropdownMenuItem(
-                          value: speed,
-                          child: Text('$speed×'),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (speed) => _perform(
-                    () =>
-                        controller.preferences.configure(narrationSpeed: speed),
-                  ),
+                _ListeningPreferences(
+                  preferences: controller.preferences,
+                  voices: session.source.voices,
+                  perform: _perform,
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
@@ -633,5 +479,206 @@ Future<void> _accountAction(
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(error.toString())));
     }
+  }
+}
+
+/// Play/pause, ±15 s seek and stop for the attached publication.
+class _TransportControls extends StatelessWidget {
+  const _TransportControls({
+    required this.session,
+    required this.ready,
+    required this.ownsPosition,
+    required this.perform,
+  });
+
+  final NarrationSession session;
+
+  /// Whether the sheet's book is attached, opened and ready to play.
+  final bool ready;
+
+  /// Whether listening currently owns the reading position (play vs pause).
+  final bool ownsPosition;
+
+  /// Runs an action, surfacing its failure in the sheet.
+  final Future<void> Function(Future<void> Function()) perform;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Center(
+        child: Tooltip(
+          message: ownsPosition ? 'Pause narration' : 'Play narration',
+          child: FilledButton.icon(
+            key: const ValueKey('narration-transport'),
+            onPressed: !ready
+                ? null
+                : () => perform(ownsPosition ? session.pause : session.play),
+            icon: Icon(ownsPosition ? Icons.pause : Icons.play_arrow),
+            label: Text(ownsPosition ? 'Pause' : 'Play'),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      // Wrap rather than shrink labels at narrow iOS widths or large
+      // accessibility text; every transport target remains reachable.
+      Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 8,
+        children: [
+          Tooltip(
+            message: 'Back 15 seconds',
+            child: TextButton.icon(
+              onPressed: ready && session.canSeek
+                  ? () => perform(
+                      () => session.seekBy(const Duration(seconds: -15)),
+                    )
+                  : null,
+              icon: const Icon(Icons.replay),
+              label: const Text('−15 sec'),
+            ),
+          ),
+          Tooltip(
+            message: 'Forward 15 seconds',
+            child: TextButton.icon(
+              onPressed: ready && session.canSeek
+                  ? () => perform(
+                      () => session.seekBy(const Duration(seconds: 15)),
+                    )
+                  : null,
+              icon: const Icon(Icons.forward),
+              label: const Text('+15 sec'),
+            ),
+          ),
+          Tooltip(
+            message: 'Stop narration',
+            child: TextButton.icon(
+              onPressed: ready ? () => perform(session.stop) : null,
+              icon: const Icon(Icons.stop),
+              label: const Text('Stop'),
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
+}
+
+/// Global voice and speed; writes the same preferences as Settings.
+class _ListeningPreferences extends StatelessWidget {
+  const _ListeningPreferences({
+    required this.preferences,
+    required this.voices,
+    required this.perform,
+  });
+
+  /// Device-global preference owner shared with the settings screen.
+  final ReaderPreferencesCoordinator preferences;
+
+  /// Voices the active narration source can synthesize.
+  final List<NarrationVoice> voices;
+
+  /// Runs an action, surfacing its failure in the sheet.
+  final Future<void> Function(Future<void> Function()) perform;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final selectedVoice = preferences.settings.narrationVoice;
+    final selectedDescriptor = voices
+        .where((voice) => voice.identifier == selectedVoice)
+        .firstOrNull;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 16),
+        Text('Listening preferences', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Text(
+          'Voice and speed apply to all books.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          key: ValueKey(selectedVoice),
+          initialValue: selectedVoice,
+          isExpanded: true,
+          isDense: false,
+          itemHeight: null,
+          menuMaxHeight: 360,
+          decoration: InputDecoration(
+            labelText: 'Voice · all books',
+            helperText: selectedDescriptor == null
+                ? 'Unavailable. Choose an installed voice for new audio.'
+                : '${selectedDescriptor.language} · ${selectedDescriptor.quality}',
+            helperMaxLines: 3,
+          ),
+          selectedItemBuilder: (context) => [
+            if (selectedDescriptor == null)
+              Text(
+                'Unavailable: $selectedVoice',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            for (final voice in voices)
+              Text(voice.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ],
+          items: [
+            if (selectedDescriptor == null)
+              DropdownMenuItem(
+                value: selectedVoice,
+                enabled: false,
+                child: Text('Unavailable: $selectedVoice'),
+              ),
+            for (final voice in voices)
+              DropdownMenuItem(
+                value: voice.identifier,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(voice.name),
+                      Text(
+                        '${voice.language} · ${voice.quality}',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+          onChanged: voices.isEmpty
+              ? null
+              : (voice) {
+                  if (voice == null) return;
+                  unawaited(
+                    perform(() => preferences.configure(narrationVoice: voice)),
+                  );
+                },
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<double>(
+          key: ValueKey(preferences.settings.narrationSpeed),
+          initialValue: preferences.settings.narrationSpeed,
+          isExpanded: true,
+          decoration: const InputDecoration(labelText: 'Speed · all books'),
+          items: narrationSpeeds
+              .map(
+                (speed) =>
+                    DropdownMenuItem(value: speed, child: Text('$speed×')),
+              )
+              .toList(),
+          onChanged: (speed) =>
+              perform(() => preferences.configure(narrationSpeed: speed)),
+        ),
+      ],
+    );
   }
 }

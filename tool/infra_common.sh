@@ -60,6 +60,17 @@ load_environment() {
   export ENVIRONMENT ENV_VARS PROJECT_ID REGION STATE_BUCKET STATE_PROJECT BILLING_ACCOUNT STATE_LOCATION
 }
 
+# Terraform needs user ADC; gcloud's own login alone is not enough.
+require_application_default_credentials() {
+  gcloud auth application-default print-access-token >/dev/null 2>&1 || \
+    die "Terraform needs Application Default Credentials; run gcloud auth application-default login"
+}
+
+# Runtime state exists only after the first feature deployment built an image.
+runtime_deployed() {
+  gcloud storage ls "gs://$STATE_BUCKET/reader/$ENVIRONMENT/runtime/default.tfstate" >/dev/null 2>&1
+}
+
 # Routine plans/deployments use checked-in provider locks; upgrades are explicit.
 terraform_init() {
   stack=$1
@@ -68,6 +79,21 @@ terraform_init() {
     -reconfigure \
     -backend-config="bucket=$STATE_BUCKET" \
     -backend-config="prefix=$prefix"
+}
+
+# Reads one line into the variable named $1 without echoing it. Echo is restored
+# by an EXIT trap that exists only for the duration of the read, so Ctrl-C,
+# TERM or a failed read never leaves the terminal silent; the workspace traps
+# are reinstated afterwards.
+read_secret() {
+  trap 'stty echo; cleanup_workspace' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  stty -echo
+  IFS= read -r "$1"
+  stty echo
+  install_workspace_traps
+  printf '\n' >&2
 }
 
 require_google_credentials() {
@@ -81,10 +107,7 @@ require_google_credentials() {
   fi
   if [ -z "${TF_VAR_google_client_secret:-}" ]; then
     printf 'Google web OAuth client secret: ' >&2
-    stty -echo
-    IFS= read -r TF_VAR_google_client_secret
-    stty echo
-    printf '\n' >&2
+    read_secret TF_VAR_google_client_secret
     export TF_VAR_google_client_secret
   fi
   [ -n "$TF_VAR_google_client_id" ] || die "Google client ID cannot be empty"
@@ -119,10 +142,7 @@ ensure_openai_secret() {
     openai_key=$OPENAI_API_KEY
   else
     printf 'OpenAI API key (stored directly in Secret Manager): ' >&2
-    stty -echo
-    IFS= read -r openai_key
-    stty echo
-    printf '\n' >&2
+    read_secret openai_key
   fi
   [ -n "$openai_key" ] || die "OpenAI API key cannot be empty"
   printf '%s' "$openai_key" | gcloud secrets versions add "$secret_id" \
@@ -130,25 +150,42 @@ ensure_openai_secret() {
   unset openai_key
 }
 
-# provider:container:environment-variable for direct image providers. Container
-# IDs mirror infra/modules/illustrations; Google uses the worker identity, so it
-# has no key. Values never appear in argv, tfvars, state, plans or output.
-IMAGE_PROVIDER_KEYS="seedream:reader-byteplus-api-key:BYTEPLUS_API_KEY qwen:reader-qwen-api-key:QWEN_API_KEY xai:reader-xai-api-key:XAI_API_KEY flux:reader-bfl-api-key:BFL_API_KEY"
+# Operator environment variable holding each direct image provider's key. Google
+# uses the worker identity, so it has no key. Values never appear in argv, tfvars,
+# state, plans or output.
+image_provider_key_variable() {
+  case "$1" in
+    seedream) printf '%s\n' BYTEPLUS_API_KEY ;;
+    qwen) printf '%s\n' QWEN_API_KEY ;;
+    xai) printf '%s\n' XAI_API_KEY ;;
+    flux) printf '%s\n' BFL_API_KEY ;;
+    *) die "image provider '$1' has no key environment variable" ;;
+  esac
+}
+
+# Container IDs have one owner: the illustrations stack's image_provider_secret_ids
+# output (infra/modules/illustrations). Writes "provider container" lines to
+# $IMAGE_PROVIDER_CONTAINERS; requires an initialized, applied illustrations stack.
+read_image_provider_containers() {
+  IMAGE_PROVIDER_CONTAINERS="$WORK_DIR/image-provider-containers"
+  terraform -chdir="$INFRA_DIR/illustrations" output -json image_provider_secret_ids >"$IMAGE_PROVIDER_CONTAINERS.json"
+  jq -r 'to_entries[] | "\(.key) \(.value)"' "$IMAGE_PROVIDER_CONTAINERS.json" >"$IMAGE_PROVIDER_CONTAINERS"
+  [ -s "$IMAGE_PROVIDER_CONTAINERS" ] || die "the illustrations stack reports no image provider containers"
+}
 
 # Read-only. Writes $WORK_DIR/image-providers.tfvars.json naming only providers
 # whose container has an ENABLED version (an existing version always wins). A
 # container that does not exist yet is simply absent; permission, API and other
 # failures stop the run rather than silently dropping a configured provider.
 discover_image_provider_secrets() {
+  read_image_provider_containers
   providers_file="$WORK_DIR/image-providers.tfvars.json"
   printf '{"image_provider_secret_ids":{}}\n' >"$providers_file"
-  for entry in $IMAGE_PROVIDER_KEYS; do
-    provider=${entry%%:*}
-    rest=${entry#*:}
-    container=${rest%%:*}
+  # gcloud reads from /dev/null so it can never consume the container list.
+  while read -r provider container; do
     if ! enabled=$(gcloud secrets versions list "$container" \
       --project="$PROJECT_ID" --filter='state=ENABLED' --limit=1 --format='value(name)' \
-      2>"$WORK_DIR/secret-error"); then
+      </dev/null 2>"$WORK_DIR/secret-error"); then
       if grep -Eqi 'NOT_FOUND|was not found|not found' "$WORK_DIR/secret-error"; then
         continue
       fi
@@ -159,7 +196,7 @@ discover_image_provider_secrets() {
     jq -c --arg provider "$provider" --arg container "$container" \
       '.image_provider_secret_ids[$provider] = $container' "$providers_file" >"$providers_file.next"
     mv "$providers_file.next" "$providers_file"
-  done
+  done <"$IMAGE_PROVIDER_CONTAINERS"
   export IMAGE_PROVIDER_VARS="$providers_file"
 }
 
@@ -167,20 +204,19 @@ discover_image_provider_secrets() {
 # optional: an absent variable is omitted without prompting or failing, and an
 # existing enabled version is never replaced.
 provision_image_provider_secrets() {
-  for entry in $IMAGE_PROVIDER_KEYS; do
-    rest=${entry#*:}
-    container=${rest%%:*}
-    variable=${rest#*:}
+  read_image_provider_containers
+  while read -r provider container; do
+    variable=$(image_provider_key_variable "$provider")
     value=$(printenv "$variable" || true)
     [ -n "$value" ] || continue
     enabled=$(gcloud secrets versions list "$container" \
-      --project="$PROJECT_ID" --filter='state=ENABLED' --limit=1 --format='value(name)')
+      --project="$PROJECT_ID" --filter='state=ENABLED' --limit=1 --format='value(name)' </dev/null)
     if [ -z "$enabled" ]; then
       printf '%s' "$value" | gcloud secrets versions add "$container" \
         --project="$PROJECT_ID" --data-file=- >/dev/null
     fi
     unset value
-  done
+  done <"$IMAGE_PROVIDER_CONTAINERS"
 }
 
 # Core configuration generation works before an illustration endpoint exists.
@@ -202,9 +238,26 @@ prepare_workspace() {
   umask 077
   WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/reader-infra.XXXXXX")
   export WORK_DIR
-  trap 'rm -rf "$WORK_DIR"' EXIT
+  install_workspace_traps
+}
+
+cleanup_workspace() {
+  [ -z "${WORK_DIR:-}" ] || rm -rf "$WORK_DIR"
+}
+
+# Interrupts exit through the EXIT trap so cleanup runs exactly once.
+install_workspace_traps() {
+  trap cleanup_workspace EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+}
+
+# Sets STACK_VARS to a private copy of the environment tfvars holding only the
+# values <stack> declares (tool/stack_tfvars.py), so no stack declares unused
+# variables and Terraform never warns about undeclared ones.
+write_stack_vars() {
+  STACK_VARS="$WORK_DIR/$1.tfvars"
+  python3 "$READER_ROOT/tool/stack_tfvars.py" "$INFRA_DIR" "$1" "$ENV_VARS" "$STACK_VARS"
 }
 
 require_core() {
@@ -217,7 +270,8 @@ plan_infrastructure() {
   stack=$1
   shift
   plan="$WORK_DIR/$stack.tfplan"
-  terraform -chdir="$INFRA_DIR/$stack" plan -var-file="$ENV_VARS" "$@" -out="$plan"
+  write_stack_vars "$stack"
+  terraform -chdir="$INFRA_DIR/$stack" plan -var-file="$STACK_VARS" "$@" -out="$plan"
   assert_safe_plan "$stack" "$plan"
 }
 

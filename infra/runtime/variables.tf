@@ -1,3 +1,6 @@
+# Declare only what this stack uses. tool/stack_tfvars.py passes each stack just
+# the shared environment tfvars values it declares and rejects values that no
+# environment stack declares.
 variable "environment" {
   description = "Short environment name used in labels and resource names."
   type        = string
@@ -59,7 +62,7 @@ variable "openai_image_model" {
 }
 
 variable "image_provider_secret_ids" {
-  description = "Provider key (seedream, qwen, xai, flux) -> Secret Manager container that already has an enabled version; tool/deploy_backend discovers this. Contains no key values."
+  description = "Provider key -> Secret Manager container that already has an enabled version; tool/deploy_backend discovers this from the illustrations stack's image_provider_secret_ids output. Contains no key values."
   type        = map(string)
   default     = {}
 }
@@ -74,59 +77,6 @@ variable "image_test_provider_enabled" {
   description = "Dev-only pipeline-test image service (prompt rendered as text). Rejected outside dev."
   type        = bool
   default     = false
-}
-
-# The remaining declarations are foundation-only values intentionally accepted
-# here so a single environment tfvars file can configure all environment stacks.
-variable "project_name" {
-  description = "Human-readable project name consumed by the foundation stack."
-  type        = string
-}
-
-variable "billing_account" {
-  description = "Billing account consumed by the foundation stack."
-  type        = string
-}
-
-variable "firestore_location" {
-  description = "Firestore location consumed by the foundation stack."
-  type        = string
-}
-
-variable "apple_bundle_id" {
-  description = "Apple bundle ID consumed by the foundation stack."
-  type        = string
-}
-
-variable "apple_team_id" {
-  description = "Apple team ID consumed by the foundation stack."
-  type        = string
-}
-
-variable "illustrations_bucket" {
-  description = "Bucket name consumed by the illustrations stack and read here from its remote state."
-  type        = string
-}
-
-variable "budget_amount" {
-  description = "Monthly budget in budget_currency."
-  type        = number
-}
-
-variable "budget_currency" {
-  description = "ISO 4217 currency matching the linked billing account; Google rejects a different currency."
-  type        = string
-  default     = "USD"
-  validation {
-    condition     = can(regex("^[A-Z]{3}$", var.budget_currency))
-    error_message = "Budget currency must be an uppercase three-letter ISO currency code."
-  }
-}
-
-
-variable "alert_email" {
-  description = "Alert recipient consumed by the foundation stack."
-  type        = string
 }
 
 variable "narration_enabled" {
@@ -151,16 +101,4 @@ variable "narration_daily_characters" {
     condition     = var.narration_daily_characters >= 0 && floor(var.narration_daily_characters) == var.narration_daily_characters
     error_message = "Narration allowance must be a nonnegative integer."
   }
-}
-
-variable "apple_macos_bundle_id" {
-  description = "macOS registration is owned only by foundation."
-  type        = string
-  default     = "com.leafmealone.reader.macos"
-}
-
-variable "api_test_principals" {
-  description = "Dev-API test signers consumed by the foundation stack; accepted for the shared environment tfvars file."
-  type        = list(string)
-  default     = []
 }

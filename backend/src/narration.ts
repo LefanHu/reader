@@ -16,6 +16,8 @@ import {
   bookReference,
   readBookFence,
 } from "./fences.js";
+import { signedReadUrl } from "./signed-urls.js";
+import { ASSET_RETENTION_DAYS, ASSET_RETENTION_MILLISECONDS, PROSE_INPUT_TTL_MILLISECONDS } from "./durations.js";
 
 /** Bounded public input; UTF-16 lengths match the native normalized chunker. */
 export interface NarrationInput {
@@ -94,7 +96,6 @@ export interface NarrationDependencies {
   ) => Promise<void>;
 }
 
-const retention = 30 * 86400000;
 const lease = 240000;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const narrationId = /^[a-f0-9]{64}$/;
@@ -239,7 +240,7 @@ export class NarrationBackend {
       .where("uid", "==", uid)
       .where("reserved", "==", true)
       .where("submitted", "==", false)
-      .where("createdAt", "<", Timestamp.fromMillis(Date.now() - 86400000))
+      .where("createdAt", "<", Timestamp.fromMillis(Date.now() - PROSE_INPUT_TTL_MILLISECONDS))
       .limit(100)
       .get();
     for (const entry of jobs.docs) {
@@ -297,18 +298,16 @@ export class NarrationBackend {
             0,
             limits.monthly - Number(counter.data()?.used ?? 0),
           ),
-          audioRetentionDays: 30,
+          audioRetentionDays: ASSET_RETENTION_DAYS,
         });
       }),
     );
-    router.use((_req, res, next) => {
-      if (!enabled) {
-        res
-          .status(503)
-          .json({ error: "Narration is temporarily unavailable." });
-        return;
-      }
-      next();
+    router.use((_req, _res, next) => {
+      next(
+        enabled
+          ? undefined
+          : new HttpError(503, "Narration is temporarily unavailable."),
+      );
     });
     router.post(
       "/books",
@@ -402,7 +401,7 @@ export class NarrationBackend {
             uid,
             bookId,
             text: input.text,
-            expiresAt: Timestamp.fromMillis(Date.now() + 86400000),
+            expiresAt: Timestamp.fromMillis(Date.now() + PROSE_INPUT_TTL_MILLISECONDS),
           });
           return expired ? 0 : Number(existing?.attempts ?? 0);
         });
@@ -440,14 +439,11 @@ export class NarrationBackend {
           res.json({ status: "expired" });
           return;
         }
-        const [url] = await this.dependencies.storage
-          .bucket(this.dependencies.bucket)
-          .file(data.object)
-          .getSignedUrl({
-            version: "v4",
-            action: "read",
-            expires: Date.now() + 600000,
-          });
+        const url = await signedReadUrl(
+          this.dependencies.storage,
+          this.dependencies.bucket,
+          data.object,
+        );
         res.json({ status: "ready", url });
       }),
     );
@@ -556,7 +552,7 @@ export class NarrationBackend {
         tx.update(ref, {
           status: "ready",
           object,
-          expiresAt: Timestamp.fromMillis(Date.now() + retention),
+          expiresAt: Timestamp.fromMillis(Date.now() + ASSET_RETENTION_MILLISECONDS),
           token: FieldValue.delete(),
           leaseUntil: FieldValue.delete(),
         });

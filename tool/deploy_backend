@@ -8,8 +8,7 @@ load_environment "$@"
 prepare_workspace
 
 gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q . || die "gcloud has no active account; run gcloud auth login"
-gcloud auth application-default print-access-token >/dev/null 2>&1 || \
-  die "Terraform needs Application Default Credentials; run gcloud auth application-default login"
+require_application_default_credentials
 
 # Resolve OAuth prerequisites before bootstrap can mutate cloud resources.
 if [ "$SCOPE" != illustrations ]; then
@@ -79,7 +78,7 @@ fi
 if [ "$SCOPE" = core ]; then
   # Runtime may not exist yet; Firebase configuration is sufficient for accounts.
   api_url=""
-  if gcloud storage ls "gs://$STATE_BUCKET/reader/$ENVIRONMENT/runtime/default.tfstate" >/dev/null 2>&1; then
+  if runtime_deployed; then
     terraform_init runtime "reader/$ENVIRONMENT/runtime"
     api_url=$(terraform -chdir="$INFRA_DIR/runtime" output -raw api_url)
   fi

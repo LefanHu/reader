@@ -1,6 +1,7 @@
 import { createImageOperation, type ImageHttpOptions, type ImageOperation } from "./image-provider-http.js";
 import { ANALYSIS_IDENTITY_PROPERTY, ANALYSIS_PAGE_MAX_BYTES, type AnalysisWindowInput, type AnalysisWindowOutput, type BookAnalysisProvider, type EntityResolutionBatch, type EntityResolutionOutput } from "./book-analysis-types.js";
 import { AnalysisValidationError, BOOK_ENTITY_RESOLUTION_SCHEMA, BOOK_WINDOW_ANALYSIS_SCHEMA, validateAnalysisWindowInput, validateAnalysisWindowResponse, validateAndNormalizeAnalysisWindow, validateEntityResolution, validateEntityResolutionInput } from "./book-analysis-validation.js";
+import { OPENAI_API_BASE_URL, openAIApiKey } from "./openai-client.js";
 
 export class BookAnalysisProviderError extends Error {
   /** [reason] is a fixed code or code location only; it never contains prose or provider text. */
@@ -23,7 +24,7 @@ type AnalysisOperation = Pick<ImageOperation, "postJson" | "close">;
 /** No automatic retries; the worker durably marks submission before invoking either method. */
 export class ResponsesBookAnalysisProvider implements BookAnalysisProvider {
   constructor(
-    private readonly key = process.env.OPENAI_API_KEY ?? "",
+    private readonly key = openAIApiKey(),
     private readonly http: ImageHttpOptions = {},
     private readonly operationFactory: (options: ImageHttpOptions) => AnalysisOperation = createImageOperation,
   ) {}
@@ -34,7 +35,7 @@ export class ResponsesBookAnalysisProvider implements BookAnalysisProvider {
     try {
       let response: Record<string, unknown>;
       try {
-        response = await operation.postJson("https://api.openai.com/v1/responses", { authorization: `Bearer ${this.key}` }, {
+        response = await operation.postJson(`${OPENAI_API_BASE_URL}/responses`, { authorization: `Bearer ${this.key}` }, {
           model, store: false, reasoning: { effort: "none" }, tools: [], max_output_tokens: 16384,
           instructions,
           input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify(input) }] }],

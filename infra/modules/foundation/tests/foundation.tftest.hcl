@@ -37,6 +37,14 @@ run "core_protects_shared_project_and_database" {
     condition     = google_firestore_database.default.delete_protection_state == "DELETE_PROTECTION_ENABLED" && google_firestore_database.default.deletion_policy == "PREVENT"
     error_message = "Firestore must have API and Terraform deletion protection."
   }
+  assert {
+    condition     = google_firebase_apple_app.app["reader"].bundle_id == "com.example.reader" && google_firebase_apple_app.app["reader"].display_name == "Reader Test" && google_firebase_apple_app.app["macos"].bundle_id == "com.leafmealone.reader.macos" && google_firebase_apple_app.app["macos"].display_name == "Reader macOS Test"
+    error_message = "iOS and macOS must keep separate Firebase registrations with their existing names."
+  }
+  assert {
+    condition     = toset(keys(google_firebase_app_check_app_attest_config.app)) == toset(["reader", "macos"]) && alltrue([for config in google_firebase_app_check_app_attest_config.app : config.token_ttl == "3600s"])
+    error_message = "Both Apple platforms need their own App Attest configuration."
+  }
 }
 
 

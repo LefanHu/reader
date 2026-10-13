@@ -5,8 +5,9 @@ import { MemoryFirestore, type MemoryData } from "./test-support/firestore.js";
 import { Timestamp } from "firebase-admin/firestore";
 import { illustrationBookRegistration, illustrationBookDeletion } from "./illustration-books.js";
 import { registerOwnedBook } from "./book-registration.js";
-import type { Storage } from "@google-cloud/storage";
 import { HttpError } from "./http.js";
+import { assignUid, startTestServer } from "./test-support/http.js";
+import { MemoryStorage } from "./test-support/storage.js";
 
 /** Serial transactions preserve the same initial-credit decision under concurrent retries. */
 async function fixture(action: (values: Map<string, MemoryData>, register: (fingerprint: string) => Promise<Response>) => Promise<void>) {
@@ -19,22 +20,16 @@ async function fixture(action: (values: Map<string, MemoryData>, register: (fing
   const db = memory.firestore;
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = "owner"; next(); });
+  app.use(assignUid(() => "owner"));
   app.post("/api/books", illustrationBookRegistration({ db, pilotCredits: 100 }));
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error instanceof HttpError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Failed" });
-  });
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.on("listening", resolve));
-  const address = server.address();
-  assert(address && typeof address === "object");
+  const server = await startTestServer(app);
   try {
-    await action(values, fingerprint => fetch(`http://127.0.0.1:${address.port}/api/books`, {
+    await action(values, fingerprint => fetch(`${server.baseUrl}/api/books`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ fingerprint, title: "A courtyard", chapterCount: 1 }),
     }));
   } finally {
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await server.close();
     if (previousEnabled === undefined) delete process.env.ILLUSTRATIONS_ENABLED;
     else process.env.ILLUSTRATIONS_ENABLED = previousEnabled;
     if (previousProviders === undefined) delete process.env.IMAGE_PROVIDERS;
@@ -116,21 +111,14 @@ test("book deletion purges every analysis generation and staging page while isol
     memory.values.set(`${collection}/other-owner`, { uid: "other", bookId: "book", generationId: "new" });
     memory.values.set(`${collection}/other-book`, { uid: "owner", bookId: "other", generationId: "new" });
   }
+  const storage = new MemoryStorage();
+  storage.beforeDeleteFiles = () => { assert.equal(memory.values.get("users/owner/books/book")?.deleted, true); };
   const app = express();
-  app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = "owner"; next(); });
-  app.delete("/books/:bookId", illustrationBookDeletion({
-    db: memory.firestore,
-    storage: { bucket: () => ({ deleteFiles: async () => {
-      assert.equal(memory.values.get("users/owner/books/book")?.deleted, true);
-    } }) } as unknown as Storage,
-    bucket: "private",
-  }));
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.on("listening", resolve));
+  app.use(assignUid(() => "owner"));
+  app.delete("/books/:bookId", illustrationBookDeletion({ db: memory.firestore, storage: storage.storage, bucket: "private" }));
+  const server = await startTestServer(app);
   try {
-    const address = server.address();
-    assert(address && typeof address === "object");
-    const url = `http://127.0.0.1:${address.port}/books/book`;
+    const url = `${server.baseUrl}/books/book`;
     assert.equal((await fetch(url, { method: "DELETE" })).status, 204);
     assert(memory.values.get("users/owner/books/book")?.purgedAt instanceof Timestamp);
     assert.equal((await fetch(url, { method: "DELETE" })).status, 204);
@@ -141,7 +129,7 @@ test("book deletion purges every analysis generation and staging page while isol
       assert(memory.values.has(`${collection}/other-book`));
     }
   } finally {
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await server.close();
   }
 });
 

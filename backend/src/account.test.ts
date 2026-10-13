@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
 import { MemoryFirestore } from "./test-support/firestore.js";
+import { startTestServer } from "./test-support/http.js";
 import { accountUsageRouter, authenticateAccount } from "./account.js";
 import { narrationMonthCounterId } from "./narration.js";
 
@@ -15,11 +16,9 @@ async function fixture(action: (url: string, db: MemoryFirestore) => Promise<voi
   app.use("/api/account", accountUsageRouter({ db: db.firestore,
     now: () => new Date("2026-12-31T23:59:59.999Z"), narrationEnabled: enabled,
     illustrationsEnabled: enabled, env: { NARRATION_MONTHLY_CHARACTERS: "500" } }));
-  app.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).end());
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.on("listening", resolve));
-  try { await action(`http://127.0.0.1:${(server.address() as { port: number }).port}/api/account/usage`, db); }
-  finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  const server = await startTestServer(app);
+  try { await action(`${server.baseUrl}/api/account/usage`, db); }
+  finally { await server.close(); }
 }
 const headers = { authorization: "Bearer valid", "x-firebase-appcheck": "valid" };
 const monthPath = `narrationUsage/${narrationMonthCounterId("owner", new Date("2026-12-01T00:00:00Z"))}`;

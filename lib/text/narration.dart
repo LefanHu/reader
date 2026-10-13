@@ -1,5 +1,4 @@
-import 'package:characters/characters.dart';
-
+import 'grapheme_boundary.dart';
 import 'narration_chunk.dart';
 import 'text_position.dart';
 import 'text_section.dart';
@@ -20,13 +19,24 @@ List<NarrationChunk> narrationChunks(
     if (block.id == anchor.blockId) started = true;
     if (!started) continue;
     var offset = block.id == anchor.blockId ? anchor.offset : 0;
+    // Segment each block once; clips walk boundary indexes instead of
+    // re-segmenting a copied suffix per clip.
+    // Anchors resolve to grapheme boundaries, so [index] names [offset].
+    final graphemes = GraphemeBoundaries(block.text);
+    final boundaries = graphemes.offsets;
+    var index = graphemes.floorIndex(offset);
     while (offset < block.text.length) {
       var end = offset;
       var sentence = offset;
-      for (final cluster in block.text.substring(offset).characters) {
-        if (end + cluster.length - offset > maxNarrationClipUnits) break;
-        end += cluster.length;
-        if (_sentenceEnd.hasMatch(cluster)) sentence = end;
+      var sentenceIndex = index;
+      for (; index + 1 < boundaries.length; index++) {
+        final next = boundaries[index + 1];
+        if (next - offset > maxNarrationClipUnits) break;
+        if (_sentenceEnd.hasMatch(block.text.substring(end, next))) {
+          sentence = next;
+          sentenceIndex = index + 1;
+        }
+        end = next;
       }
       // A single pathological extended grapheme cannot be split or uploaded.
       if (end == offset) {
@@ -34,7 +44,10 @@ List<NarrationChunk> narrationChunks(
           'Narration grapheme exceeds 3,000 UTF-16 units.',
         );
       }
-      if (end < block.text.length && sentence > offset) end = sentence;
+      if (end < block.text.length && sentence > offset) {
+        end = sentence;
+        index = sentenceIndex;
+      }
       chunks.add(
         NarrationChunk(
           text: block.text.substring(offset, end),

@@ -1,47 +1,32 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 
 import '../account/account_usage.dart';
 import '../account/account_usage_exception.dart';
 import '../account/api.dart';
-import '../account/http_account_api.dart';
 import '../account/usage_coordinator.dart';
 import '../book_analysis/analysis_coordinator.dart';
-import '../book_analysis/file_analysis_store.dart';
-import '../book_analysis/http_book_analysis_api.dart';
 import '../book_analysis/services.dart';
 import '../catalog/catalog_book.dart';
 import '../catalog/catalog_session.dart';
 import '../catalog/catalog_store.dart';
-import '../catalog/file_catalog_store.dart';
 import '../cloud_deletion_outbox.dart';
 import '../cloud_deletion_queue.dart';
-import '../file_cloud_deletion_outbox.dart';
 import '../generation_fence.dart';
 import '../identity/cloud_failure_kind.dart';
 import '../identity/cloud_identity.dart';
 import '../identity/cloud_identity_exception.dart';
-import '../identity/firebase_cloud_identity.dart';
 import '../illustrations/api.dart';
-import '../illustrations/file_illustration_store.dart';
-import '../illustrations/http_illustration_api.dart';
 import '../illustrations/illustration_coordinator.dart';
 import '../illustrations/store.dart';
 import '../importing/book_importer.dart';
 import '../importing/book_picker.dart';
-import '../importing/native_book_picker.dart';
 import '../narration/api.dart';
 import '../narration/source.dart';
-import '../narration/narration_provider.dart';
-import '../narration/file_narration_store.dart';
-import '../narration/http_narration_api.dart';
-import '../narration/native_narration_player.dart';
 import '../narration/player.dart';
 import '../narration/session.dart';
 import '../narration/store.dart';
-import '../preferences/preference_settings_store.dart';
 import '../preferences/reader_preferences_coordinator.dart';
 import '../preferences/settings_store.dart';
 import '../text/document_store.dart';
@@ -290,56 +275,6 @@ class ReaderController extends ChangeNotifier {
   late final IllustrationCoordinator illustrations;
 
   bool _disposed = false;
-
-  /// Creates the production dependency graph and restores persisted state.
-  static Future<ReaderController> create() async {
-    final store = await FileCatalogStore.create();
-    // Native synthesis binds an existing private root before any book is opened.
-    await store.root.create(recursive: true);
-    final identity = FirebaseCloudIdentity();
-    // One app-lifetime connection pool serves every cloud feature API.
-    final client = http.Client();
-    final narrationApi = HttpNarrationApi(identity: identity, client: client);
-    final source = await createNarrationSource(
-      selectNarrationProvider(defaultTargetPlatform),
-      root: store.root,
-      api: narrationApi,
-    );
-    final controller = ReaderController(
-      cloudIdentity: identity,
-      accountApi: HttpAccountApi(identity: identity, client: client),
-      analysis: (
-        api: HttpBookAnalysisApi(identity: identity, client: client),
-        store: FileAnalysisStore(store.root),
-        documents: null,
-      ),
-      narrationSource: source,
-      narration: (
-        api: narrationApi,
-        player: await NativeNarrationPlayer.create(),
-        store: FileNarrationStore(store.root),
-        documents: null,
-      ),
-      narrationDeletionOutbox: FileCloudDeletionOutbox(
-        store.root,
-        fileName: 'narration-deletions.json',
-      ),
-      catalogStore: store,
-      settingsStore: PreferenceSettingsStore(),
-      importer: BookImporter(root: store.root),
-      picker: NativeBookPicker(),
-      illustrationDeletionOutbox: FileCloudDeletionOutbox(
-        store.root,
-        fileName: 'illustration-deletions.json',
-      ),
-      illustrationStore: FileIllustrationStore(store.root),
-      illustrationApi: HttpIllustrationApi(identity: identity, client: client),
-    );
-    // The mounted app supplies the actual native lifecycle before any dispatch.
-    controller.setAppResumed(false);
-    await controller.initialize();
-    return controller;
-  }
 
   /// Loads catalog, preferences, and book sidecars at startup.
   Future<void> initialize() async {

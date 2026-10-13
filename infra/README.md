@@ -74,6 +74,12 @@ never applies. Core plans need no image; without a deployed runtime, other plans
 runtime. An existing runtime reuses its digest unless `IMAGE` overrides it. A first
 all-scope plan needs core to exist first.
 
+`environments/<env>.tfvars` configures the foundation, illustrations and runtime
+stacks with one single-line top-level assignment per setting. Each stack declares
+only the variables it uses; the tools pass it just those values
+(`tool/stack_tfvars.py`) and stop on a value that no stack declares or on a
+multi-line value. Running Terraform by hand needs the same filtered file.
+
 State bucket `reader-iac-35ca1-tfstate`, prefixes `reader/bootstrap`,
 `reader/dev/foundation`, `reader/dev/illustrations`, `reader/dev/runtime`.
 
@@ -122,7 +128,9 @@ available only when configured:
 | `flux` | `BFL_API_KEY` | `reader-bfl-api-key` |
 
 The illustrations stack creates the four protected, deletion-guarded containers
-(worker-only accessors, none for the API) but never a value. `tool/deploy_backend`
+(worker-only accessors, none for the API) but never a value. Their IDs are defined
+once in `modules/illustrations` and published as its `image_provider_secret_ids`
+output, which the tools read instead of repeating them. `tool/deploy_backend`
 creates a version over stdin from the matching private environment variable only
 when the container has no enabled version; an absent variable is omitted without a
 prompt or failure, and values never reach argv, tfvars, state, plans or logs.

@@ -77,7 +77,7 @@ test("a window offers at most 255 choices", async () => {
   assert.equal(bodies[0]!.questions[0].choices.length, 255);
 });
 
-test("createDecision posts to the Decisions endpoint and fails on errors", async (t) => {
+test("createDecision posts to the Decisions endpoint with a deadline and fails on errors", async (t) => {
   const original = globalThis.fetch;
   const previousKey = process.env.OPENAI_API_KEY;
   t.after(() => { globalThis.fetch = original; process.env.OPENAI_API_KEY = previousKey; });
@@ -91,6 +91,7 @@ test("createDecision posts to the Decisions endpoint and fails on errors", async
   assert.deepEqual(await createDecision({ model: "m" }), { answers: [], usage: { input_tokens: 3 } });
   assert.equal(call!.url, "https://api.openai.com/v1/decisions");
   assert.deepEqual(call!.init.headers, { authorization: "Bearer key", "content-type": "application/json" });
+  assert(call!.init.signal instanceof AbortSignal);
   status = 400;
   await assert.rejects(createDecision({ model: "m" }), /status 400/);
 });

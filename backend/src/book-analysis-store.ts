@@ -12,9 +12,9 @@ import type {
   AnalysisGenerationStatus, AnalysisOperationCursor, AnalysisReceipt, AnalysisResultPage,
   AnalysisResultPageDescriptor,
 } from "./book-analysis-types.js";
+import { PROSE_INPUT_TTL_MILLISECONDS } from "./durations.js";
 
 export const ANALYSIS_COLLECTIONS = { jobs: "bookAnalysisJobs", records: "bookAnalysisRecords", inputs: "bookAnalysisInputs" } as const;
-const INPUT_TTL = 24 * 60 * 60 * 1000;
 const id = (...parts: unknown[]) => analysisJsonHash(parts);
 const same = (a: unknown, b: unknown) => isDeepStrictEqual(a, b);
 function conflict(message = "Book analysis intent conflicts."): never { throw new HttpError(409, message); }
@@ -174,7 +174,7 @@ export class BookAnalysisStore {
       const rawData = raw.data();
       if ((!rawData || (rawData.expiresAt as Timestamp).toMillis() <= Date.now()) && !job.providerSubmitted) {
         transaction.set(inputRef, bounded({ uid, bookId: g.bookId, generationId,
-          input, expiresAt: Timestamp.fromMillis(Date.now() + INPUT_TTL) }));
+          input, expiresAt: Timestamp.fromMillis(Date.now() + PROSE_INPUT_TTL_MILLISECONDS) }));
       }
       if (!existing) transaction.create(jobRef, bounded(job));
       return { receipt: this.receipt(g, job), enqueue: job.status === "pending" };
@@ -297,11 +297,6 @@ export class BookAnalysisStore {
     });
     return pages.map(page => this.pageDescriptor(page));
   }
-  async readPages(generationId: string, type: "extraction" | "result") {
-    const snapshot = await this.db.collection(ANALYSIS_COLLECTIONS.records).where("generationId", "==", generationId).where("recordType", "==", type).get();
-    return snapshot.docs.map(d => JSON.parse(d.data().pageJson as string) as AnalysisResultPage)
-      .sort((a, b) => a.kind.localeCompare(b.kind) || a.ordinal - b.ordinal || a.pageId.localeCompare(b.pageId));
-  }
   /** Direct bounded worker reads avoid loading the whole accumulated analysis for a work unit. */
   async readExtractionJob(generationId: string, chunkOrdinal: number): Promise<StoredAnalysisJob | null> {
     const data = (await this.jobReference(id(generationId, "extract", chunkOrdinal)).get()).data();
@@ -329,11 +324,6 @@ export class BookAnalysisStore {
         else transaction.create(v.ref, v.value);
       });
     });
-  }
-  async readWorkRecords(generationId: string): Promise<AnalysisWorkRecord[]> {
-    const snapshot = await this.db.collection(ANALYSIS_COLLECTIONS.records).where("generationId", "==", generationId).where("recordType", "==", "work").get();
-    return snapshot.docs.map(d => ({ key: d.data().key as string, data: d.data().data as Record<string, unknown> }))
-      .sort((a, b) => a.key.localeCompare(b.key));
   }
   private async verifyPages(transaction: Transaction, claim: AnalysisClaim, pages: AnalysisResultPageDescriptor[], type: "extraction" | "result") {
     if (new Set(pages.map(p => p.pageId)).size !== pages.length) conflict();

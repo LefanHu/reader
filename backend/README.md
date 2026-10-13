@@ -18,8 +18,16 @@ docker build --platform linux/amd64 -t reader-backend-dev backend
 ## Source map
 
 - `src/index.ts`: composition, public routes, identity, task authorization,
-  rollout gates, error translation. `src/http.ts`: bounded validation and
-  expected HTTP errors.
+  rollout gates. `src/http.ts`: bounded validation, expected HTTP errors and the
+  single `{error}` translator (`httpErrorHandler`). `src/durations.ts`: durations
+  shared across features (asset retention, prose-input TTL); worker timeout and
+  claim lease stay in `fences.ts`.
+  `src/signed-urls.ts`: the only V4 ten-minute signed read URL helper.
+  `src/openai-client.ts`: OpenAI key lookup, base URL and the bounded JSON POST.
+- `src/test-support/`: in-memory Firestore and Storage doubles, a loopback test
+  server with production error translation, and fixtures. `npm run build` uses
+  `tsconfig.build.json`, which keeps tests and test support out of `dist`;
+  `npm test` type-checks everything with `tsconfig.json` first.
 - `src/illustration-books.ts` (registration/deletion, pilot credits),
   `illustration-jobs.ts` (`/api` profile/job routes), `illustration-scenes.ts`
   (scene delivery, regeneration, cleanup), `illustration-worker.ts` (claims,

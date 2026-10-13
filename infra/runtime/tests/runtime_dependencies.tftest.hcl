@@ -34,19 +34,11 @@ override_data {
 }
 
 variables {
-  environment          = "test"
-  project_id           = "reader-test"
-  project_name         = "Reader Test"
-  billing_account      = "000000-000000-000000"
-  runtime_region       = "us-east1"
-  firestore_location   = "nam5"
-  state_bucket         = "reader-test-tfstate"
-  illustrations_bucket = "reader-test-illustrations"
-  apple_bundle_id      = "com.example.reader"
-  apple_team_id        = "ABCDEFGHIJ"
-  budget_amount        = 25
-  alert_email          = "reader@example.com"
-  image                = "us-east1-docker.pkg.dev/reader-test/reader-backend/backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  environment    = "test"
+  project_id     = "reader-test"
+  runtime_region = "us-east1"
+  state_bucket   = "reader-test-tfstate"
+  image          = "us-east1-docker.pkg.dev/reader-test/reader-backend/backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
 
 run "runtime_reads_feature_outputs_only_from_illustrations_state" {

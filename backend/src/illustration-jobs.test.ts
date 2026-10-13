@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import express from "express";
 import { MemoryFirestore } from "./test-support/firestore.js";
-import { HttpError } from "./http.js";
+import { assignUid, startTestServer } from "./test-support/http.js";
 import { illustrationJobRouter } from "./illustration-jobs.js";
 import { illustrationBookRegistration } from "./illustration-books.js";
 import { illustrationConfiguration, type IllustrationConfiguration } from "./illustration-configuration.js";
@@ -18,23 +18,17 @@ async function fixture(action: (memory: MemoryFirestore, request: (path: string,
   const tasks: string[] = [];
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = "owner"; next(); });
+  app.use(assignUid(() => "owner"));
   app.get("/api/illustrations/config", illustrationConfiguration);
   app.post("/api/books", illustrationBookRegistration({ db: memory.firestore, pilotCredits: 100 }));
   app.use("/api", illustrationJobRouter({ db: memory.firestore, requireFeature: (_req, _res, next) => next(), enqueue: async (_path, _payload, id) => { tasks.push(id); } }));
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error instanceof HttpError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Failed" });
-  });
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.on("listening", resolve));
-  const address = server.address();
-  assert(address && typeof address === "object");
+  const server = await startTestServer(app);
   try {
-    await action(memory, (path, body, method = body === undefined ? "GET" : "POST") => fetch(`http://127.0.0.1:${address.port}/api${path}`, {
+    await action(memory, (path, body, method = body === undefined ? "GET" : "POST") => fetch(`${server.baseUrl}/api${path}`, {
       method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), tasks);
   } finally {
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await server.close();
     for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
     Object.assign(process.env, previous);
   }

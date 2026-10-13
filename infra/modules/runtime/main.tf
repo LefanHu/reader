@@ -24,6 +24,8 @@ locals {
     OPENAI_IMAGE_MODEL              = var.openai_image_model
     IMAGE_PROVIDERS                 = join(",", concat(["openai"], var.google_image_generation_enabled ? ["google"] : [], sort(keys(var.image_provider_secret_ids)), var.image_test_provider_enabled ? ["diagnostic"] : []))
   }
+  # Provider key -> worker environment variable read by the backend. Container
+  # IDs are owned by the illustrations module; this maps only the env contract.
   image_provider_key_names = {
     seedream = "BYTEPLUS_API_KEY"
     qwen     = "QWEN_API_KEY"
@@ -269,96 +271,95 @@ resource "google_cloud_run_v2_service_iam_member" "public_api" {
   member   = "allUsers"
 }
 
-resource "google_monitoring_alert_policy" "api_5xx" {
+# Operational alerts share one shape; keys are state addresses (see the moved
+# blocks below). A null reducer keeps per-series alignment without aggregation.
+locals {
+  alert_policies = {
+    api_5xx = {
+      display_name         = "Reader ${var.environment} API 5xx responses"
+      condition_name       = "More than five API 5xx responses in five minutes"
+      filter               = "resource.type = \"cloud_run_revision\" AND resource.label.service_name = \"${local.api_name}\" AND metric.type = \"run.googleapis.com/request_count\" AND metric.label.response_code_class = \"5xx\""
+      threshold_value      = 5
+      duration             = "0s"
+      alignment_period     = "300s"
+      per_series_aligner   = "ALIGN_SUM"
+      cross_series_reducer = "REDUCE_SUM"
+    }
+    worker_5xx = {
+      display_name         = "Reader ${var.environment} worker 5xx responses"
+      condition_name       = "More than three worker 5xx responses in fifteen minutes"
+      filter               = "resource.type = \"cloud_run_revision\" AND resource.label.service_name = \"${local.worker_name}\" AND metric.type = \"run.googleapis.com/request_count\" AND metric.label.response_code_class = \"5xx\""
+      threshold_value      = 3
+      duration             = "0s"
+      alignment_period     = "900s"
+      per_series_aligner   = "ALIGN_SUM"
+      cross_series_reducer = "REDUCE_SUM"
+    }
+    api_latency = {
+      display_name         = "Reader ${var.environment} API p95 latency"
+      condition_name       = "API p95 latency above five seconds for ten minutes"
+      filter               = "resource.type = \"cloud_run_revision\" AND resource.label.service_name = \"${local.api_name}\" AND metric.type = \"run.googleapis.com/request_latencies\""
+      threshold_value      = 5000
+      duration             = "600s"
+      alignment_period     = "60s"
+      per_series_aligner   = "ALIGN_PERCENTILE_95"
+      cross_series_reducer = null
+    }
+    queue_depth = {
+      display_name         = "Reader ${var.environment} task queue depth"
+      condition_name       = "Queue depth above twenty for fifteen minutes"
+      filter               = "resource.type = \"cloud_tasks_queue\" AND resource.label.queue_id = \"${var.task_queue}\" AND resource.label.location = \"${var.region}\" AND metric.type = \"cloudtasks.googleapis.com/queue/depth\""
+      threshold_value      = 20
+      duration             = "900s"
+      alignment_period     = "60s"
+      per_series_aligner   = "ALIGN_MAX"
+      cross_series_reducer = null
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "runtime" {
+  for_each = local.alert_policies
+
   project               = var.project_id
-  display_name          = "Reader ${var.environment} API 5xx responses"
+  display_name          = each.value.display_name
   combiner              = "OR"
   enabled               = true
   notification_channels = [var.notification_channel]
 
   conditions {
-    display_name = "More than five API 5xx responses in five minutes"
+    display_name = each.value.condition_name
     condition_threshold {
-      filter          = "resource.type = \"cloud_run_revision\" AND resource.label.service_name = \"${local.api_name}\" AND metric.type = \"run.googleapis.com/request_count\" AND metric.label.response_code_class = \"5xx\""
+      filter          = each.value.filter
       comparison      = "COMPARISON_GT"
-      threshold_value = 5
-      duration        = "0s"
+      threshold_value = each.value.threshold_value
+      duration        = each.value.duration
 
       aggregations {
-        alignment_period     = "300s"
-        per_series_aligner   = "ALIGN_SUM"
-        cross_series_reducer = "REDUCE_SUM"
+        alignment_period     = each.value.alignment_period
+        per_series_aligner   = each.value.per_series_aligner
+        cross_series_reducer = each.value.cross_series_reducer
       }
     }
   }
 }
 
-resource "google_monitoring_alert_policy" "worker_5xx" {
-  project               = var.project_id
-  display_name          = "Reader ${var.environment} worker 5xx responses"
-  combiner              = "OR"
-  enabled               = true
-  notification_channels = [var.notification_channel]
-
-  conditions {
-    display_name = "More than three worker 5xx responses in fifteen minutes"
-    condition_threshold {
-      filter          = "resource.type = \"cloud_run_revision\" AND resource.label.service_name = \"${local.worker_name}\" AND metric.type = \"run.googleapis.com/request_count\" AND metric.label.response_code_class = \"5xx\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 3
-      duration        = "0s"
-
-      aggregations {
-        alignment_period     = "900s"
-        per_series_aligner   = "ALIGN_SUM"
-        cross_series_reducer = "REDUCE_SUM"
-      }
-    }
-  }
+moved {
+  from = google_monitoring_alert_policy.api_5xx
+  to   = google_monitoring_alert_policy.runtime["api_5xx"]
 }
 
-resource "google_monitoring_alert_policy" "api_latency" {
-  project               = var.project_id
-  display_name          = "Reader ${var.environment} API p95 latency"
-  combiner              = "OR"
-  enabled               = true
-  notification_channels = [var.notification_channel]
-
-  conditions {
-    display_name = "API p95 latency above five seconds for ten minutes"
-    condition_threshold {
-      filter          = "resource.type = \"cloud_run_revision\" AND resource.label.service_name = \"${local.api_name}\" AND metric.type = \"run.googleapis.com/request_latencies\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 5000
-      duration        = "600s"
-
-      aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_PERCENTILE_95"
-      }
-    }
-  }
+moved {
+  from = google_monitoring_alert_policy.worker_5xx
+  to   = google_monitoring_alert_policy.runtime["worker_5xx"]
 }
 
-resource "google_monitoring_alert_policy" "queue_depth" {
-  project               = var.project_id
-  display_name          = "Reader ${var.environment} task queue depth"
-  combiner              = "OR"
-  enabled               = true
-  notification_channels = [var.notification_channel]
+moved {
+  from = google_monitoring_alert_policy.api_latency
+  to   = google_monitoring_alert_policy.runtime["api_latency"]
+}
 
-  conditions {
-    display_name = "Queue depth above twenty for fifteen minutes"
-    condition_threshold {
-      filter          = "resource.type = \"cloud_tasks_queue\" AND resource.label.queue_id = \"${var.task_queue}\" AND resource.label.location = \"${var.region}\" AND metric.type = \"cloudtasks.googleapis.com/queue/depth\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 20
-      duration        = "900s"
-
-      aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_MAX"
-      }
-    }
-  }
+moved {
+  from = google_monitoring_alert_policy.queue_depth
+  to   = google_monitoring_alert_policy.runtime["queue_depth"]
 }

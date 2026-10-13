@@ -1,9 +1,12 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import type { Firestore } from "firebase-admin/firestore";
 import type { Storage } from "@google-cloud/storage";
-import { asyncRoute } from "./http.js";
+import { asyncRoute, HttpError } from "./http.js";
 import { purgeOwnedRecords } from "./owned-data.js";
 import { narrationLimits, narrationMonthCounterId, type NarrationBackend } from "./narration.js";
+
+/** The only rejection clients see for missing or invalid identity or attestation. */
+const AUTHENTICATION_REQUIRED = "Authentication and App Check are required.";
 
 /** Shared authenticated identity is supplied only by verified Firebase tokens. */
 export type AccountRequest = Request & { uid?: string };
@@ -13,7 +16,7 @@ export function authenticateAccount(
   verifyIdentity: (token: string) => Promise<{ uid: string }>,
   verifyApp: (token: string) => Promise<unknown>,
 ) {
-  return async (req: AccountRequest, res: Response, next: NextFunction) => {
+  return async (req: AccountRequest, _res: Response, next: NextFunction) => {
     try {
       const bearer = req.header("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1];
       const appCheck = req.header("x-firebase-appcheck");
@@ -23,7 +26,7 @@ export function authenticateAccount(
       req.uid = identity.uid;
       next();
     } catch {
-      res.status(401).json({ error: "Authentication and App Check are required." });
+      next(new HttpError(401, AUTHENTICATION_REQUIRED));
     }
   };
 }
@@ -38,10 +41,7 @@ export function accountUsageRouter(dependencies: {
 }) {
   const router = express.Router();
   router.get("/usage", asyncRoute(async (req: AccountRequest, res) => {
-      if (!req.uid) {
-        res.status(401).json({ error: "Authentication and App Check are required." });
-        return;
-      }
+      if (!req.uid) throw new HttpError(401, AUTHENTICATION_REQUIRED);
       const now = dependencies.now?.() ?? new Date();
       const limit = narrationLimits(dependencies.env).monthly;
       const [usage, user] = await Promise.all([
@@ -83,10 +83,7 @@ export function accountDeletionRouter(dependencies: {
 }): express.Router {
   const router = express.Router();
   router.delete("/", asyncRoute(async (req: AccountRequest, res) => {
-      if (!req.uid) {
-        res.status(401).json({ error: "Authentication and App Check are required." });
-        return;
-      }
+      if (!req.uid) throw new HttpError(401, AUTHENTICATION_REQUIRED);
       const uid = req.uid;
       const { db, storage, bucket, narration } = dependencies;
       // The narration account tombstone fences both workers before shared assets are purged.

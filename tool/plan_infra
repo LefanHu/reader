@@ -6,8 +6,7 @@ set -eu
 check_tools
 load_environment "$@"
 prepare_workspace
-gcloud auth application-default print-access-token >/dev/null 2>&1 || \
-  die "Terraform needs Application Default Credentials; run gcloud auth application-default login"
+require_application_default_credentials
 gcloud storage buckets describe "gs://$STATE_BUCKET" --project="$STATE_PROJECT" >/dev/null 2>&1 || \
   die "remote state is not bootstrapped; run tool/deploy_backend $ENVIRONMENT --scope core"
 
@@ -22,7 +21,7 @@ terraform_init illustrations "reader/$ENVIRONMENT/illustrations"
 plan_infrastructure illustrations
 
 # New installations can review infrastructure before a container exists.
-if ! gcloud storage ls "gs://$STATE_BUCKET/reader/$ENVIRONMENT/runtime/default.tfstate" >/dev/null 2>&1; then
+if ! runtime_deployed; then
   printf '%s\n' "Runtime is not deployed; infrastructure plan complete. Deploy illustrations to build its first image."
   exit 0
 fi

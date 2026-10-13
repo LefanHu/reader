@@ -21,6 +21,13 @@ locals {
     environment = var.environment
     managed_by  = "terraform"
   }
+
+  # iOS ("reader") and macOS register separately so each platform has its own
+  # Firebase app ID, API key and App Attest configuration.
+  apple_apps = {
+    reader = { bundle_id = var.apple_bundle_id, display_name = "Reader ${title(var.environment)}" }
+    macos  = { bundle_id = var.apple_macos_bundle_id, display_name = "Reader macOS ${title(var.environment)}" }
+  }
 }
 
 resource "google_project" "environment" {
@@ -49,55 +56,6 @@ resource "google_firebase_project" "environment" {
   project  = google_project.environment.project_id
 
   depends_on = [google_project_service.required]
-}
-
-resource "google_firebase_apple_app" "reader" {
-  provider = google-beta.quota
-
-  project      = google_project.environment.project_id
-  display_name = "Reader ${title(var.environment)}"
-  bundle_id    = var.apple_bundle_id
-  team_id      = var.apple_team_id
-
-  deletion_policy = "PREVENT"
-
-  depends_on = [google_firebase_project.environment]
-}
-
-# App Check may not observe a new Apple app immediately after registration.
-# Preserve this ordering delay so first-time core deployments remain reliable.
-resource "time_sleep" "apple_app_propagation" {
-  create_duration = "30s"
-  depends_on      = [google_firebase_apple_app.reader]
-}
-
-resource "google_firebase_app_check_app_attest_config" "reader" {
-  provider = google-beta.quota
-
-  project   = google_project.environment.project_id
-  app_id    = google_firebase_apple_app.reader.app_id
-  token_ttl = "3600s"
-
-  lifecycle {
-    prevent_destroy = true
-
-    precondition {
-      condition     = google_firebase_apple_app.reader.team_id != ""
-      error_message = "App Attest requires an Apple Developer Team ID."
-    }
-  }
-
-  depends_on = [time_sleep.apple_app_propagation]
-}
-
-data "google_firebase_apple_app_config" "reader" {
-  provider = google-beta.quota
-  project  = google_project.environment.project_id
-  app_id   = google_firebase_apple_app.reader.app_id
-
-  # Enabling Google can add native OAuth client/callback fields to the plist.
-  # Read only after the provider exists, including on the first core apply.
-  depends_on = [google_identity_platform_default_supported_idp_config.google]
 }
 
 resource "google_identity_platform_config" "auth" {
@@ -205,37 +163,54 @@ resource "google_billing_budget" "monthly" {
 }
 
 # Apple platform registrations share one Firebase project, Auth and database.
-resource "google_firebase_apple_app" "macos" {
-  provider        = google-beta.quota
-  project         = google_project.environment.project_id
-  display_name    = "Reader macOS ${title(var.environment)}"
-  bundle_id       = var.apple_macos_bundle_id
-  team_id         = var.apple_team_id
+# Keys are state addresses (see the moved blocks below), so never rename one.
+resource "google_firebase_apple_app" "app" {
+  for_each = local.apple_apps
+  provider = google-beta.quota
+
+  project      = google_project.environment.project_id
+  display_name = each.value.display_name
+  bundle_id    = each.value.bundle_id
+  team_id      = var.apple_team_id
+
   deletion_policy = "PREVENT"
-  depends_on      = [google_firebase_project.environment]
+
+  depends_on = [google_firebase_project.environment]
 }
-resource "time_sleep" "macos_app_propagation" {
+
+# App Check may not observe a new Apple app immediately after registration.
+# Preserve this ordering delay so first-time core deployments remain reliable.
+resource "time_sleep" "apple_app_propagation" {
+  for_each        = local.apple_apps
   create_duration = "30s"
-  depends_on      = [google_firebase_apple_app.macos]
+  depends_on      = [google_firebase_apple_app.app]
 }
-resource "google_firebase_app_check_app_attest_config" "macos" {
-  provider  = google-beta.quota
+
+resource "google_firebase_app_check_app_attest_config" "app" {
+  for_each = local.apple_apps
+  provider = google-beta.quota
+
   project   = google_project.environment.project_id
-  app_id    = google_firebase_apple_app.macos.app_id
+  app_id    = google_firebase_apple_app.app[each.key].app_id
   token_ttl = "3600s"
+
   lifecycle {
     prevent_destroy = true
+
     precondition {
-      condition     = google_firebase_apple_app.macos.team_id != ""
-      error_message = "macOS App Attest requires an Apple Developer Team ID."
+      condition     = google_firebase_apple_app.app[each.key].team_id != ""
+      error_message = "App Attest for the ${each.key} app requires an Apple Developer Team ID."
     }
   }
-  depends_on = [time_sleep.macos_app_propagation]
+
+  depends_on = [time_sleep.apple_app_propagation]
 }
-data "google_firebase_apple_app_config" "macos" {
+
+data "google_firebase_apple_app_config" "app" {
+  for_each = local.apple_apps
   provider = google-beta.quota
   project  = google_project.environment.project_id
-  app_id   = google_firebase_apple_app.macos.app_id
+  app_id   = google_firebase_apple_app.app[each.key].app_id
 
   # Enabling Google can add native OAuth client/callback fields to the plist.
   # Read only after the provider exists, including on the first core apply.
@@ -249,4 +224,36 @@ resource "google_service_account_iam_member" "api_test_token_creator" {
   service_account_id = "projects/${var.project_id}/serviceAccounts/firebase-adminsdk-fbsvc@${var.project_id}.iam.gserviceaccount.com"
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = each.value
+}
+
+# Both registrations predate the shared for_each blocks; these moves keep the
+# Firebase apps, App Attest configs and completed propagation delays in place.
+moved {
+  from = google_firebase_apple_app.reader
+  to   = google_firebase_apple_app.app["reader"]
+}
+
+moved {
+  from = google_firebase_apple_app.macos
+  to   = google_firebase_apple_app.app["macos"]
+}
+
+moved {
+  from = time_sleep.apple_app_propagation
+  to   = time_sleep.apple_app_propagation["reader"]
+}
+
+moved {
+  from = time_sleep.macos_app_propagation
+  to   = time_sleep.apple_app_propagation["macos"]
+}
+
+moved {
+  from = google_firebase_app_check_app_attest_config.reader
+  to   = google_firebase_app_check_app_attest_config.app["reader"]
+}
+
+moved {
+  from = google_firebase_app_check_app_attest_config.macos
+  to   = google_firebase_app_check_app_attest_config.app["macos"]
 }

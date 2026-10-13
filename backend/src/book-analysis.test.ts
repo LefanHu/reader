@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Timestamp } from "firebase-admin/firestore";
-import type { Storage } from "@google-cloud/storage";
+import { MemoryStorage } from "./test-support/storage.js";
 import { bookReference } from "./fences.js";
 import { illustrationBookDeletion } from "./illustration-books.js";
 import { analysisChunkHash, analysisDocumentDigest, analysisSpanHash } from "./book-analysis-source.js";
@@ -190,8 +190,7 @@ test("tombstone-first real deletion purges prose and derived shards and fences a
   const started = new Promise<void>(resolve => { submitted = resolve; });
   const provider: BookAnalysisProvider = { ...base, async extractAnalysisWindow(input) { submitted(); await barrier; return base.extractAnalysisWindow(input); } };
   await withHarness(async h => {
-    const storage = { bucket: () => ({ deleteFiles: async () => {} }) } as unknown as Storage;
-    h.app.delete("/fixture/books/:bookId", illustrationBookDeletion({ db: h.memory.firestore, storage, bucket: "fixture" }));
+    h.app.delete("/fixture/books/:bookId", illustrationBookDeletion({ db: h.memory.firestore, storage: new MemoryStorage().storage, bucket: "fixture" }));
     const { generationId, bookId } = await h.admit();
     const response = await h.request(`/api/book-analysis/generations/${generationId}/chunks/0`, "POST", h.fixture.chunks[0]);
     const receipt = await response.json() as AnalysisReceipt;

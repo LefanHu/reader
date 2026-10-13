@@ -6,7 +6,7 @@ import { registerOwnedBook } from "./book-registration.js";
 import { getIllustrationConfiguration } from "./illustration-configuration.js";
 import { AnalysisSourceValidationError } from "./book-analysis-source.js";
 import { BookAnalysisStore } from "./book-analysis-store.js";
-import { ANALYSIS_MODEL, type AnalysisProgress } from "./book-analysis-types.js";
+import { ANALYSIS_MODEL, type AnalysisConfiguration, type AnalysisProgress, type AnalysisRegistration } from "./book-analysis-types.js";
 
 /** Account identity never exposes UID and never initializes an account/credit record. */
 export function bookAnalysisAccountKey(uid: string, fingerprintSecret: string) {
@@ -30,13 +30,15 @@ export function bookAnalysisApiRouter(deps: {
   const store = new BookAnalysisStore(db);
   const router = express.Router();
   router.get("/config", asyncRoute(async (req, res) => {
-    res.json({ enabled: getIllustrationConfiguration().enabled,
-      model: ANALYSIS_MODEL, accountKey: bookAnalysisAccountKey(req.uid!, fingerprintSecret) });
+    const configuration: AnalysisConfiguration = { enabled: getIllustrationConfiguration().enabled,
+      model: ANALYSIS_MODEL, accountKey: bookAnalysisAccountKey(req.uid!, fingerprintSecret) };
+    res.json(configuration);
   }));
   router.post("/books", requireFeature, asyncRoute(async (req, res) => {
     const accountKey = bookAnalysisAccountKey(req.uid!, fingerprintSecret);
     const { bookId } = await registerOwnedBook({ db, uid: req.uid!, metadata: req.body });
-    res.json({ bookId, accountKey });
+    const registration: AnalysisRegistration = { bookId, accountKey };
+    res.json(registration);
   }));
   router.post("/books/:bookId/generations", requireFeature, asyncRoute(async (req, res) => {
     res.json(await store.admit(req.uid!, routeParam(req, "bookId"), req.body));

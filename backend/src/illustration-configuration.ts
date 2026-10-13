@@ -27,7 +27,7 @@ const providers = [
 ] as const;
 
 
-export function requireImageProviderId(value: unknown): ImageProviderId {
+function requireImageProviderId(value: unknown): ImageProviderId {
   if (!providers.some(provider => provider.id === value)) throw new HttpError(400, "Illustration provider is invalid.");
   return value as ImageProviderId;
 }

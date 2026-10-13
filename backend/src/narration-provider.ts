@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { openAIApiKey } from "./openai-client.js";
 
 /** Fixed provider contract: exact prose in, bounded 24 kHz mono WAV out. */
 export interface NarrationProvider {
@@ -55,7 +56,7 @@ export class RealtimeNarrationProvider implements NarrationProvider {
     voice: "marin" | "cedar",
     submitted: () => Promise<void>,
   ): Promise<Buffer> {
-    const key = process.env.OPENAI_API_KEY;
+    const key = openAIApiKey();
     if (!key) throw new Error("Narration provider is not configured");
     const socket = this.connect(key);
     return new Promise((resolve, reject) => {

@@ -4,6 +4,7 @@ import { FieldValue, type Firestore, type Timestamp, type Transaction, type Docu
 import type { Storage } from "@google-cloud/storage";
 import { asyncRoute, HttpError, routeParam } from "./http.js";
 import { readBookFence } from "./fences.js";
+import { signedReadUrl } from "./signed-urls.js";
 import { refundReservation } from "./illustration-credits.js";
 import {
   requireAvailableImageProvider, requireImageGenerationConfig,
@@ -91,14 +92,11 @@ export function illustrationSceneRouter(dependencies: {
         (thumbnailUsesOriginal && scene.imageMimeType !== scene.thumbnailMimeType)) {
       throw new HttpError(409, "Scene asset is unavailable.");
     }
-    const expires = Date.now() + 10 * 60 * 1000;
-    const imageUrlPromise = storage.bucket(bucket).file(scene.imageObject)
-      .getSignedUrl({ action: "read", expires }).then(([url]) => url);
+    const imageUrlPromise = signedReadUrl(storage, bucket, scene.imageObject);
     // One owned FLUX object receives one signature and one client download.
     const [imageUrl, thumbnailUrl] = await Promise.all([
       imageUrlPromise,
-      thumbnailUsesOriginal ? imageUrlPromise : storage.bucket(bucket).file(scene.thumbnailObject)
-        .getSignedUrl({ action: "read", expires }).then(([url]) => url),
+      thumbnailUsesOriginal ? imageUrlPromise : signedReadUrl(storage, bucket, scene.thumbnailObject),
     ]);
     await db.runTransaction(async (transaction) => {
       const { data: current } = await ownedScene(transaction, reference, req.uid!);

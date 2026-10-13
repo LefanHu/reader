@@ -22,7 +22,7 @@ export interface MemoryTransaction {
 }
 
 /** Match Firestore's default rejection of undefined, including nested values. */
-export function assertFirestoreData(value: unknown): void {
+function assertFirestoreData(value: unknown): void {
   assert.notEqual(value, undefined, "Firestore cannot store undefined fields");
   if (value && typeof value === "object" && !(value instanceof FieldValue) && !(value instanceof Timestamp)) {
     for (const field of Object.values(value)) assertFirestoreData(field);

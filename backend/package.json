@@ -6,9 +6,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "tsx --test 'src/**/*.test.ts'",
+    "test": "npm run typecheck && tsx --test 'src/**/*.test.ts'",
     "image-test-provider": "tsx src/image-test-provider-server.ts"
   },
   "dependencies": {

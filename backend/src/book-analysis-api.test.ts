@@ -7,6 +7,7 @@ import { BookAnalysisStore, CancelledAnalysisClaim } from "./book-analysis-store
 import { analysisChunkHash, analysisDocumentDigest, analysisOverlapHash, analysisSpanHash } from "./book-analysis-source.js";
 import { HttpError } from "./http.js";
 import { MemoryFirestore } from "./test-support/firestore.js";
+import { assignUid, startTestServer } from "./test-support/http.js";
 import type { AnalysisChunkInput, AnalysisGenerationAdmission, AnalysisProgress, AnalysisReceipt, AnalysisResultPage, AnalysisSourceSpan } from "./book-analysis-types.js";
 
 function source(texts = ["Mara arrives.", "The valley remains dark."]) {
@@ -37,7 +38,7 @@ async function fixture(action: (f: {
   let enabled = true, loseEnqueue = false;
   const app = express();
   app.use(express.json({ limit: "1mb" }));
-  app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = req.header("x-test-owner") ?? "owner"; next(); });
+  app.use(assignUid(req => req.header("x-test-owner") ?? "owner"));
   app.use("/api/book-analysis", bookAnalysisApiRouter({ db: memory.firestore, fingerprintSecret,
     requireFeature: (_req, _res, next) => next(enabled ? undefined : new HttpError(503, "Service unavailable.")),
     enqueue: async (path, payload, taskId) => {
@@ -45,14 +46,8 @@ async function fixture(action: (f: {
       if (loseEnqueue) { loseEnqueue = false; throw new HttpError(503, "Enqueue response lost."); }
     },
   }));
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error instanceof HttpError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Failed" });
-  });
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.once("listening", resolve));
-  const address = server.address();
-  assert(address && typeof address === "object");
-  const request = (path: string, method = "GET", body?: unknown, uid = "owner") => fetch(`http://127.0.0.1:${address.port}/api/book-analysis${path}`, {
+  const server = await startTestServer(app);
+  const request = (path: string, method = "GET", body?: unknown, uid = "owner") => fetch(`${server.baseUrl}/api/book-analysis${path}`, {
     method, headers: { "content-type": "application/json", "x-test-owner": uid }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   try {
@@ -66,7 +61,7 @@ async function fixture(action: (f: {
       loseEnqueue: () => { loseEnqueue = true; },
     });
   } finally {
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await server.close();
     if (previousEnabled === undefined) delete process.env.ILLUSTRATIONS_ENABLED;
     else process.env.ILLUSTRATIONS_ENABLED = previousEnabled;
     if (previousProviders === undefined) delete process.env.IMAGE_PROVIDERS;

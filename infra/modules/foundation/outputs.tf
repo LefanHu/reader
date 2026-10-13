@@ -10,13 +10,13 @@ output "project_number" {
 
 output "firebase_app_id" {
   description = "Firebase-assigned Apple app identifier."
-  value       = google_firebase_apple_app.reader.app_id
+  value       = google_firebase_apple_app.app["reader"].app_id
 }
 
 output "firebase_config" {
   description = "Base64-encoded GoogleService-Info.plist used to generate local Dart defines."
   sensitive   = true
-  value       = data.google_firebase_apple_app_config.reader.config_file_contents
+  value       = data.google_firebase_apple_app_config.app["reader"].config_file_contents
 }
 
 output "notification_channel" {
@@ -27,5 +27,5 @@ output "notification_channel" {
 output "firebase_macos_config" {
   description = "Separate macOS Apple configuration for the shared project."
   sensitive   = true
-  value       = data.google_firebase_apple_app_config.macos.config_file_contents
+  value       = data.google_firebase_apple_app_config.app["macos"].config_file_contents
 }

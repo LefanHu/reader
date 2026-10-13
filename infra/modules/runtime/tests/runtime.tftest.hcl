@@ -87,6 +87,16 @@ run "runtime_keeps_worker_private_and_injects_only_secret_references" {
     ])
     error_message = "The API service is missing a required declarative environment variable."
   }
+
+  assert {
+    condition     = toset(keys(google_monitoring_alert_policy.runtime)) == toset(["api_5xx", "worker_5xx", "api_latency", "queue_depth"]) && alltrue([for policy in google_monitoring_alert_policy.runtime : length(policy.notification_channels) == 1 && contains(policy.notification_channels, var.notification_channel)])
+    error_message = "All four runtime alerts must exist and notify the shared operations channel."
+  }
+
+  assert {
+    condition     = google_monitoring_alert_policy.runtime["api_latency"].conditions[0].condition_threshold[0].aggregations[0].cross_series_reducer == null && google_monitoring_alert_policy.runtime["api_5xx"].conditions[0].condition_threshold[0].aggregations[0].cross_series_reducer == "REDUCE_SUM" && google_monitoring_alert_policy.runtime["queue_depth"].conditions[0].condition_threshold[0].threshold_value == 20
+    error_message = "Alert thresholds and aggregation must keep their existing shapes."
+  }
 }
 
 run "runtime_exposes_only_provisioned_image_sources_to_the_worker" {
@@ -168,4 +178,14 @@ run "runtime_rejects_pipeline_test_provider_outside_dev" {
   }
 
   expect_failures = [google_cloud_run_v2_service.image_test_provider]
+}
+
+run "runtime_rejects_provider_without_worker_key_variable" {
+  command = plan
+
+  variables {
+    image_provider_secret_ids = { unknown = "reader-unknown-api-key" }
+  }
+
+  expect_failures = [var.image_provider_secret_ids]
 }

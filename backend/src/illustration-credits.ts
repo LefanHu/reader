@@ -9,7 +9,7 @@ export class CancelledClaim extends Error {}
 export type CreditOwner = { uid: string; bookId: string; token: string };
 
 /** Deterministic reservation document for one billable operation. */
-export function creditReservation(db: Firestore, uid: string, operationId: string) {
+function creditReservation(db: Firestore, uid: string, operationId: string) {
   return db.collection("creditReservations").doc(createHash("sha256").update(`${uid}:${operationId}`).digest("hex"));
 }
 

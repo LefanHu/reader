@@ -18,7 +18,8 @@ import 'text_section.dart' as text;
 import 'text_position.dart' as text;
 import 'reader_navigation.dart';
 import 'page_target.dart';
-import 'page_turn.dart';
+import 'page_turn_controller.dart';
+import '../generation_fence.dart';
 import 'layout/section_layout.dart';
 import 'narration_range.dart';
 import 'narration_follow_target.dart';
@@ -115,23 +116,9 @@ class TextViewport extends StatefulWidget {
 
 class _TextViewportState extends State<TextViewport>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final AnimationController _animation;
-  PageTurn? _turn;
-  int _turnEpoch = 0;
-  bool _turnBusy = false;
-  bool _dragAccepted = false;
-  bool _dragging = false;
-  double _dragDistance = 0;
-  // Page-local coordinates survive release and section I/O until hard cleanup.
-  Offset? _dragOrigin;
-  Offset? _dragPointer;
-  int _turnDelta = 1;
-  bool _releaseComplete = false;
-  bool _endOnly = false;
-  Object? _turnError;
+  late final PageTurnController _turns;
   double _width = 1, _height = 1;
   TextScaler _scaler = TextScaler.noScaling;
-  bool _reduceMotion = false;
   ScrollController _scroll = ScrollController(keepScrollOffset: false);
   int _restoreGeneration = 0;
   final _layouts = SectionLayoutCache();
@@ -169,7 +156,7 @@ class _TextViewportState extends State<TextViewport>
     if (!mounted || _selectionActive == active) return;
     _selectionActive = active;
     // Selection always belongs to the committed page, never a curl preview.
-    if (active && _turnBusy) _cancelTurn();
+    if (active && _turns.busy) _turns.cancel();
     setState(() {});
   }
 
@@ -190,7 +177,7 @@ class _TextViewportState extends State<TextViewport>
       leadingPosition: () => _position,
       rightToLeft: () => _rightToLeft,
       retainedLayoutCount: () => _layouts.length,
-      retainedTextureCount: () => _turn?.current == null ? 0 : 2,
+      retainedTextureCount: () => _turns.turn?.current == null ? 0 : 2,
       next: () => _step(1),
       previous: () => _step(-1),
       nextSection: () => _changeSection(1),
@@ -209,9 +196,18 @@ class _TextViewportState extends State<TextViewport>
     super.initState();
     _attachNavigation();
     WidgetsBinding.instance.addObserver(this);
-    // The curl painter listens to this controller directly; animation frames
-    // repaint only that layer rather than rebuilding the page's text.
-    _animation = AnimationController(vsync: this);
+    _turns = PageTurnController(
+      vsync: this,
+      ready: () => _layout != null && !_restoring,
+      committed: () => PageTarget(_ordinal, _section!, _layout!, _page),
+      resolve: _resolvePage,
+      texture: _texture,
+      commit: _commitPage,
+      pastEnd: _advanceOrFinish,
+      rightToLeft: () => _rightToLeft,
+      width: () => _width,
+      changed: () => setState(() {}),
+    );
     _scroll.addListener(_scrolled);
     _goTo(
       widget.initialPosition ??
@@ -230,7 +226,7 @@ class _TextViewportState extends State<TextViewport>
         oldWidget.foreground != widget.foreground ||
         oldWidget.background != widget.background) {
       _clearSelection();
-      _cancelTurn();
+      _turns.cancel();
     }
     if (oldWidget.navigation != widget.navigation) {
       oldWidget.navigation.detach(this);
@@ -274,8 +270,8 @@ class _TextViewportState extends State<TextViewport>
     _restored = restoration ? Completer<void>() : null;
     final restored = _restored;
     _restorationOnly = restoration;
-    final hadTurn = _turnBusy;
-    _cancelTurn();
+    final hadTurn = _turns.busy;
+    _turns.cancel();
     if (hadTurn && mounted) setState(() {});
     final ordinal = widget.document.ordinalOf(requested.sectionId);
     final target = ordinal >= 0 ? ordinal : 0;
@@ -332,12 +328,10 @@ class _TextViewportState extends State<TextViewport>
     final layout = _layout;
     if (layout == null || _restoring) return;
     if (widget.settings.mode != ReadingMode.scroll) {
-      if (_turnBusy) return;
-      if (widget.settings.mode == ReadingMode.pageFlip) {
-        _startTurn(delta, automatic: true);
-      } else {
-        _immediatePage(delta);
-      }
+      _turns.step(
+        delta,
+        animated: widget.settings.mode == ReadingMode.pageFlip,
+      );
       return;
     }
     if (!_scroll.hasClients) return;
@@ -364,40 +358,25 @@ class _TextViewportState extends State<TextViewport>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
       _clearSelection();
-      _cancelTurn();
+      _turns.cancel();
       if (mounted) setState(() {});
     }
   }
 
-  void _cancelTurn() {
-    _turnEpoch++;
-    _animation.stop();
-    _turn?.dispose();
-    _turn = null;
-    _turnBusy = false;
-    _dragAccepted = false;
-    _dragging = false;
-    _dragOrigin = null;
-    _dragPointer = null;
-    _endOnly = false;
-    _turnError = null;
-  }
-
-  // Adjacent pages use the same measured layout as the current viewport. A
-  // generation token prevents chapter jumps/reflows accepting stale loads.
-  Future<PageTarget?> _resolvePage(int delta) async {
+  // Adjacent pages use the same measured layout as the current viewport. The
+  // turn ticket prevents chapter jumps/reflows accepting stale loads.
+  Future<PageTarget?> _resolvePage(int delta, FenceTicket ticket) async {
     final index = _page + delta;
     if (index >= 0 && index < _layout!.pages.length) {
       return PageTarget(_ordinal, _section!, _layout!, index);
     }
     final ordinal = _ordinal + delta;
     if (ordinal < 0 || ordinal >= widget.document.sections.length) return null;
-    final epoch = _turnEpoch;
     final section = await widget.store.loadSection(
       widget.sourcePath,
       widget.document.sections[ordinal].id,
     );
-    if (!mounted || epoch != _turnEpoch) return null;
+    if (!mounted || !ticket.isCurrent) return null;
     final layout = _obtainLayout(section, _width, _height, _scaler);
     return PageTarget(
       ordinal,
@@ -428,32 +407,9 @@ class _TextViewportState extends State<TextViewport>
     _report(target.layout.pages[target.page].first.position(target.section.id));
   }
 
-  Future<void> _immediatePage(int delta) async {
-    final epoch = _turnEpoch;
-    _turnBusy = true;
-    try {
-      final target = await _resolvePage(delta);
-      if (!mounted || epoch != _turnEpoch) return;
-      _turnBusy = false;
-      if (target != null) {
-        _commitPage(target);
-      } else if (delta > 0) {
-        _advanceOrFinish();
-      }
-    } on Object catch (error) {
-      if (mounted && epoch == _turnEpoch) {
-        setState(() {
-          _turnBusy = false;
-          _turnError = error;
-          _turnDelta = delta;
-        });
-      }
-    }
-  }
-
-  ui.Image _texture(SectionLayout layout, int page) => textPageTexture(
-    layout: layout,
-    page: page,
+  ui.Image _texture(PageTarget target) => textPageTexture(
+    layout: target.layout,
+    page: target.page,
     width: _width,
     height: _height,
     background: widget.background,
@@ -462,144 +418,6 @@ class _TextViewportState extends State<TextViewport>
       widget.background,
     ),
   );
-
-  Future<void> _startTurn(int delta, {required bool automatic}) async {
-    if (_turnBusy || _layout == null || _restoring) return;
-    if (automatic) {
-      _dragOrigin = null;
-      _dragPointer = null;
-    }
-    final epoch = ++_turnEpoch;
-    _turnBusy = true;
-    _turnDelta = delta;
-    // The animation no longer rebuilds the viewport, so state changes that
-    // add or remove the curl layer must rebuild explicitly.
-    setState(() {
-      _turnError = null;
-      _animation.value = 0;
-    });
-    ui.Image? current;
-    try {
-      final target = await _resolvePage(delta);
-      if (!mounted || epoch != _turnEpoch) return;
-      if (target == null) {
-        _endOnly = true;
-        if (automatic || !_dragging) _finishTurn(automatic || _releaseComplete);
-        return;
-      }
-      if (_reduceMotion) {
-        // Reduced motion keeps live paragraphs visible throughout the drag.
-        _turn = PageTurn(target, null, null, delta);
-      } else {
-        current = _texture(_layout!, _page);
-        final incoming = _texture(target.layout, target.page);
-        _turn = PageTurn(target, current, incoming, delta);
-        current = null; // Ownership transfers only after both textures exist.
-      }
-      // A drag may have ended during section I/O. Resume at its actual fraction
-      // so settling still scales with the distance remaining, not loading time.
-      setState(() {
-        if (!automatic) _animation.value = _dragProgress;
-      });
-      if (automatic) {
-        _settleTurn(true);
-      } else if (!_dragging) {
-        _settleTurn(_releaseComplete);
-      }
-    } on Object catch (error) {
-      current?.dispose();
-      if (mounted && epoch == _turnEpoch) {
-        _cancelTurn();
-        setState(() {
-          _turnError = error;
-          _turnDelta = delta;
-        });
-      }
-    }
-  }
-
-  double get _dragProgress => (_dragDistance.abs() / _width).clamp(0.0, 1.0);
-
-  void _finishTurn(bool complete) {
-    final target = _turn?.target;
-    final end = _endOnly;
-    final delta = _turnDelta;
-    _cancelTurn();
-    if (complete && target != null) {
-      _commitPage(target);
-    } else {
-      setState(() {});
-      if (complete && end && delta > 0) _advanceOrFinish();
-    }
-  }
-
-  Future<void> _settleTurn(bool complete) async {
-    if (_endOnly || _reduceMotion) {
-      _finishTurn(complete);
-      return;
-    }
-    if (_turn == null) return;
-    final epoch = _turnEpoch;
-    final target = complete ? 1.0 : 0.0;
-    final duration = Duration(
-      milliseconds: (300 * (target - _animation.value).abs()).round(),
-    );
-    try {
-      await _animation
-          .animateTo(target, duration: duration, curve: Curves.easeOutCubic)
-          .orCancel;
-    } on TickerCanceled {
-      // Reflow, lifecycle changes, and explicit navigation keep the old anchor.
-      return;
-    }
-    if (mounted && epoch == _turnEpoch) _finishTurn(complete);
-  }
-
-  void _dragStart(DragStartDetails details) {
-    _manualNavigation();
-    _dragAccepted = !_turnBusy && !_restoring;
-    if (!_dragAccepted) return;
-    _dragging = true;
-    _dragDistance = 0;
-    _dragOrigin = details.localPosition;
-    _dragPointer = details.localPosition;
-    _releaseComplete = false;
-  }
-
-  void _dragUpdate(DragUpdateDetails details) {
-    if (!_dragAccepted || !_dragging) return;
-    _dragPointer = details.localPosition;
-    final movement = _dragPointer!.dx - _dragOrigin!.dx;
-    if (!_turnBusy && movement != 0) {
-      _turnDelta = (movement < 0) != _rightToLeft ? 1 : -1;
-      _startTurn(_turnDelta, automatic: false);
-    }
-    final negative = (_turnDelta > 0) != _rightToLeft;
-    _dragDistance = negative ? math.min(0, movement) : math.max(0, movement);
-    if (_turn != null) setState(() => _animation.value = _dragProgress);
-  }
-
-  void _dragEnd(DragEndDetails details) {
-    if (!_dragAccepted) return;
-    _dragging = false;
-    _dragAccepted = false;
-    final velocity = details.primaryVelocity ?? 0;
-    final negative = (_turnDelta > 0) != _rightToLeft;
-    _releaseComplete =
-        _dragProgress >= .35 ||
-        (_dragDistance.abs() >= 8 &&
-            velocity.abs() > 650 &&
-            (velocity < 0) == negative);
-    if (_turn != null || _endOnly) _settleTurn(_releaseComplete);
-  }
-
-  void _dragCancel() {
-    if (!_dragAccepted) return;
-    _dragging = false;
-    _dragAccepted = false;
-    _releaseComplete = false;
-    if (_turn != null || _endOnly) _settleTurn(false);
-  }
 
   void _advanceOrFinish() {
     if (_ordinal + 1 < widget.document.sections.length) {
@@ -710,7 +528,7 @@ class _TextViewportState extends State<TextViewport>
     );
     if (_layoutKey == key) return;
     _clearSelection();
-    _cancelTurn();
+    _turns.cancel();
     _width = width;
     _height = height;
     _scaler = scaler;
@@ -762,8 +580,7 @@ class _TextViewportState extends State<TextViewport>
     if (_restored?.isCompleted == false) _restored!.complete();
     widget.navigation.detach(this);
     WidgetsBinding.instance.removeObserver(this);
-    _cancelTurn();
-    _animation.dispose();
+    _turns.dispose();
     _scroll.dispose();
     _layouts.dispose();
     super.dispose();
@@ -782,8 +599,7 @@ class _TextViewportState extends State<TextViewport>
         final width = math.max(1.0, constraints.maxWidth - 40);
         final height = math.max(1.0, constraints.maxHeight - 24);
         final reduceMotion = MediaQuery.disableAnimationsOf(context);
-        if (_reduceMotion != reduceMotion) _cancelTurn();
-        _reduceMotion = reduceMotion;
+        _turns.reduceMotion = reduceMotion;
         _prepare(width, height, MediaQuery.textScalerOf(context));
         final layout = _layout!;
         final content = widget.settings.mode == ReadingMode.scroll
@@ -828,10 +644,13 @@ class _TextViewportState extends State<TextViewport>
                 rightToLeft: _rightToLeft,
                 onStep: _step,
                 onTap: widget.onTap,
-                onDragStart: _dragStart,
-                onDragUpdate: _dragUpdate,
-                onDragCancel: _dragCancel,
-                onDragEnd: _dragEnd,
+                onDragStart: (details) {
+                  _manualNavigation();
+                  _turns.dragStart(details);
+                },
+                onDragUpdate: _turns.dragUpdate,
+                onDragCancel: _turns.dragCancel,
+                onDragEnd: _turns.dragEnd,
                 child: ClipRect(
                   child: SizedBox(
                     height: height,
@@ -851,28 +670,28 @@ class _TextViewportState extends State<TextViewport>
                             ),
                           ),
                         ),
-                        if (_turn?.current != null)
+                        if (_turns.turn?.current case final current?)
                           ExcludeSemantics(
                             child: CustomPaint(
                               painter: PaperCurlPainter(
-                                current: _turn!.current!,
-                                target: _turn!.incoming!,
-                                turn: _animation,
-                                grabY: _dragOrigin?.dy ?? _height / 2,
-                                fingerY: _dragPointer?.dy ?? _height / 2,
-                                forward: _turn!.delta > 0,
+                                current: current,
+                                target: _turns.turn!.incoming!,
+                                turn: _turns.animation,
+                                grabY: _turns.dragOrigin?.dy ?? _height / 2,
+                                fingerY: _turns.dragPointer?.dy ?? _height / 2,
+                                forward: _turns.turn!.delta > 0,
                                 fromRight: !_rightToLeft,
                                 paper: widget.background,
                               ),
                             ),
                           ),
-                        if (_turnError != null)
+                        if (_turns.error != null)
                           Align(
                             alignment: Alignment.bottomCenter,
                             child: Material(
                               color: widget.background,
                               child: TextButton(
-                                onPressed: () => _step(_turnDelta),
+                                onPressed: () => _step(_turns.delta),
                                 child: const Text('Could not load page. Retry'),
                               ),
                             ),
@@ -892,7 +711,9 @@ class _TextViewportState extends State<TextViewport>
             // as a drag end. Handle it before the recognizer can commit a turn.
             child: Listener(
               onPointerCancel: (_) {
-                if (widget.settings.mode == ReadingMode.pageFlip) _dragCancel();
+                if (widget.settings.mode == ReadingMode.pageFlip) {
+                  _turns.dragCancel();
+                }
               },
               // Navigation recognizers belong inside SelectionArea: an ordinary
               // touch swipe wins before its ancestor's text-drag recognizer,

@@ -10,14 +10,25 @@ locals {
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
   ])
-  # Provider key name -> protected Secret Manager container ID.
+  # Single source of truth for direct image-provider containers: provider key ->
+  # Secret Manager container ID. The image_provider_secret_ids output publishes it
+  # to tool/infra_common.sh, which provisions and discovers versions from it.
   image_provider_secrets = {
     seedream = "reader-byteplus-api-key"
     qwen     = "reader-qwen-api-key"
     xai      = "reader-xai-api-key"
     flux     = "reader-bfl-api-key"
   }
-  index_spec = jsondecode(var.firestore_indexes_json)
+  # Every protected secret container this stack owns, keyed by stable role. Keys
+  # are state addresses (see the moved blocks below), so never rename one.
+  secret_containers = merge({
+    openai      = "reader-openai-api-key"
+    fingerprint = "reader-fingerprint-secret"
+  }, local.image_provider_secrets)
+  # The worker reads the OpenAI key and every direct provider key; the API reads
+  # only the fingerprint secret and never receives a generation credential.
+  worker_secrets = setsubtract(keys(local.secret_containers), ["fingerprint"])
+  index_spec     = jsondecode(var.firestore_indexes_json)
   # Existing single-index collections keep their historic address; collections with
   # several indexes add their field list so no resource is renamed or collapsed.
   indexes = {
@@ -109,7 +120,7 @@ resource "google_storage_bucket" "illustrations" {
 }
 
 resource "google_firebase_storage_bucket" "illustrations" {
-  provider  = google-beta
+  provider  = google-beta.quota
   project   = var.project_id
   bucket_id = google_storage_bucket.illustrations.name
 
@@ -117,7 +128,8 @@ resource "google_firebase_storage_bucket" "illustrations" {
 }
 
 resource "google_firebaserules_ruleset" "storage" {
-  project = var.project_id
+  provider = google.quota
+  project  = var.project_id
 
   source {
     files {
@@ -130,7 +142,7 @@ resource "google_firebaserules_ruleset" "storage" {
 }
 
 resource "google_firebaserules_release" "storage" {
-  provider = google-beta
+  provider = google-beta.quota
 
   project      = var.project_id
   name         = "firebase.storage/${google_storage_bucket.illustrations.name}"
@@ -308,74 +320,16 @@ resource "google_cloud_tasks_queue" "book_analysis" {
   depends_on = [google_project_service.required]
 }
 
-resource "google_secret_manager_secret" "openai" {
-  project             = var.project_id
-  secret_id           = "reader-openai-api-key"
-  labels              = local.labels
-  deletion_protection = true
-  deletion_policy     = "PREVENT"
-
-  replication {
-    auto {}
-  }
-
-  lifecycle {
-    prevent_destroy = true
-  }
-
-  depends_on = [google_project_service.required]
-}
-
 resource "random_password" "fingerprint" {
   length  = 64
   special = false
 }
 
-resource "google_secret_manager_secret" "fingerprint" {
-  project             = var.project_id
-  secret_id           = "reader-fingerprint-secret"
-  labels              = local.labels
-  deletion_protection = true
-  deletion_policy     = "PREVENT"
-
-  replication {
-    auto {}
-  }
-
-  lifecycle {
-    prevent_destroy = true
-  }
-
-  depends_on = [google_project_service.required]
-}
-
-resource "google_secret_manager_secret_version" "fingerprint" {
-  secret      = google_secret_manager_secret.fingerprint.id
-  secret_data = random_password.fingerprint.result
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "google_secret_manager_secret_iam_member" "api_fingerprint" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.fingerprint.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.api.email}"
-}
-
-resource "google_secret_manager_secret_iam_member" "worker_openai" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.openai.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.worker.email}"
-}
-
-# Containers only: values are provisioned out of band by tool/deploy_backend and
-# never enter Terraform state, variables or plans. The API never reads them.
-resource "google_secret_manager_secret" "image_provider" {
-  for_each = local.image_provider_secrets
+# Containers only, except the generated fingerprint below: the OpenAI and direct
+# provider values are provisioned out of band by tool/deploy_backend and never
+# enter Terraform state, variables or plans.
+resource "google_secret_manager_secret" "container" {
+  for_each = local.secret_containers
 
   project             = var.project_id
   secret_id           = each.value
@@ -394,13 +348,86 @@ resource "google_secret_manager_secret" "image_provider" {
   depends_on = [google_project_service.required]
 }
 
-resource "google_secret_manager_secret_iam_member" "worker_image_provider" {
-  for_each = google_secret_manager_secret.image_provider
+# The containers were separate resources before they shared one for_each block;
+# these moves keep every protected secret in place instead of recreating it.
+moved {
+  from = google_secret_manager_secret.openai
+  to   = google_secret_manager_secret.container["openai"]
+}
+
+moved {
+  from = google_secret_manager_secret.fingerprint
+  to   = google_secret_manager_secret.container["fingerprint"]
+}
+
+moved {
+  from = google_secret_manager_secret.image_provider["seedream"]
+  to   = google_secret_manager_secret.container["seedream"]
+}
+
+moved {
+  from = google_secret_manager_secret.image_provider["qwen"]
+  to   = google_secret_manager_secret.container["qwen"]
+}
+
+moved {
+  from = google_secret_manager_secret.image_provider["xai"]
+  to   = google_secret_manager_secret.container["xai"]
+}
+
+moved {
+  from = google_secret_manager_secret.image_provider["flux"]
+  to   = google_secret_manager_secret.container["flux"]
+}
+
+resource "google_secret_manager_secret_version" "fingerprint" {
+  secret      = google_secret_manager_secret.container["fingerprint"].id
+  secret_data = random_password.fingerprint.result
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_secret_manager_secret_iam_member" "api_fingerprint" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.container["fingerprint"].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "worker" {
+  for_each = local.worker_secrets
 
   project   = var.project_id
-  secret_id = each.value.secret_id
+  secret_id = google_secret_manager_secret.container[each.key].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.worker.email}"
+}
+
+moved {
+  from = google_secret_manager_secret_iam_member.worker_openai
+  to   = google_secret_manager_secret_iam_member.worker["openai"]
+}
+
+moved {
+  from = google_secret_manager_secret_iam_member.worker_image_provider["seedream"]
+  to   = google_secret_manager_secret_iam_member.worker["seedream"]
+}
+
+moved {
+  from = google_secret_manager_secret_iam_member.worker_image_provider["qwen"]
+  to   = google_secret_manager_secret_iam_member.worker["qwen"]
+}
+
+moved {
+  from = google_secret_manager_secret_iam_member.worker_image_provider["xai"]
+  to   = google_secret_manager_secret_iam_member.worker["xai"]
+}
+
+moved {
+  from = google_secret_manager_secret_iam_member.worker_image_provider["flux"]
+  to   = google_secret_manager_secret_iam_member.worker["flux"]
 }
 
 # Google images use Vertex AI through the worker's own service-account identity.

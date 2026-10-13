@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import express from "express";
-import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
-import type { Storage } from "@google-cloud/storage";
+import { Timestamp } from "firebase-admin/firestore";
 import sharp from "sharp";
 import { composeImagePrompt } from "./openai.js";
-import { HttpError } from "./http.js";
+import { assignUid, startTestServer } from "./test-support/http.js";
+import { MemoryStorage } from "./test-support/storage.js";
 import { MemoryFirestore } from "./test-support/firestore.js";
 import { illustrationWorkerRouter } from "./illustration-worker.js";
 import type { IllustrationSceneRange } from "./book-analysis-context.js";
@@ -19,6 +19,7 @@ import { snapshotImageGenerationConfig } from "./illustration-configuration.js";
 import { validateGeneratedImage, type GeneratedImage, type ReferenceImage } from "./image-generation.js";
 import type { SelectedScene } from "./scene-selection.js";
 import { renderPromptImage } from "./image-test-provider.js";
+import { ASSET_RETENTION_MILLISECONDS } from "./durations.js";
 
 type Data = Record<string, unknown>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -52,10 +53,8 @@ async function fixture(action: (harness: {
   enqueue: (implementation: (path: string, body: Data, id: string) => Promise<void>) => void;
 }) => Promise<void>) {
   const db = new MemoryFirestore();
-  const objects = new Map<string, Buffer>();
   const calls = { selection: 0, images: 0 };
   const generations: Generation[] = [];
-  const contentTypes = new Map<string, string>();
   const moderatedImages: GeneratedImage[] = [];
   const image = await sharp({ create: { width: 150, height: 100, channels: 3, background: "#336699" } }).webp().toBuffer();
   let generate: (config: ImageGenerationConfig, prompt: string, references: readonly ReferenceImage[]) => Promise<Buffer | GeneratedImage> = async () => image;
@@ -65,23 +64,12 @@ async function fixture(action: (harness: {
   const priorOrchestrator = process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL;
   process.env.IMAGE_PROVIDERS = "openai,google,seedream,qwen,xai,flux,diagnostic";
   let select: () => Promise<SelectedScene[]> = async () => selection;
-  let save: (path: string) => Promise<void> = async () => {};
   let enqueue: (path: string, body: Data, id: string) => Promise<void> = async () => {};
-  const storage = { bucket: () => ({
-    deleteFiles: async ({ prefix }: { prefix: string }) => {
-      for (const path of objects.keys()) if (path.startsWith(prefix)) objects.delete(path);
-    },
-    file: (path: string) => ({
-      save: async (bytes: Buffer, options: { contentType: string }) => {
-        await save(path); objects.set(path, bytes); contentTypes.set(path, options.contentType); db.events.push(`save:${path}`);
-      },
-      delete: async () => { objects.delete(path); contentTypes.delete(path); db.events.push(`delete-object:${path}`); },
-      getSignedUrl: async () => { db.events.push(`sign:${path}`); return [`https://private.invalid/${path}`]; },
-    }),
-  }) } as unknown as Storage;
+  const memoryStorage = new MemoryStorage(db.events);
+  const { objects, contentTypes, storage } = memoryStorage;
   const app = express();
   app.use(express.json());
-  app.use("/api", (req, _res, next) => { (req as express.Request & { uid: string }).uid = "owner"; next(); });
+  app.use("/api", assignUid(() => "owner"));
   app.use("/api", illustrationSceneRouter({
     db: db.firestore, storage, bucket: "private",
     requireFeature: (_req, _res, next) => next(),
@@ -93,7 +81,7 @@ async function fixture(action: (harness: {
   app.use("/api/account", accountDeletionRouter({ db: db.firestore, storage, bucket: "private", narration }));
   app.use("/internal", illustrationWorkerRouter({
     db: db.firestore, storage, bucket: "private",
-    assetRetentionMilliseconds: 30 * 86400000, composeImagePrompt,
+    assetRetentionMilliseconds: ASSET_RETENTION_MILLISECONDS, composeImagePrompt,
     selectScenes: async () => { calls.selection++; return select(); },
     moderateText: async () => false,
     loadContext: async () => { contextLoads++; return contextStub ?? null; },
@@ -107,15 +95,8 @@ async function fixture(action: (harness: {
       },
     },
   }));
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error instanceof HttpError ? error.status : 500)
-      .json({ error: error instanceof HttpError ? error.message : "Request failed." });
-  });
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.on("listening", resolve));
-  const address = server.address();
-  assert(address && typeof address === "object");
-  const url = `http://127.0.0.1:${address.port}`;
+  const server = await startTestServer(app);
+  const url = server.baseUrl;
   try {
     await action({ db, objects, image, calls, generations, contentTypes, moderatedImages,
       request: (path, body = {}, method = "POST") => fetch(`${url}${path.startsWith("/api/") ? path : `/internal${path}`}`, {
@@ -124,7 +105,7 @@ async function fixture(action: (harness: {
       generate: implementation => { generate = implementation; },
       credentials: implementation => { credentials = implementation; },
       select: implementation => { select = implementation; },
-      save: implementation => { save = implementation; },
+      save: implementation => { memoryStorage.beforeSave = implementation; },
       enqueue: implementation => { enqueue = implementation; },
     });
   } finally {
@@ -134,7 +115,7 @@ async function fixture(action: (harness: {
     else process.env.OPENAI_IMAGE_MODEL = priorImageModel;
     if (priorOrchestrator === undefined) delete process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL;
     else process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL = priorOrchestrator;
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await server.close();
   }
 }
 function seedJob(db: MemoryFirestore) {

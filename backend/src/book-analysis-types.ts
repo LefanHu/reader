@@ -1,6 +1,5 @@
 /** Immutable analysis identity; independent of image profiles, styles and credits. */
 export const ANALYSIS_MODEL = "gpt-6-luna";
-export const ANALYSIS_WINDOW_TARGET_UNITS = 6_000;
 export const ANALYSIS_OVERLAP_MAX_UNITS = 1_000;
 export const ANALYSIS_INPUT_MAX_UNITS = 8_000;
 export const ANALYSIS_PAGE_MAX_BYTES = 128 * 1024;
@@ -115,16 +114,11 @@ export type AnalysisResultPage = {
   timeMappings?: AnalysisTimeMapping[]; worldBaselines?: WorldBaseline[]; worldMaps?: WorldMap[];
   subjectIndexes?: AnalysisSubjectIndex[];
 };
-/** Persisted owner is server-derived; public DTOs expose accountKey instead of uid. */
-export type AnalysisManifest = AnalysisSourceManifest & {
-  uid: string; bookId: string; generationId: string; status: AnalysisGenerationStatus;
-  descriptorPages: { ordinal: number; checksum: string; byteLength: number }[];
-  entityMappingPages: AnalysisResultPageDescriptor[]; timeMappingPages: AnalysisResultPageDescriptor[];
-  resultPages: AnalysisResultPageDescriptor[]; finalizedRevision: string | null;
-};
+/** `GET /api/book-analysis/config` body; public DTOs expose accountKey instead of uid. */
 export type AnalysisConfiguration = {
   enabled: boolean; model: "gpt-6-luna"; accountKey: string;
 };
+/** `POST /api/book-analysis/books` body. */
 export type AnalysisRegistration = { bookId: string; accountKey: string };
 export type AnalysisReceipt = {
   generationId: string; jobId?: string; status: AnalysisGenerationStatus; cursor?: AnalysisOperationCursor;

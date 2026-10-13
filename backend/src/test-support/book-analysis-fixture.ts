@@ -4,7 +4,7 @@ import type { AnalysisAssertion, AnalysisChunkInput, AnalysisEntity, AnalysisEvi
 import { bookAnalysisApiRouter } from "../book-analysis-api.js";
 import { bookAnalysisWorkerRouter } from "../book-analysis-worker.js";
 import { BookAnalysisStore } from "../book-analysis-store.js";
-import { HttpError } from "../http.js";
+import { assignUid, startTestServer } from "./http.js";
 import { MemoryFirestore } from "./firestore.js";
 import { analysisChunkHash, analysisDocumentDigest, analysisOverlapHash, analysisSpanHash } from "../book-analysis-source.js";
 
@@ -181,18 +181,11 @@ export async function startBookAnalysisFixtureHarness(options: { provider?: Book
   const tasks: { path: string; payload: Record<string, unknown>; taskId: string }[] = [];
   const app = express();
   app.use(express.json({ limit: "1mb" }));
-  app.use((req, _res, next) => { (req as express.Request & { uid: string }).uid = req.header("x-test-owner") ?? "owner"; next(); });
+  app.use(assignUid(req => req.header("x-test-owner") ?? "owner"));
   app.use("/api/book-analysis", bookAnalysisApiRouter({ db: memory.firestore, fingerprintSecret: "fixture-secret",
     requireFeature: (_req, _res, next) => next(), enqueue: async (path, payload, taskId) => { tasks.push({ path, payload, taskId }); } }));
   app.use("/internal/book-analysis", bookAnalysisWorkerRouter({ db: memory.firestore, provider }));
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(error instanceof HttpError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Failed." });
-  });
-  const server: Server = app.listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.once("listening", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Fixture server did not start.");
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const { server, baseUrl, close } = await startTestServer(app);
   const request = (path: string, method = "GET", body?: unknown, uid = "owner") => fetch(`${baseUrl}${path}`, { method,
     headers: { "content-type": "application/json", "x-test-owner": uid }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const json = async <T>(path: string, method = "GET", body?: unknown): Promise<T> => {
@@ -202,7 +195,7 @@ export async function startBookAnalysisFixtureHarness(options: { provider?: Book
   };
   const progress = (generationId: string) => json<AnalysisProgress>(`/api/book-analysis/generations/${generationId}`);
   return { fixture, provider, memory, store, tasks, app, server, baseUrl, request, progress,
-    async close() { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); },
+    close,
     async admit(fingerprint = "temporal-fixture") {
       const registration = await json<{ bookId: string }>("/api/book-analysis/books", "POST", { fingerprint, title: "Temporal fixture", chapterCount: 2 });
       const { chunks: _chunks, ...admission } = fixture.manifest;

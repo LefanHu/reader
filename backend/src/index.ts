@@ -16,7 +16,8 @@ import { NarrationBackend } from "./narration.js";
 import { RealtimeNarrationProvider } from "./narration-provider.js";
 import { workerTaskRequest } from "./task-request.js";
 import { accountDeletionRouter, accountUsageRouter, authenticateAccount } from "./account.js";
-import { asyncRoute, HttpError } from "./http.js";
+import { asyncRoute, HttpError, httpErrorHandler } from "./http.js";
+import { openAIApiKey } from "./openai-client.js";
 import { illustrationWorkerRouter } from "./illustration-worker.js";
 import { illustrationBookDeletion, illustrationBookRegistration } from "./illustration-books.js";
 import { illustrationSceneRouter } from "./illustration-scenes.js";
@@ -26,6 +27,7 @@ import { createImageProviderRegistry } from "./image-provider-registry.js";
 import { bookAnalysisApiRouter } from "./book-analysis-api.js";
 import { bookAnalysisWorkerRouter } from "./book-analysis-worker.js";
 import { ResponsesBookAnalysisProvider } from "./book-analysis-provider.js";
+import { ASSET_RETENTION_MILLISECONDS } from "./durations.js";
 
 if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
 const db = getFirestore();
@@ -42,7 +44,6 @@ const workerUrl = process.env.WORKER_URL ?? "";
 const taskServiceAccount = process.env.TASK_SERVICE_ACCOUNT ?? "";
 const fingerprintSecret = process.env.FINGERPRINT_SECRET ?? "";
 const pilotCredits = Number.parseInt(process.env.PILOT_CREDITS ?? "100", 10);
-const assetRetentionMilliseconds = 30 * 24 * 60 * 60 * 1000;
 const illustrationsEnabled = process.env.ILLUSTRATIONS_ENABLED === "true";
 const serviceRole = process.env.SERVICE_ROLE ?? "api";
 const narrationEnabled = process.env.NARRATION_ENABLED === "true";
@@ -80,12 +81,8 @@ const narration = new NarrationBackend({ db, storage, bucket: bucketName,
 });
 app.use("/api/account", accountDeletionRouter({ db, storage, bucket: bucketName, narration }));
 app.use("/api/narration", narration.api());
-function requireFeature(_req: Request, res: Response, next: NextFunction) {
-  if (!illustrationsEnabled) {
-    res.status(503).json({ error: "Illustrations are temporarily unavailable." });
-    return;
-  }
-  next();
+function requireFeature(_req: Request, _res: Response, next: NextFunction) {
+  next(illustrationsEnabled ? undefined : new HttpError(503, "Illustrations are temporarily unavailable."));
 }
 
 // Preprocessing shares Auth/App Check and rollout, but never image credits or availability.
@@ -118,44 +115,26 @@ function requireTask(req: Request, res: Response, next: NextFunction) {
     res.status(404).end();
     return;
   }
-  if (!req.header("x-cloudtasks-taskname")) {
-    res.status(403).json({ error: "Cloud Tasks invocation required." });
-    return;
-  }
-  next();
+  next(req.header("x-cloudtasks-taskname") ? undefined : new HttpError(403, "Cloud Tasks invocation required."));
 }
 app.use("/internal", requireTask);
 app.use("/internal/narration", narration.worker());
-app.use("/internal/book-analysis", requireFeature, (_req, res, next) => {
+app.use("/internal/book-analysis", requireFeature, (_req, _res, next) => {
   // API instances have no provider secret; workers wait without consuming paid intent.
-  if (!process.env.OPENAI_API_KEY) {
-    res.status(503).json({ error: "Book preprocessing is temporarily unavailable." });
-    return;
-  }
-  next();
+  next(openAIApiKey() ? undefined : new HttpError(503, "Book preprocessing is temporarily unavailable."));
 }, bookAnalysisWorkerRouter({
   db, provider: new ResponsesBookAnalysisProvider(),
 }));
-app.use("/internal", (_req, res, next) => {
-  if (!illustrationsEnabled) {
-    res.status(503).json({ error: "Illustration generation is disabled." });
-    return;
-  }
-  next();
+app.use("/internal", (_req, _res, next) => {
+  next(illustrationsEnabled ? undefined : new HttpError(503, "Illustration generation is disabled."));
 });
 
 app.use("/internal", illustrationWorkerRouter({
-  db, storage, bucket: bucketName, assetRetentionMilliseconds,
+  db, storage, bucket: bucketName, assetRetentionMilliseconds: ASSET_RETENTION_MILLISECONDS,
   selectScenes, composeImagePrompt, imageGenerationProvider: createImageProviderRegistry(), moderateImage, moderateText,
 }));
 
-app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  const status = error instanceof HttpError ? error.status : 500;
-  const message = error instanceof HttpError ? error.message : "Request failed.";
-  // Log only category and stack; request bodies and provider responses are excluded.
-  console.error(JSON.stringify({ category: error instanceof HttpError ? "http" : "internal", status }));
-  res.status(status).json({ error: message });
-});
+app.use(httpErrorHandler());
 
 const port = Number(process.env.PORT ?? 8080);
 app.listen(port, () => console.log(JSON.stringify({ event: "listening", port })));

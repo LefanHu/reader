@@ -8,7 +8,6 @@ import '../preferences/reader_settings.dart';
 import '../text/document.dart';
 import '../text/document_store.dart';
 import '../text/text_position.dart';
-import '../text/text_section.dart';
 import '../text/narration_chunk.dart';
 import '../text/narration_playback_unit.dart';
 import '../text/narration_range.dart';
@@ -19,6 +18,8 @@ import 'narration_cache_key.dart';
 import 'store.dart';
 import 'source.dart';
 import 'narration_audio_asset.dart';
+import 'narration_audio_loader.dart';
+import 'narration_cursor.dart';
 import 'narration_highlight_tracker.dart';
 
 /// Session status separates cloud buffering from committed reading progress.
@@ -62,6 +63,7 @@ class NarrationSession {
   }) : isBookAvailable = isBookAvailable ?? ((_) => true),
        preferences = preferences ?? (() => const ReaderSettings()),
        documents = documents ?? TextDocumentStore() {
+    _audio = NarrationAudioLoader(source: source, store: store);
     player.bind(play: play, pause: pause, stop: stop, seek: seek);
     _highlight = NarrationHighlightTracker(
       player: player,
@@ -130,16 +132,15 @@ class NarrationSession {
 
   /// Immutable document metadata for chapter controls.
   TextDocument? document;
-  TextSection? _section;
-  List<NarrationPlaybackUnit> _units = [];
+  NarrationCursor? _cursor;
   NarrationChunk? _activeChunk;
-  int _index = 0, _epoch = 0, _loadToken = 0;
+  int _epoch = 0, _loadToken = 0;
   bool _wanted = false, _disposed = false, _seeked = false;
   late final StreamSubscription<int> _subscription;
   final _nativeQueue = SerialQueue();
   Future<void>? _cacheMaintenance;
   final _preferenceQueue = SerialQueue();
-  final Map<String, Future<NarrationAudioAsset>> _downloads = {};
+  late final NarrationAudioLoader _audio;
   late final NarrationHighlightTracker _highlight;
   Timer? _resumeTimer;
 
@@ -254,32 +255,22 @@ class NarrationSession {
     final anchor =
         start ??
         (samePosition ? manifest.chunkStart ?? manifest.anchor : position);
-    final doc = document!;
-    final ordinal = doc.ordinalOf(anchor?.sectionId);
-    if (start != null && ordinal < 0) {
-      throw ArgumentError.value(start, 'start', 'Unknown narration section.');
-    }
-    final loadedSection = await documents.loadSection(
-      target.path,
-      doc.sections[ordinal < 0 ? 0 : ordinal].id,
+    final cursor = await NarrationCursor.open(
+      documents: documents,
+      source: source,
+      bookPath: target.path,
+      document: document!,
+      anchor: anchor,
+      exact: start != null,
+      isCurrent: () => _current(epoch),
     );
-    if (!_current(epoch)) return;
-    if (start != null && loadedSection.resolve(start) != start) {
-      throw ArgumentError.value(start, 'start', 'Invalid narration anchor.');
-    }
-    _section = loadedSection;
-    final units = await source.units(
-      loadedSection,
-      from: anchor,
-      language: doc.language,
-    );
-    if (!_current(epoch)) return;
-    _units = units;
-    _index = 0;
-    if (!resume || _units.firstOrNull?.chunk.id != manifest.chunkId) {
+    if (cursor == null) return;
+    _cursor = cursor;
+    final first = cursor.current?.chunk;
+    if (!resume || first?.id != manifest.chunkId) {
       manifest = manifest.withPlayback(
         anchor: position,
-        chunkStart: _units.firstOrNull?.chunk.start ?? anchor,
+        chunkStart: first?.start ?? anchor,
       );
     }
   }
@@ -355,67 +346,35 @@ class NarrationSession {
     changed();
   }
 
-  Future<NarrationAudioAsset> _file(
-    NarrationPlaybackUnit unit,
-    int epoch,
-  ) async {
+  Future<NarrationAudioAsset> _file(NarrationPlaybackUnit unit, int epoch) {
     final target = book!;
-    final profile = manifest;
-    final key = narrationCacheKey(
+    return _audio.load(
       target,
-      profile,
-      unit.chunk,
-      sentence: unit.sentence,
+      manifest,
+      unit,
+      generation: epoch,
+      isCurrent: () => _current(epoch) && isBookAvailable(target),
     );
-    final cached = await store.cached(target, key);
-    if (cached != null) return cached;
-    if (!_current(epoch)) throw const NarrationCancelled();
-    // Single-flight is generation-scoped: cancelled work cannot poison retry.
-    final download = '$epoch:$key';
-    return _downloads
-        .putIfAbsent(
-          download,
-          () => source.render(
-            target,
-            profile,
-            unit,
-            store,
-            generation: epoch,
-            isCurrent: () => _current(epoch) && isBookAvailable(target),
-          ),
-        )
-        .whenComplete(() => _downloads.remove(download));
   }
 
   Future<void> _start(int epoch) async {
-    while (_index >= _units.length) {
-      final ordinal = document!.ordinalOf(_section!.id) + 1;
-      if (ordinal >= document!.sections.length) {
-        _wanted = false;
-        _resumeTimer?.cancel();
-        status = NarrationStatus.complete;
-        store.pin({});
-        changed();
-        return;
-      }
-      final section = await documents.loadSection(
-        book!.path,
-        document!.sections[ordinal].id,
-      );
-      if (!_current(epoch)) return;
-      _section = section;
-      final units = await source.units(section, language: document!.language);
-      if (!_current(epoch)) return;
-      _units = units;
-      _index = 0;
+    final cursor = _cursor!;
+    final available = await cursor.fill(() => _current(epoch));
+    if (available == null) return;
+    if (!available) {
+      _wanted = false;
+      _resumeTimer?.cancel();
+      status = NarrationStatus.complete;
+      store.pin({});
+      changed();
+      return;
     }
-    final unit = _units[_index];
+    final unit = cursor.current!;
     final chunk = unit.chunk;
     _activeChunk = chunk;
     store.pin(
-      _units
-          .skip(_index)
-          .take(3)
+      cursor
+          .upcoming(3)
           .map(
             (item) => narrationCacheKey(
               book!,
@@ -485,7 +444,7 @@ class NarrationSession {
     changed();
     // Sequential prefetch bounds provider work; pause fences the next request.
     unawaited(() async {
-      for (final next in _units.skip(_index + 1).take(2).toList()) {
+      for (final next in cursor.upcoming(3).skip(1).toList()) {
         if (!_current(epoch)) return;
         try {
           await _file(next, epoch);
@@ -511,14 +470,15 @@ class NarrationSession {
     _activeChunk = null;
     _highlight.clear();
     status = NarrationStatus.buffering;
-    final chunk = _units[_index].chunk;
+    final cursor = _cursor!;
+    final chunk = cursor.current!.chunk;
     final target = book!;
-    await commit(target, chunk.end, document!.progress(_section!, chunk.end));
+    await commit(target, chunk.end, cursor.progress(chunk.end));
     if (!_current(epoch)) return;
     manifest = manifest.withoutPlayback(anchor: chunk.end);
     await store.save(target, manifest);
     if (!_current(epoch)) return;
-    _index++;
+    cursor.advance();
     try {
       await _start(epoch);
     } on Object catch (failure) {
@@ -693,12 +653,7 @@ class NarrationSession {
     if (book?.hash != target.hash) return;
     await stop(restore: false);
     final epoch = _epoch;
-    await Future.wait(
-      _downloads.values.map(
-        (future) =>
-            future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
-      ),
-    );
+    await _audio.drain();
     if (_disposed || epoch != _epoch || book?.hash != target.hash) return;
     book = null;
     document = null;
@@ -750,12 +705,7 @@ class NarrationSession {
       await preferences;
       if (_disposed) return;
       await _stop();
-      await Future.wait(
-        _downloads.values.map(
-          (future) =>
-              future.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
-        ),
-      );
+      await _audio.drain();
       // All public playback mutations wait for maintenance. Private stop/flush
       // avoid reentering its gate while downloads are fenced and drained.
       for (final target in books) {

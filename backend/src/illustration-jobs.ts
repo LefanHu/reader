@@ -1,18 +1,12 @@
 import { createHash } from "node:crypto";
 import express, { type RequestHandler } from "express";
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
-import { asyncRoute, HttpError, requireString, routeParam } from "./http.js";
+import { asyncRoute, HttpError, requireInteger, requireString, routeParam } from "./http.js";
 import { bookReference, readBookFence } from "./fences.js";
 import type { ChapterInput, Paragraph } from "./types.js";
 import { requireAvailableImageProvider, requireIllustrationProfile, snapshotImageGenerationConfig } from "./illustration-configuration.js";
 import type { IllustrationBookProfile } from "./types.js";
-
-function requireInteger(value: unknown, name: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
-    throw new HttpError(400, `${name} is invalid.`);
-  }
-  return value;
-}
+import { PROSE_INPUT_TTL_MILLISECONDS } from "./durations.js";
 
 /**
  * Book profile, chapter job creation and job polling, mounted under `/api`.
@@ -131,7 +125,7 @@ export function illustrationJobRouter(deps: {
       });
       transaction.create(inputRef, {
         uid, bookId, chapterOrdinal: ordinal, input,
-        expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60 * 1000),
+        expiresAt: Timestamp.fromMillis(Date.now() + PROSE_INPUT_TTL_MILLISECONDS),
       });
     });
     await enqueue(`/internal/jobs/${jobId}`, { jobId }, `job-${jobId}`);

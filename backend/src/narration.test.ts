@@ -4,7 +4,6 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import express from "express";
 import { Timestamp } from "firebase-admin/firestore";
-import type { Storage } from "@google-cloud/storage";
 import type WebSocket from "ws";
 import {
   NarrationBackend,
@@ -20,7 +19,8 @@ import {
   accountDeletionRouter,
   authenticateAccount,
 } from "./account.js";
-import { HttpError } from "./http.js";
+import { startTestServer } from "./test-support/http.js";
+import { MemoryStorage } from "./test-support/storage.js";
 import { MemoryFirestore } from "./test-support/firestore.js";
 
 const hash = (value: string) =>
@@ -34,7 +34,8 @@ const input = (text = "Hello 👩🏽‍🚀.") => ({
 
 async function harness(enabled = true) {
   const db = new MemoryFirestore(),
-    objects = new Set<string>(),
+    memoryStorage = new MemoryStorage(),
+    objects = memoryStorage.objects,
     tasks: string[] = [];
   let providerCalls = 0;
   let generate = async (
@@ -58,23 +59,7 @@ async function harness(enabled = true) {
         return generate(...args);
       },
     },
-    storage: {
-      bucket: () => ({
-        file: (path: string) => ({
-          save: async () => {
-            objects.add(path);
-          },
-          delete: async () => {
-            objects.delete(path);
-          },
-          getSignedUrl: async () => [`https://private.test/${path}`],
-        }),
-        deleteFiles: async ({ prefix }: { prefix: string }) => {
-          for (const key of objects)
-            if (key.startsWith(prefix)) objects.delete(key);
-        },
-      }),
-    } as unknown as Storage,
+    storage: memoryStorage.storage,
   });
   const app = express();
   app.use(express.json());
@@ -101,14 +86,7 @@ async function harness(enabled = true) {
       narration: backend,
     }),
   );
-  app.use((error: any, _req: any, res: any, _next: any) =>
-    res
-      .status(error instanceof HttpError ? error.status : 500)
-      .json({ error: error.message }),
-  );
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>((resolve) => server.on("listening", resolve));
-  const address = server.address() as { port: number };
+  const server = await startTestServer(app);
   const request = async (
     path: string,
     method = "GET",
@@ -122,7 +100,7 @@ async function harness(enabled = true) {
     if (token !== null) headers.authorization = `Bearer ${token}`;
     if (appCheck !== null) headers["x-firebase-appcheck"] = appCheck;
     const response = await fetch(
-      `http://127.0.0.1:${address.port}/api/narration${path}`,
+      `${server.baseUrl}/api/narration${path}`,
       {
         method,
         headers,
@@ -147,7 +125,7 @@ async function harness(enabled = true) {
     if (token !== null) headers.authorization = `Bearer ${token}`;
     if (appCheck !== null) headers["x-firebase-appcheck"] = appCheck;
     const response = await fetch(
-      `http://127.0.0.1:${address.port}/api/account${options.query ?? ""}`,
+      `${server.baseUrl}/api/account${options.query ?? ""}`,
       {
         method: "DELETE",
         headers,
@@ -178,10 +156,7 @@ async function harness(enabled = true) {
     provider: (callback: typeof generate) => {
       generate = callback;
     },
-    close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+    close: server.close,
   };
 }
 
@@ -197,7 +172,7 @@ interface AccountPurgeFixture {
 }
 
 /** Owner reservations share daily accounting with a user whose data must survive. */
-function accountPurgeFixture(db: MemoryFirestore, objects: Set<string>): AccountPurgeFixture {
+function accountPurgeFixture(db: MemoryFirestore, objects: Map<string, Buffer>): AccountPurgeFixture {
   const book = hash("purged book"),
     queued = hash("orphan queued job"),
     submitted = hash("submitted job"),
@@ -239,14 +214,14 @@ function accountPurgeFixture(db: MemoryFirestore, objects: Set<string>): Account
     });
   }
   db.values.set("narrationInputs/orphan-without-job", { uid: "user" });
-  objects.add(`users/user/narration/${book}/cached.wav`);
-  objects.add("users/other/narration/cached.wav");
+  objects.set(`users/user/narration/${book}/cached.wav`, Buffer.alloc(0));
+  objects.set("users/other/narration/cached.wav", Buffer.alloc(0));
   return { book, queued, submitted, other, day, month, otherMonth };
 }
 
 function assertAccountNarrationPurged(
   db: MemoryFirestore,
-  objects: Set<string>,
+  objects: Map<string, Buffer>,
   fixture: AccountPurgeFixture,
 ) {
   for (const [path, value] of db.values)
@@ -291,9 +266,9 @@ test("account HTTP deletion stays available with rollout disabled and ignores sp
     }
     app.db.values.set("users/user/nested/private", { private: true });
     app.db.values.set("users/other/nested/private", { private: true });
-    app.objects.add("users/user/narration/orphan/cached.wav");
-    app.objects.add("users/user/illustrations/image.png");
-    app.objects.add("users/other/illustrations/image.png");
+    app.objects.set("users/user/narration/orphan/cached.wav", Buffer.alloc(0));
+    app.objects.set("users/user/illustrations/image.png", Buffer.alloc(0));
+    app.objects.set("users/other/illustrations/image.png", Buffer.alloc(0));
 
     assert.equal(
       (await app.accountRequest({ query: "?uid=other", body: { uid: "other" } })).status,
@@ -308,7 +283,7 @@ test("account HTTP deletion stays available with rollout disabled and ignores sp
       path === "users/user" || path.startsWith("users/user/")));
     assert.deepEqual(app.db.values.get("users/other"), { creditsRemaining: 30 });
     assert(app.db.values.has("users/other/nested/private"));
-    assert(![...app.objects].some((path) => path.startsWith("users/user/")));
+    assert(![...app.objects.keys()].some((path) => path.startsWith("users/user/")));
     assert(app.objects.has("users/other/illustrations/image.png"));
     assert.equal(app.calls(), 0);
 
@@ -328,7 +303,7 @@ test("account HTTP deletion rejects missing or invalid credentials without mutat
   try {
     accountPurgeFixture(app.db, app.objects);
     const records = JSON.stringify([...app.db.values]),
-      objects = [...app.objects];
+      objects = [...app.objects.keys()];
     for (const credentials of [
       { token: null },
       { token: "" },
@@ -346,7 +321,7 @@ test("account HTTP deletion rejects missing or invalid credentials without mutat
         error: "Authentication and App Check are required.",
       });
       assert.equal(JSON.stringify([...app.db.values]), records);
-      assert.deepEqual([...app.objects], objects);
+      assert.deepEqual([...app.objects.keys()], objects);
     }
     assert.equal(app.calls(), 0);
   } finally {
@@ -366,7 +341,7 @@ test("account HTTP deletion preserves accounting on release failure for a safe r
     };
     const response = await app.accountRequest();
     assert.equal(response.status, 500);
-    assert.deepEqual(response.body, { error: "reservation release failed" });
+    assert.deepEqual(response.body, { error: "Request failed." });
     assert(app.db.values.has("narrationAccountTombstones/user"));
     assert.equal(app.db.values.get(`narrationUsage/${fixture.month}`)?.used, 12);
     assert.equal(app.db.values.get(`narrationDailyUsage/${fixture.day}`)?.used, 23);
@@ -377,7 +352,7 @@ test("account HTTP deletion preserves accounting on release failure for a safe r
     app.db.runTransaction = transact;
     assert.equal((await app.accountRequest()).status, 204);
     assertAccountNarrationPurged(app.db, app.objects, fixture);
-    assert(![...app.objects].some((path) => path.startsWith("users/user/")));
+    assert(![...app.objects.keys()].some((path) => path.startsWith("users/user/")));
   } finally {
     app.db.runTransaction = transact;
     await app.close();
@@ -411,7 +386,7 @@ test("account HTTP deletion fences a submitted provider completion released afte
     release();
     await running;
     assertAccountNarrationPurged(app.db, app.objects, fixture);
-    assert(![...app.objects].some((path) => path.startsWith("users/user/")));
+    assert(![...app.objects.keys()].some((path) => path.startsWith("users/user/")));
     assert(![...app.db.values.keys()].some((path) =>
       path === "users/user" || path.startsWith("users/user/")));
     assert.equal(app.calls(), 1);

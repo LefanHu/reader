@@ -353,70 +353,16 @@ class BookAnalysisCoordinator {
 
   BookAnalysisState _state(_Owner owner) => _states[owner.book.hash]!;
 
+  // One drain step for one import. Each stage saves before the next await and
+  // re-reads the saved state, so a stale owner stops without writing.
   Future<void> _process(_Owner owner) async {
     final book = owner.book;
-    var state = _state(owner);
-    if (!uploadEligible(book)) {
-      _activeBook = null;
-      await _save(
-        owner,
-        state.copyWith(status: BookAnalysisStatus.waitingConsent),
-      );
-      return;
-    }
-    if (!api.configured) {
-      _activeBook = null;
-      await _save(
-        owner,
-        state.copyWith(status: BookAnalysisStatus.waitingService),
-      );
-      _retry(owner, waitingPollInterval);
-      return;
-    }
-    final config = _drainConfig ?? await api.getConfiguration();
-    if (!owner.current(this)) return;
-    _drainConfig = config;
-    if (config.accountKey.isEmpty) {
-      _activeBook = null;
-      await _save(
-        owner,
-        state.copyWith(status: BookAnalysisStatus.waitingAccount),
-      );
-      return;
-    }
-    if (state.accountKey != null && state.accountKey != config.accountKey) {
-      state = state.copyWith(
-        clearOwner: true,
-        clearFailure: true,
-        status: BookAnalysisStatus.queued,
-      );
-      await _save(owner, state);
-      if (!owner.current(this)) return;
-    }
-    if (!config.enabled || config.model != analysisModel) {
-      _activeBook = null;
-      await _save(
-        owner,
-        state.copyWith(status: BookAnalysisStatus.waitingService),
-      );
-      _retry(owner, waitingPollInterval);
-      return;
-    }
-    final manifest =
-        _manifests[book.hash] ?? await _source.buildManifest(book.path);
-    if (!owner.current(this)) return;
-    _manifests[book.hash] = manifest;
-    if (state.documentDigest != manifest.documentDigest) {
-      state = state.copyWith(
-        documentDigest: manifest.documentDigest,
-        clearGeneration: true,
-        clearFailure: true,
-        status: BookAnalysisStatus.queued,
-      );
-      await _save(owner, state);
-      if (!owner.current(this)) return;
-    }
+    final config = await _admit(owner);
+    if (config == null) return;
+    final manifest = await _currentManifest(owner);
+    if (manifest == null) return;
     _verifiedOwners[book.hash] = (owner.account, config.accountKey);
+    final state = _state(owner);
     if (state.status == BookAnalysisStatus.failed) {
       _activeBook = null;
       return;
@@ -428,6 +374,98 @@ class BookAnalysisCoordinator {
       return;
     }
     _activeBook = book.hash;
+    if (!await _ensureGeneration(owner, manifest, config)) return;
+    final pages = await _uploadManifest(owner, manifest);
+    if (pages == null) return;
+    await _advance(owner, manifest, pages);
+  }
+
+  /// Checks consent, service and account gates; returns the drain's
+  /// configuration only when processing may continue.
+  Future<AnalysisConfiguration?> _admit(_Owner owner) async {
+    var state = _state(owner);
+    if (!uploadEligible(owner.book)) {
+      _activeBook = null;
+      await _save(
+        owner,
+        state.copyWith(status: BookAnalysisStatus.waitingConsent),
+      );
+      return null;
+    }
+    if (!api.configured) {
+      _activeBook = null;
+      await _save(
+        owner,
+        state.copyWith(status: BookAnalysisStatus.waitingService),
+      );
+      _retry(owner, waitingPollInterval);
+      return null;
+    }
+    final config = _drainConfig ?? await api.getConfiguration();
+    if (!owner.current(this)) return null;
+    _drainConfig = config;
+    if (config.accountKey.isEmpty) {
+      _activeBook = null;
+      await _save(
+        owner,
+        state.copyWith(status: BookAnalysisStatus.waitingAccount),
+      );
+      return null;
+    }
+    if (state.accountKey != null && state.accountKey != config.accountKey) {
+      state = state.copyWith(
+        clearOwner: true,
+        clearFailure: true,
+        status: BookAnalysisStatus.queued,
+      );
+      await _save(owner, state);
+      if (!owner.current(this)) return null;
+    }
+    if (!config.enabled || config.model != analysisModel) {
+      _activeBook = null;
+      await _save(
+        owner,
+        state.copyWith(status: BookAnalysisStatus.waitingService),
+      );
+      _retry(owner, waitingPollInterval);
+      return null;
+    }
+    return config;
+  }
+
+  /// The cached source manifest; a changed document restarts the generation.
+  Future<AnalysisSourceManifest?> _currentManifest(_Owner owner) async {
+    final hash = owner.book.hash;
+    final manifest =
+        _manifests[hash] ?? await _source.buildManifest(owner.book.path);
+    if (!owner.current(this)) return null;
+    _manifests[hash] = manifest;
+    final state = _state(owner);
+    if (state.documentDigest != manifest.documentDigest) {
+      await _save(
+        owner,
+        state.copyWith(
+          documentDigest: manifest.documentDigest,
+          clearGeneration: true,
+          clearFailure: true,
+          status: BookAnalysisStatus.queued,
+        ),
+      );
+      if (!owner.current(this)) return null;
+    }
+    return manifest;
+  }
+
+  /// Registers the book and admits a generation if not yet done; false when
+  /// the owner went stale. A registration returning after deletion is handed
+  /// to the abandonment outbox.
+  Future<bool> _ensureGeneration(
+    _Owner owner,
+    AnalysisSourceManifest manifest,
+    AnalysisConfiguration config,
+  ) async {
+    final book = owner.book;
+    var state = _state(owner);
     if (state.cloudBookId == null) {
       final registration = await api.registerBook(
         book,
@@ -443,7 +481,7 @@ class BookAnalysisCoordinator {
             _writes.remove(write);
           }
         }
-        return;
+        return false;
       }
       if (registration.accountKey != config.accountKey) {
         throw const FormatException('Analysis registration owner changed.');
@@ -454,18 +492,26 @@ class BookAnalysisCoordinator {
         status: BookAnalysisStatus.queued,
       );
       await _save(owner, state);
-      if (!owner.current(this)) return;
+      if (!owner.current(this)) return false;
     }
     if (state.receipt == null) {
       final receipt = await api.admitGeneration(manifest, state.cloudBookId!);
-      if (!owner.current(this)) return;
-      state = state.copyWith(receipt: receipt);
-      await _save(owner, state);
-      if (!owner.current(this)) return;
+      if (!owner.current(this)) return false;
+      await _save(owner, state.copyWith(receipt: receipt));
+      if (!owner.current(this)) return false;
     }
+    return true;
+  }
+
+  /// Uploads descriptor pages not yet acknowledged; null when stale.
+  Future<List<AnalysisDescriptorPage>?> _uploadManifest(
+    _Owner owner,
+    AnalysisSourceManifest manifest,
+  ) async {
+    var state = _state(owner);
     final generation = state.generationId!;
     final pages = _pages.putIfAbsent(
-      book.hash,
+      owner.book.hash,
       () => analysisDescriptorPages(manifest.chunks),
     );
     for (
@@ -474,11 +520,24 @@ class BookAnalysisCoordinator {
       ordinal++
     ) {
       await api.putManifestPage(generation, ordinal, pages[ordinal]);
-      if (!owner.current(this)) return;
+      if (!owner.current(this)) return null;
       state = state.copyWith(manifestPagesUploaded: ordinal + 1);
       await _save(owner, state);
-      if (!owner.current(this)) return;
+      if (!owner.current(this)) return null;
     }
+    return pages;
+  }
+
+  /// Records validated server progress, then publishes a complete generation
+  /// or performs the one step its cursor asks for and polls again.
+  Future<void> _advance(
+    _Owner owner,
+    AnalysisSourceManifest manifest,
+    List<AnalysisDescriptorPage> pages,
+  ) async {
+    final book = owner.book;
+    final state = _state(owner);
+    final generation = state.generationId!;
     final progress = await api.getProgress(generation);
     if (!owner.current(this)) return;
     if (progress.generationId != generation ||
@@ -501,15 +560,17 @@ class BookAnalysisCoordinator {
       AnalysisGenerationStatus.complete => BookAnalysisStatus.finalizing,
       AnalysisGenerationStatus.failed => BookAnalysisStatus.failed,
     };
-    state = state.copyWith(
-      progress: progress,
-      status: status,
-      failureCategory: progress.error == null
-          ? null
-          : _safeCategory(progress.error!.category),
-      clearFailure: progress.error == null,
+    await _save(
+      owner,
+      state.copyWith(
+        progress: progress,
+        status: status,
+        failureCategory: progress.error == null
+            ? null
+            : _safeCategory(progress.error!.category),
+        clearFailure: progress.error == null,
+      ),
     );
-    await _save(owner, state);
     if (!owner.current(this)) return;
     if (progress.status == AnalysisGenerationStatus.failed) {
       _activeBook = null;

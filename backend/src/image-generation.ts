@@ -15,7 +15,7 @@ export interface ImageGenerationProvider {
 
 export const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 export const MAX_REFERENCE_BYTES = 7 * 1024 * 1024;
-export const MAX_IMAGE_PIXELS = 16_777_216;
+const MAX_IMAGE_PIXELS = 16_777_216;
 
 
 /** Cheap transport guard before base64 allocation; registry also fully decodes. */

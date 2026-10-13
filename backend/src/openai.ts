@@ -1,7 +1,7 @@
 import type { ImageMimeType } from "./image-generation.js";
 import type { IllustrationContext } from "./types.js";
+import { postOpenAIJson } from "./openai-client.js";
 
-const moderationsUrl = "https://api.openai.com/v1/moderations";
 
 /** Supported facts are separate evidence; the depicted scene remains the only action source. */
 export function composeImagePrompt(args: { style: string; sceneText: string; context?: IllustrationContext }): string {
@@ -21,13 +21,7 @@ export function composeImagePrompt(args: { style: string; sceneText: string; con
 }
 
 async function moderationFlagged(input: unknown): Promise<boolean> {
-  const apiKey = process.env.OPENAI_API_KEY ?? "";
-  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-  const response = await fetch(moderationsUrl, {
-    method: "POST",
-    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-    body: JSON.stringify({ model: "omni-moderation-latest", input }),
-  });
+  const response = await postOpenAIJson("/moderations", { model: "omni-moderation-latest", input });
   if (!response.ok) throw new Error(`OpenAI moderation failed with status ${response.status}`);
   const body = await response.json() as { results?: Array<{ flagged?: boolean }> };
   return body.results?.some((result) => result.flagged === true) ?? true;

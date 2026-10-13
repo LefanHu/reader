@@ -2,10 +2,11 @@ import type { ImageGenerationConfig } from "../types.js";
 import { requireImageGenerationConfig } from "../illustration-configuration.js";
 import { sniffImageMime, validateReferenceBounds, type GeneratedImage, type ImageGenerationProvider, type ReferenceImage } from "../image-generation.js";
 import { createImageOperation, decodeImageBase64, referenceDataUri, type ImageHttpOptions } from "../image-provider-http.js";
+import { OPENAI_API_BASE_URL, openAIApiKey } from "../openai-client.js";
 
 /** Low-level Responses transport; the registry validates decoded original pixels. */
 export class OpenAIImageProvider implements ImageGenerationProvider {
-  constructor(private readonly key = process.env.OPENAI_API_KEY ?? "", private readonly http: ImageHttpOptions = {}) {}
+  constructor(private readonly key = openAIApiKey(), private readonly http: ImageHttpOptions = {}) {}
 
   validateCredentials(): void {
     if (!this.key.trim()) throw new Error("OpenAI image credentials are unavailable");
@@ -18,7 +19,7 @@ export class OpenAIImageProvider implements ImageGenerationProvider {
     validateReferenceBounds(references);
     const operation = createImageOperation(this.http);
     try {
-      const response = await operation.postJson("https://api.openai.com/v1/responses", { authorization: `Bearer ${this.key}` }, {
+      const response = await operation.postJson(`${OPENAI_API_BASE_URL}/responses`, { authorization: `Bearer ${this.key}` }, {
         model: config.orchestratorModel,
         store: false,
         input: [{ role: "user", content: [

@@ -3,6 +3,7 @@ import test from "node:test";
 import sharp from "sharp";
 import { validateGeneratedImage } from "./image-generation.js";
 import { createImageTestProviderApp, layoutPrompt, renderPromptImage } from "./image-test-provider.js";
+import { startTestServer } from "./test-support/http.js";
 
 test("render is a valid deterministic 3:2 PNG the pipeline validator accepts", async () => {
   const first = await renderPromptImage("Draw a scene\nArt direction: Ink", 1);
@@ -28,12 +29,10 @@ test("newlines are kept, long lines wrap at 108 columns and markup is inert", as
 });
 
 test("HTTP contract returns base64 PNG and rejects malformed requests without rendering", async t => {
-  const server = createImageTestProviderApp().listen(0, "127.0.0.1");
-  await new Promise<void>(resolve => server.on("listening", resolve));
-  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const address = server.address();
-  assert(address && typeof address === "object");
-  const post = (body: string) => fetch(`http://127.0.0.1:${address.port}/render`, {
+  // The standalone provider owns its error bodies; production adds no translator.
+  const server = await startTestServer(createImageTestProviderApp(), { productionErrors: false });
+  t.after(server.close);
+  const post = (body: string) => fetch(`${server.baseUrl}/render`, {
     method: "POST", headers: { "content-type": "application/json" }, body,
   });
   const ok = await post(JSON.stringify({ prompt: "hello", referenceCount: 0 }));
@@ -47,5 +46,5 @@ test("HTTP contract returns base64 PNG and rejects malformed requests without re
     JSON.stringify({ prompt: "x", referenceCount: 3 }),
     "not json",
   ]) assert.equal((await post(bad)).status, 400, bad.slice(0, 30));
-  assert.equal((await fetch(`http://127.0.0.1:${address.port}/health`)).status, 200);
+  assert.equal((await fetch(`${server.baseUrl}/health`)).status, 200);
 });

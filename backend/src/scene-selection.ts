@@ -1,6 +1,6 @@
 import type { ChapterInput, Paragraph } from "./types.js";
+import { postOpenAIJson } from "./openai-client.js";
 
-const decisionsUrl = "https://api.openai.com/v1/decisions";
 /** Shorter paragraphs (headings, one-liners) are context only, never a scene peak. */
 const MIN_CANDIDATE_CHARACTERS = 40;
 
@@ -26,14 +26,8 @@ export type SelectedScene = { startParagraphId: string; endParagraphId: string }
 export type DecisionRequest = (body: Record<string, unknown>) => Promise<unknown>;
 
 export const createDecision: DecisionRequest = async (body) => {
-  const apiKey = process.env.OPENAI_API_KEY ?? "";
-  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
   const startedAt = Date.now();
-  const response = await fetch(decisionsUrl, {
-    method: "POST",
-    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const response = await postOpenAIJson("/decisions", body);
   if (!response.ok) {
     // Never include the response body: provider errors can echo prompt text.
     console.error(JSON.stringify({

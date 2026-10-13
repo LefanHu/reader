@@ -89,13 +89,13 @@ variable "openai_image_model" {
 }
 
 variable "image_provider_secret_ids" {
-  description = "Provider key (seedream, qwen, xai, flux) -> Secret Manager container with an enabled version. Worker-only; absent providers stay unavailable."
+  description = "Provider key -> Secret Manager container with an enabled version, discovered from the illustrations stack's image_provider_secret_ids output. Worker-only; absent providers stay unavailable."
   type        = map(string)
   default     = {}
 
   validation {
-    condition     = alltrue([for provider in keys(var.image_provider_secret_ids) : contains(["seedream", "qwen", "xai", "flux"], provider)])
-    error_message = "Only seedream, qwen, xai and flux use Secret Manager keys."
+    condition     = alltrue([for provider in keys(var.image_provider_secret_ids) : contains(keys(local.image_provider_key_names), provider)])
+    error_message = "Only providers with a worker key environment variable use Secret Manager keys."
   }
 }
 

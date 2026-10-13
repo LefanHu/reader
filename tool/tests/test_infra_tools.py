@@ -13,6 +13,7 @@ from support import ROOT, load_tool
 
 
 defines = load_tool("write_firebase_defines")
+stack_tfvars = load_tool("stack_tfvars")
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -55,6 +56,60 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual([], list(output.parent.glob(".defines-*")))
 
 
+class StackTfvarsTests(unittest.TestCase):
+    """Verify each stack receives exactly the shared environment values it declares."""
+    # Supplied privately (TF_VAR_*) or by the tools (-var), never by environment files.
+    EXTERNAL = {"foundation": {"google_client_id", "google_client_secret"}, "illustrations": set(), "runtime": {"image"}}
+
+    @staticmethod
+    def required(stack):
+        """Variables of a stack root module that have no default."""
+        names = set()
+        for path in (ROOT / "infra" / stack).glob("*.tf"):
+            for block in path.read_text().split('\nvariable "')[1:]:
+                name, body = block.split('"', 1)
+                body = body.split("\n}", 1)[0]
+                if not any(line.strip().startswith("default") for line in body.splitlines()):
+                    names.add(name)
+        return names
+
+    def selected(self, stack, source):
+        return {line.split("=", 1)[0].strip() for line in stack_tfvars.select(ROOT / "infra", stack, source).splitlines()}
+
+    def test_every_environment_value_reaches_only_stacks_that_declare_it(self):
+        source = ROOT / "infra/environments/dev.tfvars"
+        every = {name for name, _ in stack_tfvars.assignments(source)}
+        received = set()
+        for stack in stack_tfvars.ENVIRONMENT_STACKS:
+            names = self.selected(stack, source)
+            self.assertLessEqual(names, stack_tfvars.declared(ROOT / "infra" / stack))
+            self.assertLessEqual(self.required(stack) - self.EXTERNAL[stack], names, stack)
+            received |= names
+        self.assertEqual(every, received)
+
+    def test_assignments_are_copied_verbatim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "env.tfvars"
+            source.write_text('# note\nproject_id = "a#b" # trailing\n\nimage_test_provider_enabled = true\nproject_name = "x"\n')
+            self.assertEqual('project_id = "a#b" # trailing\nimage_test_provider_enabled = true\n',
+                             stack_tfvars.select(ROOT / "infra", "runtime", source))
+
+    def test_value_no_stack_declares_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "env.tfvars"
+            source.write_text('project_id = "a"\nprojet_name = "typo"\n')
+            with self.assertRaisesRegex(ValueError, "projet_name"):
+                stack_tfvars.select(ROOT / "infra", "foundation", source)
+
+    def test_multi_line_and_repeated_values_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "env.tfvars"
+            for text in ('project_id = {\n  a = 1\n}\n', 'project_id = <<EOT\nx\nEOT\n', 'project_id = "a"\nproject_id = "b"\n'):
+                with self.subTest(text=text):
+                    source.write_text(text)
+                    with self.assertRaises(ValueError):
+                        stack_tfvars.select(ROOT / "infra", "foundation", source)
+
 
 # These stubs execute the actual shell entrypoints against a disposable checkout.
 # They record cloud/tool requests, never contacting a service or changing the repo.
@@ -75,6 +130,8 @@ if name=='terraform':
         if key=='project_id' and os.environ.get('MISSING_CORE')=='1': sys.exit(1)
         if key in ('firebase_config', 'firebase_macos_config'):
             print(base64.b64encode(plistlib.dumps({'API_KEY':'key','GOOGLE_APP_ID':'app','GCM_SENDER_ID':'sender','PROJECT_ID':'project','CLIENT_ID':'native.apps.googleusercontent.com','REVERSED_CLIENT_ID':'com.googleusercontent.apps.native'})).decode())
+        elif key=='image_provider_secret_ids':
+            print(json.dumps({'seedream':'reader-byteplus-api-key','qwen':'reader-qwen-api-key','xai':'reader-xai-api-key','flux':'reader-bfl-api-key'}))
         else: print({'google_client_id':'test.apps.googleusercontent.com','project_id':'reader-test','build_service_account':'build@example.test','openai_secret_id':'openai','api_url':'https://api.test','worker_url':'https://worker.test','image':'test@sha256:'+'a'*64}.get(key,''))
     if 'list' in args: print('google_project.state\ngoogle_storage_bucket.state')
 elif name=='gcloud':
@@ -108,7 +165,8 @@ class DeploymentTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         shutil.copytree(ROOT / "tool", self.root / "tool", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copytree(ROOT / "infra/environments", self.root / "infra/environments")
+        # Stack declarations are needed to filter the shared environment tfvars.
+        shutil.copytree(ROOT / "infra", self.root / "infra", ignore=shutil.ignore_patterns(".terraform"))
         self.bin = self.root / "bin"
         self.bin.mkdir()
         for name in ["terraform", "gcloud", "npm", "curl", "git"]:
@@ -293,6 +351,39 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn('Runtime is not deployed', result.stdout)
         self.assertFalse(any('apply' in c for c in calls))
+
+    def test_each_stack_plans_with_its_own_filtered_environment_values(self):
+        result, calls = self.execute("plan_infra", RUNTIME_EXISTS="1")
+        self.assertEqual(0, result.returncode, result.stderr)
+        plans = [c for c in calls if c[0] == "terraform" and "plan" in c]
+        self.assertEqual(["foundation", "illustrations", "runtime"], [Path(c[1][len("-chdir="):]).name for c in plans])
+        for call in plans:
+            stack = Path(call[1][len("-chdir="):]).name
+            var_files = [a[len("-var-file="):] for a in call if a.startswith("-var-file=")]
+            self.assertEqual(f"{stack}.tfvars", Path(var_files[0]).name)
+            self.assertNotIn(str(self.root / "infra/environments/dev.tfvars"), var_files)
+
+    def test_secret_prompt_restores_terminal_echo_when_interrupted(self):
+        import pty
+        import signal
+        import termios
+        import time
+        script = f'. "{self.root}/tool/infra_common.sh"; prepare_workspace; printf "%s\\n" "$WORK_DIR" >"{self.root}/workdir"; read_secret value'
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execvp("sh", ["sh", "-c", script])
+        try:
+            deadline = time.monotonic() + 10
+            while termios.tcgetattr(terminal)[3] & termios.ECHO:
+                self.assertLess(time.monotonic(), deadline, "prompt never disabled echo")
+                time.sleep(0.05)
+            os.kill(pid, signal.SIGINT)
+            _, status = os.waitpid(pid, 0)
+            self.assertEqual(130, os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status >> 8)
+            self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ECHO)
+            self.assertFalse(Path((self.root / "workdir").read_text().strip()).exists())
+        finally:
+            os.close(terminal)
 
     def test_core_deployment_retains_existing_runtime_endpoint(self):
         result, calls = self.execute("deploy_backend", "--scope", "core", RUNTIME_EXISTS='1')
