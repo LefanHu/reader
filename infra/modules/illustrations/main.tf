@@ -203,9 +203,9 @@ resource "google_storage_bucket_iam_member" "api_objects" {
   member = "serviceAccount:${google_service_account.api.email}"
 
   condition {
-    title       = "ReaderUserAndWorkObjectsOnly"
-    description = "The API may manage only per-user objects and the shared catalog works."
-    expression  = "resource.type != 'storage.googleapis.com/Object' || resource.name.startsWith('projects/_/buckets/${google_storage_bucket.illustrations.name}/objects/users/') || resource.name.startsWith('projects/_/buckets/${google_storage_bucket.illustrations.name}/objects/works/')"
+    title       = "ReaderUserAndTextObjectsOnly"
+    description = "The API may manage only per-user objects and shared text references."
+    expression  = "resource.type != 'storage.googleapis.com/Object' || resource.name.startsWith('projects/_/buckets/${google_storage_bucket.illustrations.name}/objects/users/') || resource.name.startsWith('projects/_/buckets/${google_storage_bucket.illustrations.name}/objects/texts/')"
   }
 }
 

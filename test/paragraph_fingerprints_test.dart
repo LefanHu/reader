@@ -2,9 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:reader/catalog_works/work_text.dart';
 import 'package:reader/text/text_block.dart';
 import 'package:reader/text/text_section.dart';
+import 'package:reader/text_identity/paragraph_fingerprints.dart';
 
 import 'support/memory_document_store.dart';
 
@@ -20,9 +20,9 @@ void main() {
       ) as Map<String, dynamic>;
       for (final item in (golden['cases'] as List).cast<Map>()) {
         final text = item['text'] as String;
-        expect(normalizeWorkParagraph(text), item['normalized'], reason: text);
+        expect(normalizeParagraph(text), item['normalized'], reason: text);
         expect(
-          _hex(workParagraphFingerprint(text)),
+          _hex(paragraphFingerprint(text)),
           item['fingerprint'],
           reason: text,
         );
@@ -31,7 +31,7 @@ void main() {
   );
 
   test(
-    'book text fingerprints every block in reading order and counts sections',
+    'book fingerprints cover every block in reading order and counts sections',
     () async {
       final documents = MemoryDocumentStore(
         sections: const [
@@ -53,17 +53,20 @@ void main() {
           ),
         ],
       );
-      final text = await buildWorkText('book.epub', documents: documents);
-      expect(text.sectionCount, 2);
-      expect(text.fingerprints.length, 3 * workFingerprintBytes);
-      expect(text.fingerprints.sublist(0, 8), everyElement(0));
+      final book = await buildBookFingerprints(
+        'book.epub',
+        documents: documents,
+      );
+      expect(book.sectionCount, 2);
+      expect(book.fingerprints.length, 3 * fingerprintBytes);
+      expect(book.fingerprints.sublist(0, 8), everyElement(0));
       expect(
-        text.fingerprints.sublist(8, 16),
-        workParagraphFingerprint('It was a bright cold day in April.'),
+        book.fingerprints.sublist(8, 16),
+        paragraphFingerprint('It was a bright cold day in April.'),
       );
       expect(
-        text.fingerprints.sublist(16),
-        workParagraphFingerprint('And the clocks were striking thirteen.'),
+        book.fingerprints.sublist(16),
+        paragraphFingerprint('And the clocks were striking thirteen.'),
       );
     },
   );

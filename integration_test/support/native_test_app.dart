@@ -10,7 +10,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/account/api.dart';
 import 'package:reader/catalog/catalog_book.dart';
 import 'package:reader/catalog/file_catalog_store.dart';
-import 'package:reader/catalog_works/works_api.dart';
 import 'package:reader/app/reader_controller.dart';
 import 'package:reader/book_analysis/services.dart';
 import 'package:reader/identity/cloud_identity.dart';
@@ -26,6 +25,7 @@ import 'package:reader/narration/player.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/document_store.dart';
 import 'package:reader/text/viewport.dart';
+import 'package:reader/text_identity/text_identity_api.dart';
 
 import '../../test/fixtures/epub.dart';
 import '../../test/support/fake_narration_api.dart';
@@ -59,7 +59,7 @@ class NativeTestApp {
   AccountApi? _accountApi;
   BookAnalysisServices? _analysisServices;
   BookAnalysisServices Function(Directory root)? _analysisServicesFactory;
-  WorksApi? _worksApi;
+  TextIdentityApi? _identityApi;
   bool _hasNarration = false;
   final _screenshotKey = GlobalKey();
   bool _mounted = false;
@@ -77,7 +77,7 @@ class NativeTestApp {
     IllustrationApi? illustrationApi,
     BookAnalysisServices? analysisServices,
     BookAnalysisServices Function(Directory root)? analysisServicesFactory,
-    WorksApi? worksApi,
+    TextIdentityApi? identityApi,
     Uint8List? textBytes,
   }) async {
     final root = await Directory.systemTemp.createTemp('reader_native_test');
@@ -90,7 +90,7 @@ class NativeTestApp {
     app._accountApi = accountApi;
     app._analysisServices = analysisServices;
     app._analysisServicesFactory = analysisServicesFactory;
-    app._worksApi = worksApi;
+    app._identityApi = identityApi;
     app._hasNarration = hasNarration;
     if (localNarration) {
       app.localNarrationSource = await AppleNarrationSource.create(root: root);
@@ -132,9 +132,9 @@ class NativeTestApp {
       cloudIdentity: cloudIdentity,
       accountApi: accountApi,
       analysisServices: analysisServicesFactory?.call(root) ?? analysisServices,
-      works: worksApi == null
+      identities: identityApi == null
           ? null
-          : (api: worksApi, root: root, documents: null),
+          : (api: identityApi, root: root, documents: null),
       narrationApi: api,
       narrationSource: app.localNarrationSource,
       narrationPlayer: app._initializingPlayer,
@@ -182,9 +182,9 @@ class NativeTestApp {
       accountApi: _accountApi,
       analysisServices:
           _analysisServicesFactory?.call(root) ?? _analysisServices,
-      works: _worksApi == null
+      identities: _identityApi == null
           ? null
-          : (api: _worksApi!, root: root, documents: null),
+          : (api: _identityApi!, root: root, documents: null),
     );
     _ownedController = controller;
     await controller.initialize();

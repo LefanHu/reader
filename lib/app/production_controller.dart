@@ -5,7 +5,6 @@ import '../account/http_account_api.dart';
 import '../book_analysis/file_analysis_store.dart';
 import '../book_analysis/http_book_analysis_api.dart';
 import '../catalog/file_catalog_store.dart';
-import '../catalog_works/http_works_api.dart';
 import '../file_cloud_deletion_outbox.dart';
 import '../identity/firebase_cloud_identity.dart';
 import '../illustrations/file_illustration_store.dart';
@@ -17,6 +16,7 @@ import '../narration/http_narration_api.dart';
 import '../narration/narration_provider.dart';
 import '../narration/native_narration_player.dart';
 import '../preferences/preference_settings_store.dart';
+import '../text_identity/http_text_identity_api.dart';
 import 'reader_controller.dart';
 
 /// Composition root: builds the production dependency graph of file stores,
@@ -45,8 +45,8 @@ Future<ReaderController> createProductionController() async {
       store: FileAnalysisStore(store.root),
       documents: null,
     ),
-    works: (
-      api: HttpWorksApi(identity: identity, client: client),
+    identities: (
+      api: HttpTextIdentityApi(identity: identity, client: client),
       root: store.root,
       documents: null,
     ),

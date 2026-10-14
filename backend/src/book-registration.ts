@@ -6,11 +6,6 @@ import { HttpError, requireString } from "./http.js";
 /** A tombstone without `purgedAt` blocks re-registration only this long (covers a crashed purge). */
 const PURGE_GRACE_MILLIS = 15 * 60_000;
 
-/** Deterministic server ID of a user's book; every cloud feature shares it. */
-export function ownedBookId(uid: string, fingerprint: string): string {
-  return createHash("sha256").update(`${uid}:${fingerprint}:illustrations`).digest("hex").slice(0, 40);
-}
-
 /** Metadata registration; no profile, provider or credit coupling. */
 export async function registerOwnedBook<T = undefined>(args: {
   db: Firestore;
@@ -22,7 +17,7 @@ export async function registerOwnedBook<T = undefined>(args: {
   const fingerprint = requireString(metadata.fingerprint, "fingerprint", 128);
   const title = requireString(metadata.title, "title", 500);
   const chapterCount = Math.max(1, Math.min(10000, Number(metadata.chapterCount) || 1));
-  const bookId = ownedBookId(uid, fingerprint);
+  const bookId = createHash("sha256").update(`${uid}:${fingerprint}:illustrations`).digest("hex").slice(0, 40);
   const extension = await db.runTransaction(async transaction => {
     const fence = await readBookFence(transaction, db, "books", uid, bookId);
     if (fence.accountDeleted) throw new HttpError(410, "Account was deleted.");

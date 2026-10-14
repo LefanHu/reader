@@ -161,19 +161,19 @@ export class MemoryReference {
   async delete() { this.remove(); }
 }
 
-/** A collection query supporting `==`, `array-contains` and Timestamp `<` filters plus `limit`. */
+/** A collection query supporting `==`, `array-contains-any` and Timestamp `<` filters plus `limit`. */
 export class MemoryCollection {
   constructor(
     readonly db: MemoryFirestore,
     readonly path: string,
-    readonly filters: Array<[string, "==" | "<" | "array-contains", unknown]> = [],
+    readonly filters: Array<[string, "==" | "<" | "array-contains-any", unknown]> = [],
     readonly max = Infinity,
   ) {}
 
   doc(id: string) { return new MemoryReference(this.db, `${this.path}/${id}`); }
 
   where(key: string, operation: string, value: unknown) {
-    assert(operation === "==" || operation === "<" || operation === "array-contains", `unsupported operator ${operation}`);
+    assert(operation === "==" || operation === "<" || operation === "array-contains-any", `unsupported operator ${operation}`);
     return new MemoryCollection(this.db, this.path, [...this.filters, [key, operation, value]], this.max);
   }
 
@@ -187,7 +187,9 @@ export class MemoryCollection {
       if (!path.startsWith(`${this.path}/`) || path.slice(this.path.length + 1).includes("/")) continue;
       const matches = this.filters.every(([key, operation, value]) => {
         if (operation === "==") return data[key] === value;
-        if (operation === "array-contains") return Array.isArray(data[key]) && (data[key] as unknown[]).includes(value);
+        if (operation === "array-contains-any") {
+          return Array.isArray(data[key]) && (value as unknown[]).some(item => (data[key] as unknown[]).includes(item));
+        }
         const field = data[key];
         return field instanceof Timestamp && field.toMillis() < (value as Timestamp).toMillis();
       });

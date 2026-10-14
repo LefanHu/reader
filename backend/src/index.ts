@@ -28,7 +28,7 @@ import { bookAnalysisApiRouter } from "./book-analysis-api.js";
 import { bookAnalysisWorkerRouter } from "./book-analysis-worker.js";
 import { ResponsesBookAnalysisProvider } from "./book-analysis-provider.js";
 import { ASSET_RETENTION_MILLISECONDS } from "./durations.js";
-import { worksApiRouter } from "./works-api.js";
+import { textsApiRouter } from "./texts-api.js";
 
 if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
 const db = getFirestore();
@@ -93,7 +93,7 @@ app.use("/api/book-analysis", bookAnalysisApiRouter({
   enqueue: (path, payload, id) => enqueue(path, payload, id, process.env.BOOK_ANALYSIS_TASK_QUEUE ?? "reader-book-analysis"),
 }));
 
-app.use("/api", worksApiRouter({ db, storage, bucket: bucketName, requireFeature }));
+app.use("/api", textsApiRouter({ db, storage, bucket: bucketName, requireFeature }));
 
 app.get("/api/fingerprint-key", asyncRoute(async (req, res) => {
   if (!fingerprintSecret) throw new HttpError(503, "Fingerprinting is not configured.");

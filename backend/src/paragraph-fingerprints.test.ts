@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { HttpError } from "./http.js";
-import { fingerprintList, normalizeParagraph, paragraphFingerprint, searchTokens, workIdFor } from "./work-text.js";
+import { fingerprintList, normalizeParagraph, paragraphFingerprint, SKETCH_SIZE, sketchOf } from "./paragraph-fingerprints.js";
 
 const golden = JSON.parse(readFileSync(new URL("../test-fixtures/fingerprints.json", import.meta.url), "utf8")) as {
   cases: { text: string; normalized: string; fingerprint: string }[];
@@ -28,17 +28,10 @@ test("fingerprint lists must be whole, non-empty 8-byte values", () => {
   assert.throws(() => fingerprintList(Buffer.alloc(0)), HttpError);
 });
 
-test("search tokens are lowercase, deduplicated and at least two characters", () => {
-  assert.deepEqual(searchTokens("Pride and Prejudice — Jane AUSTEN, and a"), ["pride", "and", "prejudice", "jane", "austen"]);
-});
-
-test("work identity ignores a leading article, case, punctuation and accents", () => {
-  const id = workIdFor("The storm of steel", "Ernst Jünger");
-  assert.match(id, /^[0-9a-f]{20}$/);
-  assert.equal(workIdFor("Storm of Steel", "ernst junger"), id);
-  assert.equal(workIdFor("  STORM of steel!", "Ernst  Jünger"), id);
-  assert.notEqual(workIdFor("In Stahlgewittern", "Ernst Jünger"), id);
-  assert.notEqual(workIdFor("The storm of steel", "Someone Else"), id);
-  // A title that is only an article keeps it.
-  assert.notEqual(workIdFor("The", "Author"), workIdFor("", "Author"));
+test("the sketch is the smallest distinct identifiable fingerprints in numeric order", () => {
+  const values = Array.from({ length: 100 }, (_, index) => (1000 - index).toString(16).padStart(16, "0"));
+  const sketch = sketchOf(["", ...values, values[0]!, ""]);
+  assert.equal(sketch.length, SKETCH_SIZE);
+  assert.deepEqual(sketch, values.slice(-SKETCH_SIZE).reverse());
+  assert.deepEqual(sketchOf(["", ""]), []);
 });
