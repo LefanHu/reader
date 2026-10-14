@@ -19,6 +19,7 @@ class EffectFrame {
     required this.time,
     required this.wordClock,
     required this.activation,
+    required this.activationTime,
     required this.colors,
   });
 
@@ -43,6 +44,10 @@ class EffectFrame {
 
   /// 0 at rest, 1 once a tap has asked for the illustration.
   final double activation;
+
+  /// Seconds into the tap response along the forward timeline, uneased, for
+  /// effects that simulate motion. Reversing rewinds it at reverse speed.
+  final double activationTime;
 
   /// Active theme; ink is `onSurface`, accent is `primary`.
   final ColorScheme colors;
@@ -327,7 +332,8 @@ class _EffectPainter extends CustomPainter {
 
   final TextPainter text;
   final TextEffect effect;
-  final Animation<double> clock, activation;
+  final Animation<double> clock;
+  final AnimationController activation;
   final ColorScheme colors;
   final TextRange anchor;
   final List<TextRange> words;
@@ -360,6 +366,8 @@ class _EffectPainter extends CustomPainter {
         time: time,
         wordClock: wordClock,
         activation: Curves.easeInOut.transform(activation.value),
+        activationTime:
+            activation.value * activation.duration!.inMicroseconds / 1e6,
         colors: colors,
       ),
     );

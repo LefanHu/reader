@@ -1,5 +1,6 @@
 import 'conjure_effect.dart';
 import 'effect_canvas.dart';
+import 'gravity_effect.dart';
 import 'illustration_hint_effects.dart';
 import 'narration_effects.dart';
 import 'sample_passages.dart';
@@ -45,6 +46,14 @@ const illustrationEffects = [
     kansas,
     conjure,
     activation: Duration(milliseconds: 2400),
+  ),
+  TextEffectEntry(
+    'Gravity',
+    'One letter has come loose. Tap the passage and it gives up: every letter '
+        'tumbles into a heap, and the loose one lands last. Tap again to undo.',
+    downTheHole,
+    gravity,
+    activation: Duration(milliseconds: 4200),
   ),
   TextEffectEntry(
     'Ink underline',

@@ -160,3 +160,12 @@ const kansas = SamplePassage(
       'miles.',
   anchor: 'the midst of the great Kansas prairies',
 );
+
+/// Preview passage; see `source` for the book.
+const downTheHole = SamplePassage(
+  "Alice's Adventures in Wonderland, Lewis Carroll",
+  'Down, down, down. Would the fall never come to an end? "I wonder how '
+      'many miles I\'ve fallen by this time?" she said aloud. "I must be '
+      'getting somewhere near the centre of the earth."',
+  anchor: 'Would the fall never come to an end?',
+);
