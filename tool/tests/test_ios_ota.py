@@ -1,6 +1,9 @@
 """An installer must not advertise builds with unusable or expired provisioning."""
 from datetime import datetime, timedelta, timezone
+import os
+from pathlib import Path
 import plistlib
+import tempfile
 import unittest
 
 from support import load_tool
@@ -52,6 +55,27 @@ class IosOtaTests(unittest.TestCase):
             ota.with_build_number(pubspec, 10),
             "name: reader\nversion: 1.2.3+10\ndependencies:\n  version: 4.5.6+7\n",
         )
+
+    def test_build_number_bump_keeps_pub_resolution_current(self):
+        # A newer pubspec made every flutter command re-resolve against pub.dev
+        # while holding the SDK startup lock, hanging concurrent commands.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".dart_tool").mkdir()
+            lock, config, pubspec = (root / "pubspec.lock",
+                                     root / ".dart_tool" / "package_config.json",
+                                     root / "pubspec.yaml")
+            for path in (lock, config, pubspec):
+                path.write_text("")
+            os.utime(lock, (0, 0))
+            os.utime(config, (0, 0))
+            ota.mark_dependencies_current(root)
+            for path in (lock, config):
+                self.assertGreater(path.stat().st_mtime_ns, pubspec.stat().st_mtime_ns)
+
+    def test_dependency_marking_tolerates_an_unresolved_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ota.mark_dependencies_current(Path(directory))
 
     def test_pubspec_without_a_build_number_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "version"):

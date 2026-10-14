@@ -39,6 +39,18 @@ def with_build_number(pubspec_text, number):
     return _VERSION.sub(lambda match: f"{match.group(1)}{number}", pubspec_text, count=1)
 
 
+def mark_dependencies_current(root):
+    """Keep pub's lock and package config newer than a build-number-only pubspec edit.
+
+    Flutter skips `pub get` only while pubspec.yaml is older than both files, and pub
+    never rewrites them when nothing changed, so without this every later flutter
+    command re-resolves against pub.dev while holding the SDK startup lock.
+    """
+    for path in (root / "pubspec.lock", root / ".dart_tool" / "package_config.json"):
+        if path.exists():
+            os.utime(path)
+
+
 def https_base(value):
     """Require a plain HTTPS hosting URL; credentials must not enter QR codes."""
     parsed = urlsplit(value)
@@ -298,6 +310,7 @@ def main():
             ipa = build_ipa(args.defines, args.profile, build_number)
             # The number is consumed once an IPA carrying it exists, even if publishing fails.
             PUBSPEC.write_text(with_build_number(PUBSPEC.read_text(), build_number))
+            mark_dependencies_current(ROOT)
         else:
             ipa = args.ipa
         publish(ipa, base_url)
