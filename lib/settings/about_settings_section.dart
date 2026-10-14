@@ -10,6 +10,7 @@ class AboutSettingsSection extends StatelessWidget {
     required this.busy,
     required this.onResetPreferences,
     required this.packageInfo,
+    required this.onPreviewTextEffects,
   });
 
   /// Metadata lookup lazily initiated by the settings shell.
@@ -20,6 +21,9 @@ class AboutSettingsSection extends StatelessWidget {
 
   /// Runs the shell-owned preference reset confirmation.
   final VoidCallback onResetPreferences;
+
+  /// Opens the development preview of reading text effects.
+  final VoidCallback onPreviewTextEffects;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -44,6 +48,11 @@ class AboutSettingsSection extends StatelessWidget {
           applicationVersion: null,
         ),
         child: const Text('Open-source licenses'),
+      ),
+      const SizedBox(height: 12),
+      OutlinedButton(
+        onPressed: onPreviewTextEffects,
+        child: const Text('Preview text effects'),
       ),
       const SizedBox(height: 24),
       OutlinedButton(

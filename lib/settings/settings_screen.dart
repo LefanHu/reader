@@ -11,6 +11,7 @@ import '../preferences/library_sort.dart';
 import '../preferences/reader_settings.dart';
 import '../preferences/reading_mode.dart';
 import '../preferences/reading_theme.dart';
+import '../text_effects/text_effects_screen.dart';
 import '../theme.dart';
 
 import 'account_settings_section.dart';
@@ -245,6 +246,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   packageInfo: _packageInfo,
                   busy: _busy,
                   onResetPreferences: _resetPreferences,
+                  onPreviewTextEffects: () => Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => TextEffectsScreen(
+                        settings: controller.preferences.settings,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             },

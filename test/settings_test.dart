@@ -26,6 +26,7 @@ import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/settings/settings_navigation.dart';
 import 'package:reader/settings/settings_screen.dart';
 import 'package:reader/text/text_position.dart';
+import 'package:reader/text_effects/text_effects_screen.dart';
 import 'package:reader/theme.dart';
 
 import 'fixtures/catalog_book.dart';
@@ -691,6 +692,18 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('About opens the text effects preview', (tester) async {
+    await _mount(tester);
+    await _section(tester, 'About');
+    final preview = find.text('Preview text effects');
+    await tester.ensureVisible(preview);
+    await tester.tap(preview);
+    // The preview animates continuously, so it never settles.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byType(TextEffectsScreen), findsOneWidget);
+  });
 
   testWidgets(
     'desktop sidebar keeps usage signed out and clears cache without false errors',
