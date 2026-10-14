@@ -116,14 +116,22 @@ class _Meter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // Fills from empty when a balance arrives, so a refresh visibly lands.
     return ExcludeSemantics(
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(4),
-        child: LinearProgressIndicator(
-          value: total == 0 ? 0 : remaining / total,
-          minHeight: 8,
-          color: scheme.primary,
-          backgroundColor: scheme.outlineVariant,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: total == 0 ? 0 : remaining / total),
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 700),
+        curve: Curves.easeOutCubic,
+        builder: (context, value, _) => ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: value,
+            minHeight: 8,
+            color: scheme.primary,
+            backgroundColor: scheme.outlineVariant,
+          ),
         ),
       ),
     );

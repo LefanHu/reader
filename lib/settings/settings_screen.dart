@@ -21,6 +21,7 @@ import 'storage_settings_section.dart';
 import 'about_settings_section.dart';
 import 'settings_choice_tile.dart';
 import 'settings_group.dart';
+import 'settings_page_switcher.dart';
 
 enum _Section {
   account('Account', Icons.account_circle_outlined),
@@ -158,12 +159,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             child: _sections(selected, sidebar: true),
                           ),
                           const VerticalDivider(width: 1),
-                          Expanded(child: _detail(selected!)),
+                          Expanded(
+                            child: SettingsPageSwitcher(
+                              depth: 1,
+                              horizontal: false,
+                              child: KeyedSubtree(
+                                key: ValueKey(selected),
+                                child: _detail(selected!),
+                              ),
+                            ),
+                          ),
                         ],
                       )
-                    : selected == null
-                    ? _sections(null)
-                    : _detail(selected),
+                    : SettingsPageSwitcher(
+                        depth: selected == null ? 0 : 1,
+                        horizontal: true,
+                        child: KeyedSubtree(
+                          key: ValueKey(selected),
+                          child: selected == null
+                              ? _sections(null)
+                              : _detail(selected),
+                        ),
+                      ),
               ),
             ),
           ),

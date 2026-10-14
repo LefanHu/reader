@@ -54,6 +54,7 @@ Future<ReaderController> _mount(
   TextDirection direction = TextDirection.ltr,
   ReadingTheme theme = ReadingTheme.paper,
   ReaderController? suppliedController,
+  bool reduceMotion = false,
 }) async {
   await tester.binding.setSurfaceSize(Size(width, 900));
   addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -73,6 +74,7 @@ Future<ReaderController> _mount(
           data: MediaQueryData(
             size: Size(width, 900),
             textScaler: TextScaler.linear(scale),
+            disableAnimations: reduceMotion,
           ),
           child: Directionality(
             textDirection: direction,
@@ -956,6 +958,58 @@ void main() {
       expect(controller.accountUsage, isNull);
     },
   );
+
+  for (final direction in TextDirection.values) {
+    testWidgets(
+      'compact ${direction.name} pages slide forward from the end edge and back from the start',
+      (tester) async {
+        await _mount(tester, direction: direction);
+        final end = direction == TextDirection.ltr ? 1 : -1;
+        double dx(Finder finder) =>
+            tester.getTopLeft(finder).dx -
+            tester.getTopLeft(find.byType(Scaffold)).dx;
+        final readingTile = find.widgetWithText(ListTile, 'Reading');
+        final listStart = dx(find.widgetWithText(ListTile, 'Appearance'));
+
+        await tester.tap(readingTile);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        final serif = find.text('Serif font');
+        expect(serif, findsOneWidget);
+        expect(readingTile, findsOneWidget);
+        // The leaving list moves toward the start edge.
+        expect(
+          (dx(find.widgetWithText(ListTile, 'Appearance')) - listStart) * end,
+          lessThan(0),
+        );
+        await tester.pumpAndSettle();
+        expect(readingTile, findsNothing);
+        expect(serif, findsOneWidget);
+
+        await tester.tap(find.byType(BackButton));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        expect(
+          (dx(find.widgetWithText(ListTile, 'Appearance')) - listStart) * end,
+          lessThan(0),
+        );
+        await tester.pumpAndSettle();
+        expect(serif, findsNothing);
+        expect(dx(find.widgetWithText(ListTile, 'Appearance')), listStart);
+      },
+    );
+  }
+
+  testWidgets('reduced motion swaps settings pages in one frame', (
+    tester,
+  ) async {
+    await _mount(tester, reduceMotion: true);
+    await tester.tap(find.widgetWithText(ListTile, 'Reading'));
+    await tester.pump();
+    expect(find.text('Serif font'), findsOneWidget);
+    expect(find.widgetWithText(ListTile, 'Reading'), findsNothing);
+    expect(tester.hasRunningAnimations, isFalse);
+  });
 
   for (final direction in TextDirection.values) {
     testWidgets(
