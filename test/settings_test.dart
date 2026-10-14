@@ -23,8 +23,11 @@ import 'package:reader/narration/narration_manifest.dart';
 import 'package:reader/preferences/library_filter.dart';
 import 'package:reader/preferences/library_sort.dart';
 import 'package:reader/preferences/reading_theme.dart';
+import 'package:reader/settings/counts.dart';
+import 'package:reader/settings/library_summary.dart';
 import 'package:reader/settings/settings_navigation.dart';
 import 'package:reader/settings/settings_screen.dart';
+import 'package:reader/settings/usage_settings_section.dart';
 import 'package:reader/text/text_position.dart';
 import 'package:reader/text_effects/text_effects_screen.dart';
 import 'package:reader/theme.dart';
@@ -197,8 +200,7 @@ Future<DevApiIdentity> _sharedIdentity(WidgetTester tester) async =>
 
 /// Narration balance line exactly as Settings renders [usage].
 String _narrationBalance(AccountUsage usage) =>
-    '${usage.narrationRemaining} of ${usage.narrationMonthlyLimit}\n'
-    'Resets ${usage.narrationResetAt.toUtc().toIso8601String().split('T').first} UTC';
+    UsageSettingsSection.narrationBalance(usage);
 
 /// Becomes true once [hold] has intercepted its request.
 bool Function() _heldOnce(DevApiHold hold) {
@@ -505,6 +507,8 @@ void main() {
           OutlinedButton,
           'Delete cloud account',
         );
+        await tester.ensureVisible(deleteButton);
+        await tester.pumpAndSettle();
         await tester.tap(deleteButton);
         await tester.pumpAndSettle();
         await tester.tap(find.text('Cancel'));
@@ -931,6 +935,66 @@ void main() {
     expect(find.text('Settings'), findsOneWidget);
     expect(find.byType(SettingsScreen), findsOneWidget);
   });
+
+  testWidgets(
+    'account totals come from the local catalog without a usage request',
+    (tester) async {
+      final controller = await testController(
+        books: [
+          testBook(hash: 'a' * 64, progress: 1),
+          testBook(hash: 'b' * 64, progress: .5),
+        ],
+      );
+      await _mount(tester, suppliedController: controller);
+      await _section(tester, 'Account');
+      final words = LibrarySummary.of(controller.catalog.books).wordsRead;
+      expect(find.text('2'), findsOneWidget);
+      expect(find.text('1'), findsOneWidget);
+      expect(find.text(compactCount(words)), findsOneWidget);
+      expect(find.text('Reading days'), findsOneWidget);
+      expect(controller.usageLoading, isFalse);
+      expect(controller.accountUsage, isNull);
+    },
+  );
+
+  for (final direction in TextDirection.values) {
+    testWidgets(
+      'account section fits large ${direction.name} text on a phone',
+      (tester) async {
+        await _mount(tester, scale: 2, direction: direction);
+        await _section(tester, 'Account');
+        await tester.scrollUntilVisible(
+          find.text('Model tokens'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final theme in ReadingTheme.values) {
+    for (final desktop in [false, true]) {
+      testWidgets(
+        'settings ${theme.name} ${desktop ? 'desktop' : 'compact'} account golden',
+        (tester) async {
+          await _mount(
+            tester,
+            platform: desktop ? TargetPlatform.macOS : TargetPlatform.iOS,
+            width: desktop ? 1100 : 390,
+            theme: theme,
+          );
+          await _section(tester, 'Account');
+          await expectLater(
+            find.byKey(const ValueKey('settings-golden')),
+            matchesGoldenFile(
+              'goldens/settings-account-${theme.name}-${desktop ? 'desktop' : 'compact'}.png',
+            ),
+          );
+        },
+      );
+    }
+  }
 
   for (final theme in ReadingTheme.values) {
     for (final desktop in [false, true]) {

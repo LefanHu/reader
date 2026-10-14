@@ -14,11 +14,13 @@ import '../preferences/reading_theme.dart';
 import '../text_effects/text_effects_screen.dart';
 import '../theme.dart';
 
+import 'account_monogram.dart';
 import 'account_settings_section.dart';
 import 'usage_settings_section.dart';
 import 'storage_settings_section.dart';
 import 'about_settings_section.dart';
 import 'settings_choice_tile.dart';
+import 'settings_group.dart';
 
 enum _Section {
   account('Account', Icons.account_circle_outlined),
@@ -173,29 +175,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _sections(_Section? selected, {bool sidebar = false}) => ListView(
     padding: const EdgeInsets.all(16),
     children: [
-      Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Icon(Icons.account_circle_outlined, size: 40),
-              const SizedBox(height: 12),
-              Text(
-                controller.cloudEmail ?? 'Your reading room',
-                style: Theme.of(context).textTheme.titleMedium,
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+        child: Row(
+          children: [
+            AccountMonogram(email: controller.cloudEmail, size: 40),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    controller.cloudEmail ?? 'Not signed in',
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  Text(
+                    'Settings apply to this device.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 4),
-              Text(
-                controller.cloudEmail == null
-                    ? 'Reading stays offline and account-free.'
-                    : 'Preferences are saved on this device.',
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
-      const SizedBox(height: 12),
       for (final section in _Section.values)
         ListTile(
           // Icon-sized leading slots keep category words intact at narrow/large type.
@@ -264,69 +270,84 @@ class _SettingsScreenState extends State<SettingsScreen> {
   );
 
   List<Widget> _appearance() => [
-    const Text('Your theme applies throughout the app.'),
-    const SizedBox(height: 16),
-    for (final value in ReadingTheme.values)
-      SettingsChoiceTile<ReadingTheme>(
-        value: value,
-        selected: controller.preferences.settings.theme,
-        title: Text(_title(value.name)),
-        preview: buildReaderTheme(value).colorScheme,
-        subtitle: Text(switch (value) {
-          ReadingTheme.paper => 'Ivory paper · dark ink',
-          ReadingTheme.sepia => 'Warm paper · brown ink',
-          ReadingTheme.dark => 'Dark surface · light ink',
-        }),
-        onChanged: (value) {
-          _preference(() => controller.preferences.configure(theme: value));
-        },
-      ),
+    SettingsGroup(
+      title: 'Theme',
+      caption: 'Your theme applies throughout the app.',
+      children: [
+        for (final value in ReadingTheme.values)
+          SettingsChoiceTile<ReadingTheme>(
+            value: value,
+            selected: controller.preferences.settings.theme,
+            title: Text(_title(value.name)),
+            preview: buildReaderTheme(value).colorScheme,
+            subtitle: Text(switch (value) {
+              ReadingTheme.paper => 'Ivory paper · dark ink',
+              ReadingTheme.sepia => 'Warm paper · brown ink',
+              ReadingTheme.dark => 'Dark surface · light ink',
+            }),
+            onChanged: (value) {
+              _preference(() => controller.preferences.configure(theme: value));
+            },
+          ),
+      ],
+    ),
   ];
 
   List<Widget> _reading() => [
-    for (final value in ReadingMode.values)
-      SettingsChoiceTile<ReadingMode>(
-        value: value,
-        selected: controller.preferences.settings.mode,
-        title: Text(
-          value == ReadingMode.pageFlip ? 'Page Flip' : _title(value.name),
+    SettingsGroup(
+      title: 'Page turning',
+      children: [
+        for (final value in ReadingMode.values)
+          SettingsChoiceTile<ReadingMode>(
+            value: value,
+            selected: controller.preferences.settings.mode,
+            title: Text(
+              value == ReadingMode.pageFlip ? 'Page Flip' : _title(value.name),
+            ),
+            onChanged: (value) {
+              _preference(() => controller.preferences.configure(mode: value));
+            },
+          ),
+      ],
+    ),
+    SettingsGroup(
+      title: 'Text',
+      caption: 'Applies to book text only.',
+      children: [
+        SwitchListTile(
+          title: const Text('Serif font'),
+          subtitle: const Text('Turn off for Sans'),
+          value: controller.preferences.settings.serif,
+          onChanged: (value) =>
+              _preference(() => controller.preferences.configure(serif: value)),
         ),
-        onChanged: (value) {
-          _preference(() => controller.preferences.configure(mode: value));
-        },
-      ),
-    SwitchListTile(
-      title: const Text('Serif font'),
-      subtitle: const Text('Turn off for Sans'),
-      value: controller.preferences.settings.serif,
-      onChanged: (value) =>
-          _preference(() => controller.preferences.configure(serif: value)),
-    ),
-    Text('Font scale: ${controller.preferences.settings.fontSize}%'),
-    Slider(
-      value: controller.preferences.settings.fontSize.toDouble(),
-      min: 80,
-      max: 180,
-      divisions: 20,
-      label: '${controller.preferences.settings.fontSize}%',
-      onChanged: (value) => _preference(
-        () => controller.preferences.configure(fontSize: value.round()),
-      ),
-    ),
-    Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Text(
-          'The quiet room held a thousand stories. Outside, the afternoon light settled softly on the leaves.',
-          style: TextStyle(
-            fontFamily: controller.preferences.settings.serif
-                ? 'Lora'
-                : 'DM Sans',
-            fontSize: 18 * controller.preferences.settings.fontSize / 100,
-            height: 1.6,
+        Text('Font scale: ${controller.preferences.settings.fontSize}%'),
+        Slider(
+          value: controller.preferences.settings.fontSize.toDouble(),
+          min: 80,
+          max: 180,
+          divisions: 20,
+          label: '${controller.preferences.settings.fontSize}%',
+          onChanged: (value) => _preference(
+            () => controller.preferences.configure(fontSize: value.round()),
           ),
         ),
-      ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Text(
+              'The quiet room held a thousand stories. Outside, the afternoon light settled softly on the leaves.',
+              style: TextStyle(
+                fontFamily: controller.preferences.settings.serif
+                    ? 'Lora'
+                    : 'DM Sans',
+                fontSize: 18 * controller.preferences.settings.fontSize / 100,
+                height: 1.6,
+              ),
+            ),
+          ),
+        ),
+      ],
     ),
   ];
 
@@ -335,81 +356,96 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final selected = controller.preferences.settings.narrationVoice;
     final missing = !source.voices.any((voice) => voice.identifier == selected);
     return [
-      const Text('Voice and speed apply to all books on this device.'),
-      const SizedBox(height: 12),
-      if (missing)
-        ListTile(
-          title: Text('Unavailable: $selected'),
-          subtitle: const Text(
-            'This saved voice is unavailable. Choose an installed voice for new audio; matching cached audio can still play.',
-          ),
-          selected: true,
-          leading: const Icon(Icons.warning_amber_outlined),
-        ),
-      for (final voice in source.voices)
-        SettingsChoiceTile<String>(
-          value: voice.identifier,
-          selected: selected,
-          title: Text(voice.name),
-          subtitle: Text('${voice.language} · ${voice.quality}'),
-          onChanged: (value) {
-            _preference(
-              () => controller.preferences.configure(narrationVoice: value),
-            );
-          },
-        ),
-      Text(
-        source.requiresCloudRegistration
-            ? 'Changing voice pauses narration. Press Play to continue; uncached audio consumes allowance.'
-            : 'Speech is generated on this device using installed voices. Changing voice pauses narration. Press Play to continue.',
-      ),
-      const SizedBox(height: 20),
-      const Text('Playback speed'),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
+      SettingsGroup(
+        title: 'Voice',
+        caption: 'Voice and speed apply to all books on this device.',
         children: [
-          for (final speed in narrationSpeeds)
-            ChoiceChip(
-              label: Text('$speed×'),
-              selected: controller.preferences.settings.narrationSpeed == speed,
-              onSelected: (_) => _preference(
-                () => controller.preferences.configure(narrationSpeed: speed),
+          if (missing)
+            ListTile(
+              title: Text('Unavailable: $selected'),
+              subtitle: const Text(
+                'This saved voice is unavailable. Choose an installed voice for new audio; matching cached audio can still play.',
               ),
+              selected: true,
+              leading: const Icon(Icons.warning_amber_outlined),
             ),
+          for (final voice in source.voices)
+            SettingsChoiceTile<String>(
+              value: voice.identifier,
+              selected: selected,
+              title: Text(voice.name),
+              subtitle: Text('${voice.language} · ${voice.quality}'),
+              onChanged: (value) {
+                _preference(
+                  () => controller.preferences.configure(narrationVoice: value),
+                );
+              },
+            ),
+          Text(
+            source.requiresCloudRegistration
+                ? 'Changing voice pauses narration. Press Play to continue; uncached audio consumes allowance.'
+                : 'Speech is generated on this device using installed voices. Changing voice pauses narration. Press Play to continue.',
+          ),
         ],
       ),
-      const SizedBox(height: 12),
-      const Text('Speed changes apply immediately and reuse existing audio.'),
+      SettingsGroup(
+        title: 'Playback speed',
+        caption: 'Speed changes apply immediately and reuse existing audio.',
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final speed in narrationSpeeds)
+                ChoiceChip(
+                  label: Text('$speed×'),
+                  selected:
+                      controller.preferences.settings.narrationSpeed == speed,
+                  onSelected: (_) => _preference(
+                    () =>
+                        controller.preferences.configure(narrationSpeed: speed),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
     ];
   }
 
   List<Widget> _library() => [
-    const Text('Default filter'),
-    for (final value in LibraryFilter.values)
-      SettingsChoiceTile<LibraryFilter>(
-        value: value,
-        selected: controller.preferences.settings.libraryFilter,
-        title: Text(_title(value.name)),
-        onChanged: (value) {
-          _preference(
-            () => controller.preferences.configure(libraryFilter: value),
-          );
-        },
-      ),
-    const SizedBox(height: 16),
-    const Text('Default sort'),
-    for (final value in LibrarySort.values)
-      SettingsChoiceTile<LibrarySort>(
-        value: value,
-        selected: controller.preferences.settings.librarySort,
-        title: Text(_title(value.name)),
-        onChanged: (value) {
-          _preference(
-            () => controller.preferences.configure(librarySort: value),
-          );
-        },
-      ),
+    SettingsGroup(
+      title: 'Default filter',
+      children: [
+        for (final value in LibraryFilter.values)
+          SettingsChoiceTile<LibraryFilter>(
+            value: value,
+            selected: controller.preferences.settings.libraryFilter,
+            title: Text(_title(value.name)),
+            onChanged: (value) {
+              _preference(
+                () => controller.preferences.configure(libraryFilter: value),
+              );
+            },
+          ),
+      ],
+    ),
+    SettingsGroup(
+      title: 'Default sort',
+      children: [
+        for (final value in LibrarySort.values)
+          SettingsChoiceTile<LibrarySort>(
+            value: value,
+            selected: controller.preferences.settings.librarySort,
+            title: Text(_title(value.name)),
+            onChanged: (value) {
+              _preference(
+                () => controller.preferences.configure(librarySort: value),
+              );
+            },
+          ),
+      ],
+    ),
   ];
 
   void _signInOrOut() => _action(
