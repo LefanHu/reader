@@ -147,6 +147,12 @@ export class MemoryReference {
 
   async set(data: MemoryData, options?: { merge?: boolean }) { this.write(data, options?.merge); }
 
+  /** Rejects an existing document with Firestore's ALREADY_EXISTS code, as the real client does. */
+  async create(data: MemoryData) {
+    if (this.db.values.has(this.path)) throw Object.assign(new Error(`create of existing ${this.path}`), { code: 6 });
+    this.write(data);
+  }
+
   async update(data: MemoryData) {
     assert(this.db.values.has(this.path), `update of missing ${this.path}`);
     this.write(data, true);
@@ -155,19 +161,19 @@ export class MemoryReference {
   async delete() { this.remove(); }
 }
 
-/** A collection query supporting `==` and Timestamp `<` filters plus `limit`. */
+/** A collection query supporting `==`, `array-contains` and Timestamp `<` filters plus `limit`. */
 export class MemoryCollection {
   constructor(
     readonly db: MemoryFirestore,
     readonly path: string,
-    readonly filters: Array<[string, "==" | "<", unknown]> = [],
+    readonly filters: Array<[string, "==" | "<" | "array-contains", unknown]> = [],
     readonly max = Infinity,
   ) {}
 
   doc(id: string) { return new MemoryReference(this.db, `${this.path}/${id}`); }
 
   where(key: string, operation: string, value: unknown) {
-    assert(operation === "==" || operation === "<", `unsupported operator ${operation}`);
+    assert(operation === "==" || operation === "<" || operation === "array-contains", `unsupported operator ${operation}`);
     return new MemoryCollection(this.db, this.path, [...this.filters, [key, operation, value]], this.max);
   }
 
@@ -181,6 +187,7 @@ export class MemoryCollection {
       if (!path.startsWith(`${this.path}/`) || path.slice(this.path.length + 1).includes("/")) continue;
       const matches = this.filters.every(([key, operation, value]) => {
         if (operation === "==") return data[key] === value;
+        if (operation === "array-contains") return Array.isArray(data[key]) && (data[key] as unknown[]).includes(value);
         const field = data[key];
         return field instanceof Timestamp && field.toMillis() < (value as Timestamp).toMillis();
       });

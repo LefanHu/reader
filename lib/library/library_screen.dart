@@ -18,6 +18,7 @@ import 'library_sidebar.dart';
 import 'empty_library.dart';
 import 'book_card.dart';
 import 'book_row.dart';
+import '../reader/work_link_sheet.dart';
 
 /// Adaptive catalog for importing, finding, opening, and deleting books.
 class LibraryScreen extends StatefulWidget {
@@ -140,6 +141,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
         builder: (_) => ReaderScreen(book: book, controller: widget.controller),
       ),
     );
+  }
+
+  /// The catalog action for [book], or null when this build has no catalog.
+  VoidCallback? _linkWork(CatalogBook book) {
+    final works = widget.controller.works;
+    return works == null ? null : () => showWorkLinkSheet(context, works, book);
   }
 
   Future<void> _delete(CatalogBook book) async {
@@ -429,6 +436,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       book: visible[index],
                       onOpen: () => _open(visible[index]),
                       onDelete: () => _delete(visible[index]),
+                      onLinkWork: _linkWork(visible[index]),
                     ),
                   )
                 : SliverLayoutBuilder(
@@ -454,6 +462,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                             book: visible[index],
                             onOpen: () => _open(visible[index]),
                             onDelete: () => _delete(visible[index]),
+                            onLinkWork: _linkWork(visible[index]),
                           ),
                           childCount: visible.length,
                         ),

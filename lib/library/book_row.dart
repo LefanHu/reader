@@ -14,6 +14,7 @@ class BookRow extends StatelessWidget {
     required this.book,
     required this.onOpen,
     required this.onDelete,
+    this.onLinkWork,
   });
 
   /// Book whose catalog metadata is presented.
@@ -21,6 +22,9 @@ class BookRow extends StatelessWidget {
 
   /// Actions invoked when the book is opened or deleted.
   final VoidCallback onOpen, onDelete;
+
+  /// Opens the book catalog sheet; absent without cloud catalog services.
+  final VoidCallback? onLinkWork;
   @override
   Widget build(BuildContext context) => Semantics(
     key: ValueKey('library-book-${book.hash}'),
@@ -57,7 +61,7 @@ class BookRow extends StatelessWidget {
                   ],
                 ),
               ),
-              BookActions(onDelete: onDelete),
+              BookActions(onDelete: onDelete, onLinkWork: onLinkWork),
             ],
           ),
         ),

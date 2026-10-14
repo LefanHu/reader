@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -11,6 +12,8 @@ import '../book_analysis/services.dart';
 import '../catalog/catalog_book.dart';
 import '../catalog/catalog_session.dart';
 import '../catalog/catalog_store.dart';
+import '../catalog_works/work_link_coordinator.dart';
+import '../catalog_works/works_api.dart';
 import '../cloud_deletion_outbox.dart';
 import '../cloud_deletion_queue.dart';
 import '../generation_fence.dart';
@@ -38,6 +41,13 @@ typedef NarrationServices = ({
   NarrationApi api,
   NarrationPlayer player,
   NarrationStore store,
+  TextDocumentStore? documents,
+});
+
+/// Global catalog dependencies; absent graphs cannot link books to works.
+typedef WorkCatalogServices = ({
+  WorksApi api,
+  Directory root,
   TextDocumentStore? documents,
 });
 
@@ -76,6 +86,7 @@ class ReaderController extends ChangeNotifier {
     required this.cloudIdentity,
     NarrationServices? narration,
     BookAnalysisServices? analysis,
+    WorkCatalogServices? works,
     this.accountApi,
     @visibleForTesting this.analysisReadyForTesting,
   }) {
@@ -166,6 +177,17 @@ class ReaderController extends ChangeNotifier {
         currentPosition: (book) => catalog.find(book)?.lastPosition,
       );
     }
+    if (works != null) {
+      this.works = WorkLinkCoordinator(
+        api: works.api,
+        root: works.root,
+        documents: works.documents,
+        account: () => cloudIdentity.email,
+        changed: () {
+          if (!_disposed) notifyListeners();
+        },
+      );
+    }
     if (analysis != null) {
       this.analysis = BookAnalysisCoordinator(
         api: analysis.api,
@@ -189,6 +211,9 @@ class ReaderController extends ChangeNotifier {
 
   /// App-lifetime narration; absent in offline/test dependency graphs.
   NarrationSession? narration;
+
+  /// Links books to the global catalog; absent only in offline/test graphs.
+  WorkLinkCoordinator? works;
 
   /// Default-enabled preprocessing owner; absent only in offline/test graphs.
   BookAnalysisCoordinator? analysis;
@@ -295,6 +320,7 @@ class ReaderController extends ChangeNotifier {
     }
     await illustrations.loadManifests(catalog.books);
     await analysis?.restore(catalog.books);
+    await works?.restore();
     unawaited(_bookDeletions.drain());
     unawaited(_narrationDeletions.drain());
     unawaited(refreshCloudAccount());
@@ -371,7 +397,9 @@ class ReaderController extends ChangeNotifier {
   /// Removes the catalog row, source directory, and generated cloud data.
   Future<void> delete(CatalogBook book) async {
     final analysisBookId = analysis?.cloudBookIdFor(book);
+    final workBookId = works?.cloudBookIdFor(book);
     analysis?.invalidateBook(book);
+    await works?.forget(book);
     // Drain captured local receipts before the source directory can disappear.
     await analysis?.flush();
     final audio = narration;
@@ -390,6 +418,7 @@ class ReaderController extends ChangeNotifier {
     final cloudBookIds = <String>{
       ?illustrations.manifests[book.hash]?.profile?.cloudBookId,
       ?analysisBookId,
+      ?workBookId,
     }..remove('');
     for (final id in cloudBookIds) {
       await _bookDeletions.enqueue(id);
@@ -446,6 +475,7 @@ class ReaderController extends ChangeNotifier {
     if (cloudAccountBusy) return;
     cloudAccountBusy = true;
     _usage.invalidate();
+    works?.invalidateAccount();
     _invalidateAnalysisAccount();
     notifyListeners();
     try {
@@ -508,6 +538,7 @@ class ReaderController extends ChangeNotifier {
         }
         await illustrations.clearLocalAccountData(catalog.books);
         await analysis?.clearAccountData(List.of(catalog.books));
+        await works?.clearAccountData();
         cloudEmail = null;
       },
       // Local cleanup can fail after Firebase deletion; show the actual identity.

@@ -46,12 +46,14 @@ class CloudHttpClient {
 
   /// Sends one authenticated JSON request and decodes a bounded object body.
   ///
-  /// Identity exceptions propagate unchanged; transport failures become
+  /// [timeout] lengthens the default for large request bodies. Identity
+  /// exceptions propagate unchanged; transport failures become
   /// [CloudServiceException]. A 404 returns `{}` when [missingIsSuccess].
   Future<Map<String, dynamic>> json(
     String method,
     String path, {
     Map<String, dynamic>? body,
+    Duration timeout = _timeout,
     bool interactive = false,
     bool missingIsSuccess = false,
     int maxBytes = 64 * 1024,
@@ -70,7 +72,7 @@ class CloudHttpClient {
         ..headers.addAll(headers)
         ..followRedirects = false;
       if (body != null) request.body = jsonEncode(body);
-      final response = await client.send(request).timeout(_timeout);
+      final response = await client.send(request).timeout(timeout);
       final status = response.statusCode;
       if (status == 404 && missingIsSuccess) return <String, dynamic>{};
       final bytes = await _read(

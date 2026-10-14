@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { HttpError } from "./http.js";
+import { fingerprintList, normalizeParagraph, paragraphFingerprint, searchTokens, workIdFor } from "./work-text.js";
+
+const golden = JSON.parse(readFileSync(new URL("../test-fixtures/fingerprints.json", import.meta.url), "utf8")) as {
+  cases: { text: string; normalized: string; fingerprint: string }[];
+};
+
+test("normalization and fingerprints match the golden shared with the Dart client", () => {
+  for (const item of golden.cases) {
+    assert.equal(normalizeParagraph(item.text), item.normalized);
+    assert.equal(paragraphFingerprint(item.text).toString("hex"), item.fingerprint);
+  }
+});
+
+test("fingerprints ignore punctuation, case and spacing, and skip short paragraphs", () => {
+  const paragraphs = ["Chapter 1", "A long enough paragraph of real prose.", "A LONG enough—paragraph, of real prose!"];
+  const values = fingerprintList(Buffer.concat(paragraphs.map(paragraphFingerprint)));
+  assert.equal(values[0], "");
+  assert.equal(values[1], values[2]);
+  assert.match(values[1]!, /^[0-9a-f]{16}$/);
+});
+
+test("fingerprint lists must be whole, non-empty 8-byte values", () => {
+  assert.throws(() => fingerprintList(Buffer.alloc(7)), HttpError);
+  assert.throws(() => fingerprintList(Buffer.alloc(0)), HttpError);
+});
+
+test("search tokens are lowercase, deduplicated and at least two characters", () => {
+  assert.deepEqual(searchTokens("Pride and Prejudice — Jane AUSTEN, and a"), ["pride", "and", "prejudice", "jane", "austen"]);
+});
+
+test("work identity ignores a leading article, case, punctuation and accents", () => {
+  const id = workIdFor("The storm of steel", "Ernst Jünger");
+  assert.match(id, /^[0-9a-f]{20}$/);
+  assert.equal(workIdFor("Storm of Steel", "ernst junger"), id);
+  assert.equal(workIdFor("  STORM of steel!", "Ernst  Jünger"), id);
+  assert.notEqual(workIdFor("In Stahlgewittern", "Ernst Jünger"), id);
+  assert.notEqual(workIdFor("The storm of steel", "Someone Else"), id);
+  // A title that is only an article keeps it.
+  assert.notEqual(workIdFor("The", "Author"), workIdFor("", "Author"));
+});

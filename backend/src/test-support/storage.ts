@@ -2,7 +2,7 @@ import type { Storage } from "@google-cloud/storage";
 
 /**
  * In-memory Cloud Storage double covering the calls the backend makes: object
- * save/delete, V4 read signing and prefix deletion. All buckets share one
+ * save/download/delete, V4 read signing and prefix deletion. All buckets share one
  * object map because each test uses a single private bucket.
  */
 export class MemoryStorage {
@@ -34,6 +34,11 @@ export class MemoryStorage {
         this.objects.set(path, bytes);
         if (options?.contentType) this.contentTypes.set(path, options.contentType);
         this.events?.push(`save:${path}`);
+      },
+      download: async (): Promise<[Buffer]> => {
+        const bytes = this.objects.get(path);
+        if (!bytes) throw Object.assign(new Error(`No such object: ${path}`), { code: 404 });
+        return [bytes];
       },
       delete: async () => {
         this.objects.delete(path);

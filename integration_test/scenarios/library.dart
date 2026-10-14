@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show PointerDeviceKind;
 
@@ -6,10 +7,13 @@ import 'package:reader/text/word_count_label.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reader/catalog_works/work_text.dart';
 import 'package:reader/preferences/reading_theme.dart';
 import 'package:reader/text/document_store.dart';
 import 'package:reader/theme.dart';
 
+import '../../test/support/cloud_identity_fake.dart';
+import '../../test/support/fake_works_api.dart';
 import '../support/native_test_app.dart';
 
 /// Registers independent offline import and application appearance scenarios.
@@ -98,6 +102,48 @@ void registerLibraryTests() {
       );
     },
   );
+
+  testWidgets('links a book to the shared catalog and unlinks it', (
+    tester,
+  ) async {
+    final works = FakeWorksApi()
+      ..addToIndex('Unicode Test', author: 'Index Author', year: 1901);
+    final app = await NativeTestApp.launch(
+      tester,
+      cloudIdentity: FakeCloudIdentity()..email = 'reader@example.test',
+      worksApi: works,
+    );
+    final book = app.book('Unicode Test');
+    final entry = find.byKey(ValueKey('library-book-${book.hash}'));
+    await tester.ensureVisible(entry);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(of: entry, matching: find.byTooltip('Book actions')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Book catalog…'));
+    await tester.pumpAndSettle();
+    expect(works.calls, ['current', 'search:Unicode Test']);
+    expect(find.text('Index Author · 1901'), findsOneWidget);
+
+    await tester.tap(find.text('Index Author · 1901'));
+    await tester.pumpAndSettle();
+    expect(find.text('Linked to Unicode Test by Index Author'), findsOneWidget);
+    final link = app.controller.works!.linkFor(book)!;
+    // The real normalized sidecars were read: whole fingerprints, no text.
+    final sent = base64Decode(works.references[link.work.id]!);
+    expect(sent, isNotEmpty);
+    expect(sent.length % workFingerprintBytes, 0);
+    expect(
+      File('${app.root.path}/work-links.json').readAsStringSync(),
+      contains(link.work.id),
+    );
+
+    await tester.tap(find.text('Unlink'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Linked to'), findsNothing);
+    expect(app.controller.works!.linkFor(book), isNull);
+  });
 
   for (final preset in ReadingTheme.values) {
     testWidgets(

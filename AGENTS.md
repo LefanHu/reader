@@ -54,6 +54,7 @@ Before any external release, revisit: App Check, deletion/privacy guarantees, co
 - Settings are device-global. Settings and the listening sheet edit the same voice/speed preferences.
 - Narration: one app-lifetime audio handler. Only natural completion of a chunk commits reading progress; starting, seeking or "Read from here" never does. Segment only the normalized text (`lib/text/narration.dart` for cloud, `lib/text/sentence_narration.dart` for Apple). Cloud narration is the default; on-device Apple narration is behind `--dart-define=ON_DEVICE_NARRATION_ENABLED=true`. Cached replay is free.
 - Illustrations: the Decisions API picks scenes per chapter window; only those paragraphs reach image generation. Art renders inline after its anchor paragraph; anchors that do not resolve in the normalized text never render.
+- Book catalog: a text-free global index of works. Users link a book manually to a work found through Open Library search (or the file's own title and author); the work ID derives from title + first author. The first linked copy's paragraph fingerprints become the work's reference, and later copies link only at ≥90% alignment; editions and translations are not yet supported. Works are global and not purged on user deletion (revisit before release).
 - Book analysis runs in the background for every book, never prompts sign-in and never spends credits; illustration requests wait for a book's analysis to complete.
 
 ## Platform notes

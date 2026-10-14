@@ -8,6 +8,7 @@ import '../illustrations/illustration_selection.dart';
 import 'analysis_progress_banner.dart';
 import 'illustration_consent_dialog.dart';
 import 'illustration_scene_dialog.dart';
+import 'work_link_sheet.dart';
 
 /// Downloaded scenes, including ones hidden from the page.
 class IllustrationGallery extends StatelessWidget {
@@ -57,6 +58,12 @@ class IllustrationGallery extends StatelessWidget {
                 icon: const Icon(Icons.tune),
                 label: const Text('Illustration settings'),
               ),
+              if (controller.works case final works?)
+                TextButton.icon(
+                  onPressed: () => showWorkLinkSheet(context, works, book),
+                  icon: const Icon(Icons.link),
+                  label: const Text('Book catalog'),
+                ),
               Expanded(
                 child: scenes.isEmpty
                     ? const Center(

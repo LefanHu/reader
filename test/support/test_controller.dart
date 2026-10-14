@@ -57,6 +57,7 @@ Future<ReaderController> testController({
   AccountApi? accountApi,
   BookAnalysisServices? analysisServices,
   bool Function(CatalogBook)? analysisReady,
+  WorkCatalogServices? works,
   bool initialize = true,
 }) async {
   assert(catalogStore == null || books.isEmpty);
@@ -88,6 +89,7 @@ Future<ReaderController> testController({
     cloudIdentity: cloudIdentity ?? (FakeCloudIdentity()..configured = false),
     accountApi: accountApi,
     analysis: analysisServices,
+    works: works,
     analysisReadyForTesting:
         analysisReady ?? (analysisServices == null ? (_) => true : null),
   );

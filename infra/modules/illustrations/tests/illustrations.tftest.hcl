@@ -65,6 +65,10 @@ run "illustrations_preserves_privacy_retention_and_capacity" {
     error_message = "Secret containers must keep their names and reject accidental deletion."
   }
   assert {
+    condition     = strcontains(google_storage_bucket_iam_member.api_objects.condition[0].expression, "/objects/users/") && strcontains(google_storage_bucket_iam_member.api_objects.condition[0].expression, "/objects/works/") && !strcontains(google_storage_bucket_iam_member.worker_objects.condition[0].expression, "/objects/works/")
+    error_message = "The API manages per-user objects and the shared catalog works; the worker only per-user objects."
+  }
+  assert {
     condition     = google_project_iam_member.build_source.role == "roles/storage.objectViewer" && google_project_iam_member.build_source.condition[0].expression == "resource.type == 'storage.googleapis.com/Object' && resource.name.startsWith('projects/_/buckets/reader-test-12345_cloudbuild/objects/source/')"
     error_message = "The custom builder may read only source archives, not reader assets or unrelated storage."
   }

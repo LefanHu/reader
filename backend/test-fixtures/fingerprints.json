@@ -1,0 +1,59 @@
+{
+  "cases": [
+    {
+      "text": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.",
+      "normalized": "itisatruthuniversallyacknowledgedthatasinglemaninpossessionofagoodfortunemustbeinwantofawife",
+      "fingerprint": "c4bb93be1d1c059c"
+    },
+    {
+      "text": "“It is a truth universally acknowledged,” that a single man — in possession of a good fortune — must be in want of a wife!",
+      "normalized": "itisatruthuniversallyacknowledgedthatasinglemaninpossessionofagoodfortunemustbeinwantofawife",
+      "fingerprint": "c4bb93be1d1c059c"
+    },
+    {
+      "text": "IT IS A TRUTH\nuniversally acknowledged that a single man in possession of a good fortune must be in want of a wife",
+      "normalized": "itisatruthuniversallyacknowledgedthatasinglemaninpossessionofagoodfortunemustbeinwantofawife",
+      "fingerprint": "c4bb93be1d1c059c"
+    },
+    {
+      "text": "Chapter 1",
+      "normalized": "chapter1",
+      "fingerprint": "0000000000000000"
+    },
+    {
+      "text": "* * *",
+      "normalized": "",
+      "fingerprint": "0000000000000000"
+    },
+    {
+      "text": "Café crème brûlée, naïve façade, and a résumé for Zoë.",
+      "normalized": "cafécrèmebrûléenaïvefaçadeandarésuméforzoë",
+      "fingerprint": "c693e1be65055ee9"
+    },
+    {
+      "text": "Ὀδυσσεύς ἦλθε πρὸς τὸν οἶκον τοῦ βασιλέως καὶ ἐκάθισε παρὰ τὸ πῦρ ὅλος.",
+      "normalized": "ὀδυσσεύσἦλθεπρὸστὸνοἶκοντοῦβασιλέωσκαὶἐκάθισεπαρὰτὸπῦρὅλοσ",
+      "fingerprint": "c60dbe005343677c"
+    },
+    {
+      "text": "ΟΔΥΣΣΕΥΣ ΗΛΘΕ ΠΡΟΣ ΤΟΝ ΟΙΚΟΝ ΤΟΥ ΒΑΣΙΛΕΩΣ ΚΑΙ ΕΚΑΘΙΣΕ ΠΑΡΑ ΤΟ ΠΥΡ ΟΛΟΣ",
+      "normalized": "οδυσσευσηλθεπροστονοικοντουβασιλεωσκαιεκαθισεπαρατοπυρολοσ",
+      "fingerprint": "7ba3f1a7772cd191"
+    },
+    {
+      "text": "Русский текст: «Война и мир», том первый, часть первая, глава 1.",
+      "normalized": "русскийтекствойнаимиртомпервыйчастьперваяглава1",
+      "fingerprint": "b77cf20b6a4e137e"
+    },
+    {
+      "text": "日本語の文章です。吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。",
+      "normalized": "日本語の文章です吾輩は猫である名前はまだ無いどこで生れたかとんと見当がつかぬ",
+      "fingerprint": "a83bd8d458067625"
+    },
+    {
+      "text": "Emoji 🎉 and digits 1984 do not change the letters in this sentence at all.",
+      "normalized": "emojianddigits1984donotchangethelettersinthissentenceatall",
+      "fingerprint": "26d4d07cead5414d"
+    }
+  ]
+}

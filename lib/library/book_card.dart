@@ -15,6 +15,7 @@ class BookCard extends StatefulWidget {
     required this.book,
     required this.onOpen,
     required this.onDelete,
+    this.onLinkWork,
   });
 
   /// Book whose catalog metadata is presented.
@@ -22,6 +23,9 @@ class BookCard extends StatefulWidget {
 
   /// Actions invoked when the book is opened or deleted.
   final VoidCallback onOpen, onDelete;
+
+  /// Opens the book catalog sheet; absent without cloud catalog services.
+  final VoidCallback? onLinkWork;
   @override
   State<BookCard> createState() => _BookCardState();
 }
@@ -91,6 +95,7 @@ class _BookCardState extends State<BookCard> {
                                             ),
                                             BookActions(
                                               onDelete: widget.onDelete,
+                                              onLinkWork: widget.onLinkWork,
                                               onMenuChanged: (value) =>
                                                   setState(
                                                     () => _menuOpen = value,
